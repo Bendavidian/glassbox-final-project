@@ -7,6 +7,28 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — GB-1: the declared dependency set
+
+**Decision.** `pyproject.toml` declares twelve runtime dependencies — pandas, numpy,
+pyyaml, torch, yfinance, alpaca-py, PyWavelets, scipy, streamlit,
+pandas-market-calendars, python-dotenv, pyarrow — and five dev extras: pytest,
+hypothesis, import-linter, ruff, black. The formatters live in the extra so that
+`pip install -e ".[dev]"` is the single command that produces a working local
+environment, and CI installs exactly what a developer installs. Versions are unpinned
+for now; GB-59 (reproducibility audit) is where a lock is added if a clean clone does
+not reproduce.
+
+**Reasoning.** This is the baseline set the spec's architecture already implies — one
+library per named responsibility, nothing speculative. Recording it here satisfies the
+`CLAUDE.md` §4 rule that a dependency needs a line in this file, so later additions are
+visible as additions rather than lost in a diff.
+
+**Consequence.** Anything beyond this list requires a new entry here before it is
+installed. `reference/` is excluded from packaging, linting and pytest collection in the
+same file, so its dependencies are never ours.
+
+---
+
 ## 2026-08-14 — Sprint-table weekday labels corrected against the 2026 calendar
 
 **Decision.** `SOLO_BUILD_PLAN.md` §7 dated the code freeze "Fri 3 Oct". 3 October 2026

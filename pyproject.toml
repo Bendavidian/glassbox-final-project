@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glassbox-trader"
+version = "0.1.0"
+description = "An autonomous equities trading system that explains every decision with exact attribution"
+requires-python = ">=3.11"
+# readme = "README.md" is added in GB-12, when the file exists.
+
+dependencies = [
+    "pandas",
+    "numpy",
+    "pyyaml",
+    "torch",
+    "yfinance",
+    "alpaca-py",
+    "PyWavelets",
+    "scipy",
+    "streamlit",
+    "pandas-market-calendars",
+    "python-dotenv",
+    "pyarrow",
+]
+
+[project.optional-dependencies]
+# One command sets up a working local environment: pip install -e ".[dev]"
+dev = [
+    "pytest",
+    "hypothesis",
+    "import-linter",
+    "ruff",
+    "black",
+]
+
+[tool.setuptools.packages.find]
+# reference/ is read-only material brought in for study. It is never part of the build,
+# is never imported from glassbox/, and is excluded from linting and test collection below.
+include = ["glassbox*"]
+exclude = ["reference*", "tests*", "docs*", "prompts*"]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["reference"]
+
+[tool.black]
+target-version = ["py311"]
+extend-exclude = '''
+/(
+    reference
+)/
+'''
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["reference", "data_cache", "checkpoints", ".git"]
+
+# GB-3 adds the import-linter layer contracts here, rooted at the glassbox package only,
+# so that reference/ is outside the contract by construction.

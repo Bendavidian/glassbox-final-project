@@ -1,0 +1,3 @@
+# GlassBox Trader - the single source of truth for every runtime value (spec 5).
+# Populated in GB-2, together with the typed, fail-loud loader in config/loader.py.
+# No module may hardcode a value that belongs here.

@@ -185,6 +185,7 @@ glassbox/
 │   └── report.py              # results.csv → tables + plots
 ├── live_loop.py               # the autonomous cycle
 ├── replay.py                  # recorded-day playback
+├── smoke_offline.py           # offline end-to-end smoke command, GB-24
 └── dashboard/
     └── app.py                 # Streamlit
 ```
