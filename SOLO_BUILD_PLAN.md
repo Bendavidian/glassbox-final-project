@@ -49,9 +49,10 @@ than a slow drift into a failed submission.
 **One task, one session, one commit.** Do not batch. A session that has run for two
 hours has drifted from `CLAUDE.md` and will start inventing.
 
-**Friday is not a build day.** Reserve the last working day of each week for reading
-your own diffs, fixing what the tests missed, and updating `PROGRESS.md`. The plan
-below already assumes this.
+**Friday is a light day.** Reserve it for reading your own diffs, fixing what the
+tests missed, and updating `PROGRESS.md`. The exception is a sprint's final day: a
+gate must land on the last day of its sprint, so 11 Sep, 25 Sep and the tasks
+immediately preceding them are build days.
 
 ---
 
@@ -162,7 +163,7 @@ surprised.
 | 5–6 | Wed–Thu 30 Sep–1 Oct | GB-45, GB-46 | 8 | Spectral attribution + frequency-response plot |
 | 7 | Fri 2 Oct | GB-47, GB-48 | 8 | Causal wavelets + causality/additivity tests |
 | 8 | Sat 3 Oct | GB-49, GB-50, GB-51 | 11 | Study runner, COF sweep, significance tests |
-| — | **Fri 3 Oct** | — | — | **CODE FREEZE.** Anything not working is future work. |
+| — | **Sat 3 Oct** | — | — | **CODE FREEZE.** Anything not working is future work. |
 | 9 | Sun 4 Oct | GB-52, GB-53 | 6 | Report generator, spectral dashboard panel |
 | 10–12 | Mon–Wed 5–7 Oct | GB-55, GB-56, GB-57 | 11 | The technical report |
 | 13 | Thu 8 Oct | GB-58, GB-54 | 5 | Deck + two demo rehearsals |

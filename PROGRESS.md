@@ -14,6 +14,12 @@ Append one line per completed task. Newest at the bottom of each sprint.
 
 ---
 
+## Pre-sprint
+
+| Task | Date | What was built |
+|---|---|---|
+| GB-0b | 14 Aug 2026 | Resolved three doc contradictions: solo plan governs execution (CLAUDE.md §6), `Attribution.per_lag` optional + `kw_only` (spec §4.2), GB-14/31/43 marked cut in spec §9, code freeze corrected to Sat 3 Oct. Three DECISIONS entries. |
+
 ## Sprint 1 — Foundations · 15–28 Aug 2026
 
 | Task | Date | Owner | What was built |

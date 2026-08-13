@@ -7,6 +7,69 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — Sprint-table weekday labels corrected against the 2026 calendar
+
+**Decision.** `SOLO_BUILD_PLAN.md` §7 dated the code freeze "Fri 3 Oct". 3 October 2026
+is a **Saturday**; the row now reads "Sat 3 Oct". All 52 dated cells across the four
+sprint tables were checked against the real calendar — this was the only error. The
+freeze date itself (3 October) is unchanged.
+
+**Reasoning.** The code freeze is the one deadline in the plan that converts unfinished
+work into declared future work. A day-name that disagrees with the date invites the
+reader to resolve the conflict in whichever direction suits them, which in practice
+means Saturday's work quietly leaking past the freeze.
+
+**Consequence.** Sprint 4 day 8 (Sat 3 Oct — GB-49/50/51) and the freeze now agree:
+the study runner, COF sweep and significance tests land *on* the freeze day, not after
+it. No schedule change; the plan already had it that way.
+
+---
+
+## 2026-08-14 — `Attribution.per_lag` becomes optional; `Attribution` becomes keyword-only
+
+**Decision.** In spec §4.2, `per_lag: np.ndarray` becomes `per_lag: np.ndarray | None = None`,
+documented in the docstring as optional because GB-31 is cut. The dataclass is
+additionally declared `kw_only=True`.
+
+**Reasoning.** GB-31 (per-lag heatmap) is cut from scope, but the frozen schema declared
+`per_lag` as required — a contract that obliges every implementation to populate a field
+nobody consumes. The alternatives were filling it with zeros, which fakes data an
+exactness test could later assert against, or deleting the field, which would make
+adding the heatmap a contract change. Making it optional keeps the shape of the future
+feature at zero present cost. `kw_only=True` is a mechanical consequence: a dataclass
+field with a default may not precede fields without one, so in-place optionality
+requires either reordering the frozen field order or constructing by keyword. Keyword
+construction is the smaller change and the better style for a five-field record.
+
+**Consequence.** Implementations return `per_lag=None`. `Attribution` is always
+constructed with named arguments — positional construction now raises `TypeError`.
+**Do not "simplify" `kw_only=True` away.** It is load-bearing: without it, a defaulted
+`per_lag` sitting before the three fields that have no default is a `TypeError` at
+import time. Reordering the fields to avoid that would change a frozen contract for no
+benefit, and `forecast_total` cannot take a default because it is the exactness target. The
+exactness contract (§4.4, GB-33) is untouched: it tests `per_channel` and
+`forecast_total` only. GB-31 can be un-cut later without a contract change.
+
+---
+
+## 2026-08-14 — `SOLO_BUILD_PLAN.md` governs execution; the Jira 70/30 split is a formal record
+
+**Decision.** One developer writes every line. `SOLO_BUILD_PLAN.md` is the real build
+order. The `Own` column in spec §9, the load-balance table, and the two-person split in
+`CLAUDE.md` §6 exist only for the formal academic record and are ignored when planning
+work. `CLAUDE.md` §6 has been replaced with a single line saying exactly that.
+
+**Reasoning.** Three documents disagreed about who builds what, and `CLAUDE.md` is read
+at the start of every session. An agent that believes a task belongs to someone else may
+defer, stub, or wait on it — the one failure mode a solo build cannot absorb.
+
+**Consequence.** Task ownership carries no scheduling meaning. Frozen contracts (§4)
+remain in force, now justified by the cost of changing an interface mid-build rather
+than by parallel work. `glassbox_jira_tasks.csv` and the submitted documents keep the
+70/30 split unchanged.
+
+---
+
 ## 2026-08-12 — FITS adopted as the spectral core; DLinear retained as baseline
 
 **Decision.** The model layer holds three forecasters: `Persistence` (reference),

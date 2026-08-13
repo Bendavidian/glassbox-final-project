@@ -58,7 +58,4 @@ Say so. Do not guess at a contract, invent a config key, or stub a function and 
 
 ## 6. Team
 
-- **Ben** — contracts, features, wavelets, models, FITS, backtester, explainability, the study, methodology and results chapters
-- **Noy** — Alpaca account, live data, data quality, risk layer, execution, live loop, Co-Pilot, Replay, dashboard, demo, architecture chapter
-
-Frozen contracts are what let both work in parallel. Never break one to unblock yourself.
+The Jira 70/30 split with Noy — and the `Own` column in spec §9 — is a **formal academic record only**; `SOLO_BUILD_PLAN.md` is the real build order and one developer writes every line, so ignore task ownership entirely and never break a frozen contract to unblock yourself.

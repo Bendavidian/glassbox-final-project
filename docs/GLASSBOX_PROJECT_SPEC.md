@@ -2,7 +2,7 @@
 
 **Version:** 3.0 · **Status:** Approved scope, in execution
 **Window:** 15 Aug 2026 → 10 Oct 2026 (8 weeks, 4 sprints)
-**Team:** Ben (brain / research / methodology, ~70% of tasks) · Noy (live infrastructure / UI / ops, ~30% of tasks)
+**Team:** Ben (brain / research / methodology, ~100% of tasks)
 **Institution:** B.Sc. Computer Science, Bar-Ilan University — Final Year Project
 
 ---
@@ -263,12 +263,16 @@ class Forecast:
     symbol: str
     as_of: pd.Timestamp
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Attribution:
     """Exact decomposition. MUST satisfy:
-       sum(per_channel.values()) ≈ forecast.path.sum()  (atol=1e-5)"""
+       sum(per_channel.values()) ≈ forecast.path.sum()  (atol=1e-5)
+
+       per_lag is optional. The per-lag heatmap (GB-31) is cut from scope;
+       implementations return None. It is retained in the schema so the feature
+       can be added later without a contract change."""
     per_channel: dict[str, float]        # channel → contribution to Σ path
-    per_lag: np.ndarray                  # (L, C) contribution heatmap
+    per_lag: np.ndarray | None = None    # (L, C) contribution heatmap — optional
     per_frequency: dict[float, float] | None  # FITS only: period(days) → contrib
     gain_phase: dict[float, tuple[float, float]] | None  # FITS only
     forecast_total: float
@@ -293,6 +297,13 @@ class DecisionRecord:
     narrative: str
     config_hash: str       # ties the record to the exact config that made it
 ```
+
+**Note on `Attribution(kw_only=True)`.** A dataclass field carrying a default may not
+precede fields without one, so making `per_lag` optional in place requires either
+reordering the fields or constructing by keyword. `kw_only=True` (Python 3.10+) keeps
+the declared field order intact and costs only that `Attribution` is always built with
+named arguments — which is what a five-field record should do anyway. Recorded in
+`DECISIONS.md`, 2026-08-14.
 
 ### 4.3 The `Forecaster` protocol (`contracts/protocols.py`)
 
@@ -587,6 +598,20 @@ Full importable version: `glassbox_jira_tasks.csv` (Jira CSV import, 60 issues +
 
 **Distribution:** Ben 42 tasks (70%) · Noy 18 tasks (30%).
 
+**The `Own` column is a formal academic record only.** Execution follows
+`SOLO_BUILD_PLAN.md`: one developer writes every line. Ignore ownership when planning work.
+
+### Cut from scope
+
+Three tasks below are **cut**, per `SOLO_BUILD_PLAN.md` §2. Their rows are struck through
+rather than deleted, so a reader sees the decision instead of a gap.
+
+| ID | Reason for the cut |
+|---|---|
+| GB-14 | `NLinear` — `DLinear` alone satisfies the baseline requirement (2 SP saved) |
+| GB-31 | Per-lag attribution heatmap — per-channel attribution already proves exactness; the heatmap is presentation polish (3 SP saved). Consequence: `Attribution.per_lag` is optional, §4.2. |
+| GB-43 | Backcast/forecast supervision toggle — `B+F` is hardcoded per §5; the ablation is interesting, not essential (3 SP saved) |
+
 ### Epics
 
 | Key | Epic | Layer |
@@ -626,7 +651,7 @@ Full importable version: `glassbox_jira_tasks.csv` (Jira CSV import, 60 issues +
 | ID | Task | Epic | Own | SP | Done when |
 |---|---|---|---|---|---|
 | GB-13 | `DLinearForecaster` — trend/remainder decomposition + linear maps | E4 | B | 5 | Contract test passes; trains on one fold |
-| GB-14 | `NLinearForecaster` *(optional — cut first if behind)* | E4 | B | 2 | Contract test passes |
+| ~~GB-14~~ | ~~`NLinearForecaster`~~ · **CUT** — `DLinear` alone satisfies the baseline requirement | E4 | B | ~~2~~ | — |
 | GB-15 | `train.py` — loop, seeds, early stopping, checkpoints, scaler stats | E4 | B | 5 | Two runs with same seed give identical weights |
 | GB-16 | `predict.py` — batch + single-window inference | E4 | B | 2 | Matches `train.py` outputs on held-out data |
 | GB-17 | `walkforward.py` — fold generator with strict boundaries | E5 | B | 3 | No timestamp appears in two folds' train and test |
@@ -648,7 +673,7 @@ Full importable version: `glassbox_jira_tasks.csv` (Jira CSV import, 60 issues +
 | GB-28 | `rank.py` — cross-sectional top-K selection | E6 | B | 2 | Deterministic ordering; ties broken stably |
 | GB-29 | `DecisionRecord` persistence (JSONL) + config hashing | E6 | B | 3 | A record can be replayed into an identical decision |
 | GB-30 | `explain/channel.py` — exact per-channel attribution | E8 | B | 5 | `Σ contributions == forecast` within 1e-5 |
-| GB-31 | Per-lag attribution heatmap data | E8 | B | 3 | `(L, C)` matrix sums to the channel totals |
+| ~~GB-31~~ | ~~Per-lag attribution heatmap data~~ · **CUT** — presentation polish; per-channel attribution already proves exactness. `Attribution.per_lag` is optional (§4.2) | E8 | B | ~~3~~ | — |
 | GB-32 | `narrate.py` — attribution → readable prose | E8 | B | 3 | Three sample decisions render correctly |
 | GB-33 | Attribution exactness test across all models | E8 | B | 2 | Parameterised test green for every forecaster |
 | GB-34 | Dashboard skeleton — layout, positions, PnL | E9 | N | 5 | Live positions visible and refreshing |
@@ -665,7 +690,7 @@ Full importable version: `glassbox_jira_tasks.csv` (Jira CSV import, 60 issues +
 |---|---|---|---|---|---|
 | GB-41 | `fits.py` core — RIN, rFFT, LPF, complex linear, irFFT | E10 | B | 8 | Contract test passes |
 | GB-42 | **Amplitude scale fix `(L+H)/L` + sinusoid reconstruction test** | E10 | B | 2 | Known sinusoid reconstructed within 1e-4 |
-| GB-43 | Backcast + forecast supervision (`B+F`) toggle | E10 | B | 3 | Both modes train; loss curves logged |
+| ~~GB-43~~ | ~~Backcast + forecast supervision (`B+F`) toggle~~ · **CUT** — `B+F` hardcoded per §5; the ablation is not essential | E10 | B | ~~3~~ | — |
 | GB-44 | FITS integration + shared-weights-across-universe training | E10 | B | 3 | One model serves all 5 symbols |
 | GB-45 | `spectral.py` — per-frequency attribution, gain and phase extraction | E8 | B | 5 | Contributions sum to forecast within 1e-5 |
 | GB-46 | Learned frequency-response visualisation (`\|W\|` vs period) | E8 | B | 3 | Plot generated from a trained model |
