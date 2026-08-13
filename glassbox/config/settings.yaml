@@ -1,3 +1,66 @@
-# GlassBox Trader - the single source of truth for every runtime value (spec 5).
-# Populated in GB-2, together with the typed, fail-loud loader in config/loader.py.
-# No module may hardcode a value that belongs here.
+meta:
+  version: 3
+  seed: 1337
+
+universe: [AAPL, MSFT, NVDA, AMZN, GOOGL]
+
+data:
+  start: "2016-01-01"
+  cache_dir: "data_cache"
+  calendar: "NYSE"
+
+window:
+  input_len: 120        # L — bars the model sees (FITS prefers long look-backs)
+  horizon: 4            # H — days forecast ahead
+
+wavelet:
+  family: db4
+  levels: 3
+  rolling_window: 64    # trailing bars per causal decomposition
+  mode: symmetric
+
+fits:
+  cutoff_period_days: 5 # keep frequencies with period >= this; the ONE hyperparam
+  supervision: "B+F"    # "F" = forecast only, "B+F" = backcast + forecast
+  individual_weights: false   # false = one shared model across the universe
+
+channels:
+  C0_base:    [close, rsi14, vol_z, mom10, ma_dist20]
+  C2_hybrid:  [close, rsi14, vol_z, mom10, ma_dist20, wav_a1, wav_a2, wav_a3]
+  active: C0_base       # updated after the study picks a winner
+
+model:
+  active: dlinear       # persistence | dlinear | fits
+  epochs: 100
+  patience: 10
+  lr: 0.001
+  batch_size: 64
+
+signal:
+  min_trend: null       # calibrated on validation — never hardcoded
+  max_trend: null
+  min_up_points: 3
+  top_k: 2
+
+risk:
+  max_position_pct: 0.10
+  max_gross_exposure: 0.50
+  stop_loss_pct: 0.03
+  take_profit_pct: 0.06
+
+backtest:
+  fee_bps: 1.0
+  slippage_bps: 2.0
+
+walkforward:
+  train_months: 24
+  val_months: 3
+  test_months: 3
+  step_months: 3
+  max_folds: 16         # capped for the 8-week budget
+
+live:
+  poll_seconds: 60
+  mode: co_pilot        # auto | co_pilot
+  market_open_il: "16:30"
+  market_close_il: "23:00"
