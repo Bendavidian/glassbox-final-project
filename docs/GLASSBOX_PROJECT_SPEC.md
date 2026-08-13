@@ -645,7 +645,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 | GB-9 | `builder.py` — window assembly from channel config → `WindowBatch` | E3 | B | 5 | Shapes correct for C0 and C2; warm-up trimmed |
 | GB-10 | `test_no_lookahead.py` — perturb-future causality harness | E3 | B | 3 | Perturbing `t+1` leaves all values at `t` unchanged |
 | GB-11 | `PersistenceForecaster` + the `Forecaster` contract test | E4 | B | 3 | Contract test passes for persistence |
-| GB-12 | `README.md`, `ARCHITECTURE.md`, `PROGRESS.md`, `DECISIONS.md` | E1 | N | 2 | A newcomer can run the project from README alone |
+| GB-12 | `README.md`, `ARCHITECTURE.md`, `PROGRESS.md`, `DECISIONS.md`. The README must state that a clean install reproducing reported results uses `pip install -r requirements.lock`, not the unpinned upper bounds in `pyproject.toml` | E1 | N | 2 | A newcomer can run the project from README alone |
 
 ### Sprint 2 — Offline Vertical Slice · 29 Aug – 11 Sep → **GATE 1**
 

@@ -9,29 +9,32 @@ description = "An autonomous equities trading system that explains every decisio
 requires-python = ">=3.11"
 # readme = "README.md" is added in GB-12, when the file exists.
 
+# Lower bounds are the versions this project was developed and tested against.
+# A clean clone that must reproduce reported results installs requirements.lock
+# instead; see DECISIONS.md 2026-08-14 and GB-59.
 dependencies = [
-    "pandas",
-    "numpy",
-    "pyyaml",
-    "torch",
-    "yfinance",
-    "alpaca-py",
-    "PyWavelets",
-    "scipy",
-    "streamlit",
-    "pandas-market-calendars",
-    "python-dotenv",
-    "pyarrow",
+    "pandas>=3.0.5",
+    "numpy>=2.5.2",
+    "pyyaml>=6.0.3",
+    "torch>=2.13.0",
+    "yfinance>=1.6.0",
+    "alpaca-py>=0.44.0",
+    "PyWavelets>=1.9.0",
+    "scipy>=1.18.0",
+    "streamlit>=1.61.1",
+    "pandas-market-calendars>=5.4.0",
+    "python-dotenv>=1.2.2",
+    "pyarrow>=24.0.0",
 ]
 
 [project.optional-dependencies]
 # One command sets up a working local environment: pip install -e ".[dev]"
 dev = [
-    "pytest",
-    "hypothesis",
-    "import-linter",
-    "ruff",
-    "black",
+    "pytest>=9.1.1",
+    "hypothesis>=6.165.5",
+    "import-linter>=2.13",
+    "ruff>=0.16.3",
+    "black>=26.5.1",
 ]
 
 [tool.setuptools.packages.find]

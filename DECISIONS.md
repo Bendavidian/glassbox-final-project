@@ -7,6 +7,30 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — Dependencies pinned to lower bounds; `requirements.lock` committed
+
+**Decision.** Every runtime and dev dependency in `pyproject.toml` carries a `>=` lower
+bound set to the version resolved in the development environment (pandas 3.0.5,
+numpy 2.5.2, torch 2.13.0, and so on). `requirements.lock` — the full 90-package
+`pip freeze` of that environment — is committed alongside it. A clean clone that must
+reproduce reported results installs the lockfile; `pip install -e ".[dev]"` remains the
+day-to-day path.
+
+**Reasoning.** The environment resolved to pandas 3.0.5, a major release with breaking
+changes, and to numpy 2.5.2 and torch 2.13.0. Unversioned dependencies make GB-59's
+acceptance criterion — a clean clone reproduces the reported results — unachievable,
+and the failure would surface in October during the report week rather than now. Lower
+bounds document what the code was written against; the lockfile is what actually
+reproduces. Both are needed: bounds alone drift, a lock alone hides the intent.
+
+**Consequence.** GB-59 verifies the clean clone against `requirements.lock`, and GB-12's
+README must point a newcomer at it. The lockfile is regenerated whenever a dependency is
+added or deliberately upgraded, and that regeneration is itself an entry in this file.
+`pip freeze --exclude-editable` is used so the lockfile carries no absolute path to this
+machine's checkout.
+
+---
+
 ## 2026-08-14 — GB-1: the declared dependency set
 
 **Decision.** `pyproject.toml` declares twelve runtime dependencies — pandas, numpy,
