@@ -1,0 +1,126 @@
+>>>>>>>Start Training>>>>>>>>>>>>>>>>>>>>>>>>>>
+epoch: 0
+Epoch: 1 cost time: 1.0630364418029785
+Epoch: 1, Steps: 226 | Train Loss: 0.0032766
+Validation loss decreased (inf --> 0.003277).  Saving model ...
+Updating learning rate to 0.005
+epoch: 1
+Epoch: 2 cost time: 1.0779120922088623
+Epoch: 2, Steps: 226 | Train Loss: 0.0021375
+Validation loss decreased (0.003277 --> 0.002137).  Saving model ...
+Updating learning rate to 0.0025
+epoch: 2
+Epoch: 3 cost time: 1.1440558433532715
+Epoch: 3, Steps: 226 | Train Loss: 0.0020747
+Validation loss decreased (0.002137 --> 0.002075).  Saving model ...
+Updating learning rate to 0.00125
+epoch: 3
+Epoch: 4 cost time: 1.1013548374176025
+Epoch: 4, Steps: 226 | Train Loss: 0.0020408
+Validation loss decreased (0.002075 --> 0.002041).  Saving model ...
+Updating learning rate to 0.000625
+epoch: 4
+Epoch: 5 cost time: 1.2123808860778809
+Epoch: 5, Steps: 226 | Train Loss: 0.0020214
+Validation loss decreased (0.002041 --> 0.002021).  Saving model ...
+Updating learning rate to 0.0003125
+epoch: 5
+Epoch: 6 cost time: 1.0266339778900146
+Epoch: 6, Steps: 226 | Train Loss: 0.0020132
+Validation loss decreased (0.002021 --> 0.002013).  Saving model ...
+Updating learning rate to 0.00015625
+epoch: 6
+Epoch: 7 cost time: 1.101414442062378
+Epoch: 7, Steps: 226 | Train Loss: 0.0020075
+Validation loss decreased (0.002013 --> 0.002008).  Saving model ...
+Updating learning rate to 7.8125e-05
+epoch: 7
+Epoch: 8 cost time: 1.1373255252838135
+Epoch: 8, Steps: 226 | Train Loss: 0.0020038
+Validation loss decreased (0.002008 --> 0.002004).  Saving model ...
+Updating learning rate to 3.90625e-05
+epoch: 8
+Epoch: 9 cost time: 1.1317839622497559
+Epoch: 9, Steps: 226 | Train Loss: 0.0020019
+Validation loss decreased (0.002004 --> 0.002002).  Saving model ...
+Updating learning rate to 1.953125e-05
+epoch: 9
+Epoch: 10 cost time: 1.1182491779327393
+Epoch: 10, Steps: 226 | Train Loss: 0.0020009
+Validation loss decreased (0.002002 --> 0.002001).  Saving model ...
+Updating learning rate to 9.765625e-06
+loss: 0.0020008985955959424
+>>>>>>>End Training>>>>>>>>>>>>>>>>>>>>>>>>>>
+>>>>>>>Start Validating>>>>>>>>>>>>>>>>>>>>>>>>>>
+ArgConfidence: 11
+ArgLow       : 0.25
+ArgUp        : 9
+>>>>>>>End Validatin>>>>>>>>>>>>>>>>>>>>>>>>>>
+>>>>>>>Start Training Validate>>>>>>>>>>>>>>>>>>>>>>>>>>
+raz
+epoch: 0
+Epoch: 1 cost time: 1.7315540313720703
+Epoch: 1, Steps: 519 | Train Loss: 0.0229213
+Validation loss decreased (inf --> 0.022921).  Saving model ...
+Updating learning rate to 0.005
+epoch: 1
+Epoch: 2 cost time: 1.7652201652526855
+Epoch: 2, Steps: 519 | Train Loss: 0.0202242
+Validation loss decreased (0.022921 --> 0.020224).  Saving model ...
+Updating learning rate to 0.0025
+epoch: 2
+Epoch: 3 cost time: 1.7930691242218018
+Epoch: 3, Steps: 519 | Train Loss: 0.0230634
+EarlyStopping counter: 1 out of 3
+Updating learning rate to 0.00125
+epoch: 3
+Epoch: 4 cost time: 1.680746078491211
+Epoch: 4, Steps: 519 | Train Loss: 0.0222850
+EarlyStopping counter: 2 out of 3
+Updating learning rate to 0.000625
+epoch: 4
+Epoch: 5 cost time: 1.7280282974243164
+Epoch: 5, Steps: 519 | Train Loss: 0.0172101
+Validation loss decreased (0.020224 --> 0.017210).  Saving model ...
+Updating learning rate to 0.0003125
+epoch: 5
+Epoch: 6 cost time: 1.8233728408813477
+Epoch: 6, Steps: 519 | Train Loss: 0.0158636
+Validation loss decreased (0.017210 --> 0.015864).  Saving model ...
+Updating learning rate to 0.00015625
+epoch: 6
+Epoch: 7 cost time: 1.7588474750518799
+Epoch: 7, Steps: 519 | Train Loss: 0.0154951
+Validation loss decreased (0.015864 --> 0.015495).  Saving model ...
+Updating learning rate to 7.8125e-05
+epoch: 7
+Epoch: 8 cost time: 1.762483835220337
+Epoch: 8, Steps: 519 | Train Loss: 0.0153092
+Validation loss decreased (0.015495 --> 0.015309).  Saving model ...
+Updating learning rate to 3.90625e-05
+epoch: 8
+Epoch: 9 cost time: 1.7350122928619385
+Epoch: 9, Steps: 519 | Train Loss: 0.0152119
+Validation loss decreased (0.015309 --> 0.015212).  Saving model ...
+Updating learning rate to 1.953125e-05
+epoch: 9
+Epoch: 10 cost time: 1.7333810329437256
+Epoch: 10, Steps: 519 | Train Loss: 0.0151614
+Validation loss decreased (0.015212 --> 0.015161).  Saving model ...
+Updating learning rate to 9.765625e-06
+loss: 0.015161388656972353
+>>>>>>>End Training Validate>>>>>>>>>>>>>>>>>>>>>>>>>>
+>>>>>>>Start Testing>>>>>>>>>>>>>>>>>>>>>>>>>>
+mse:0.028794491663575172, mae:0.12442348152399063
+Signal accuracy: 0.55
+False signals  : 33
+Hits Buy       : 58
+>>>>>>>End Testing>>>>>>>>>>>>>>>>>>>>>>>>>>
+>>>>>>>Backtesting>>>>>>>>>>>>>>>>>>>>>>>>>>
+Results for LFC:
+Total Return: 23.67%
+Annualized Return: 5.21%
+Annualized Sharpe Ratio: 0.75
+Sortino Ratio: 0.62
+Max Drawdown: 9.63%
+Calmar Ratio: 0.54
