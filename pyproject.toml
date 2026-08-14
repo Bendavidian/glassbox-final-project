@@ -59,5 +59,45 @@ extend-exclude = '''
 testpaths = ["tests"]
 norecursedirs = ["reference", "data_cache", "checkpoints", ".git"]
 
-# GB-3 adds the import-linter layer contracts here, rooted at the glassbox package only,
-# so that reference/ is outside the contract by construction.
+# Rooted at the glassbox package, so reference/ is outside the contract by construction.
+[tool.importlinter]
+root_package = "glassbox"
+
+# Spec 3.1: data flows strictly upward; no layer imports from a layer above it.
+# Listed highest first, which is import-linter's ordering.
+#
+# backtest and experiments sit above the whole live path, not inside it. Spec 3.1 calls
+# them a cross-cutting harness rather than a layer, and the constraint that matters is
+# that the harness is never imported by the live path. Placing them on top makes that
+# structural: nothing below can reach up to them, while they remain free to drive
+# models, features and data, which a walk-forward run must do.
+[[tool.importlinter.contracts]]
+name = "Layers: data flows strictly upward"
+type = "layers"
+layers = [
+    "glassbox.experiments",
+    "glassbox.backtest",
+    "glassbox.dashboard",
+    "glassbox.explain",
+    "glassbox.engine",
+    "glassbox.model",
+    "glassbox.features",
+    "glassbox.data",
+    "glassbox.contracts",
+    "glassbox.config",
+]
+
+# live_loop.py and replay.py are top-level modules, so the layers contract above does
+# not constrain them. This states the harness rule for them directly. smoke_offline.py
+# is deliberately absent: it is the harness's own entry point and must import backtest.
+[[tool.importlinter.contracts]]
+name = "The live path never imports the validation harness"
+type = "forbidden"
+source_modules = [
+    "glassbox.live_loop",
+    "glassbox.replay",
+]
+forbidden_modules = [
+    "glassbox.backtest",
+    "glassbox.experiments",
+]

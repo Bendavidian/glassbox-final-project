@@ -7,6 +7,30 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — GB-3: the validation harness sits above the live path in the layer contract
+
+**Decision.** The import-linter layers contract, highest first, is: `experiments`,
+`backtest`, `dashboard`, `explain`, `engine`, `model`, `features`, `data`, `contracts`,
+`config`. A second `forbidden` contract stops `live_loop` and `replay` — top-level
+modules the layers contract does not reach — from importing `backtest` or `experiments`.
+`smoke_offline` is deliberately exempt: it is the harness's own entry point.
+
+**Reasoning.** Spec §3.1 draws the harness as cross-cutting rather than as a layer, so
+it has no natural rung on the ladder. What the spec actually requires is asymmetric: the
+harness must be free to drive models, features and data — a walk-forward run does
+exactly that — while the live path must never reach into it. Placing the harness at the
+top gets both from one contract, because a layers contract already forbids lower layers
+from importing higher ones. The alternative, putting it at the bottom, would have
+inverted the rule and let the live loop import the backtester.
+
+**Consequence.** A backtest module may import anything below it. Nothing in the live
+path can import a backtest or experiments module, and the tests prove it: a deliberate
+`live_loop -> backtest.engine` import breaks the forbidden contract, and a deliberate
+`data -> features` import breaks the layers contract. `reference/` is outside both
+contracts by construction, since `root_package = "glassbox"`.
+
+---
+
 ## 2026-08-14 — Dependencies pinned to lower bounds; `requirements.lock` committed
 
 **Decision.** Every runtime and dev dependency in `pyproject.toml` carries a `>=` lower

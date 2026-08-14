@@ -8,7 +8,7 @@ Append one line per completed task. Newest at the bottom of each sprint.
 ## Current state
 
 **Sprint:** 1 — Foundations (15–28 Aug 2026)
-**Next task:** GB-3
+**Next task:** GB-4
 **Last gate passed:** none
 **Blockers:** none
 
@@ -26,7 +26,7 @@ Append one line per completed task. Newest at the bottom of each sprint.
 |---|---|---|---|
 | GB-1 | 14 Aug 2026 | Ben | **Complete.** Package tree per spec §3.4 as docstring-only stubs (incl. `smoke_offline.py`), `pyproject.toml` (deps + dev extras + ruff/black/pytest config), `tests/` mirror with conftest and a scaffold test that fails on any module not in §3.4, `.gitignore`, Windows CI on Python 3.11. `reference/` excluded from packaging, lint and collection. ruff/black/pytest green: 43 tests. |
 | GB-2 | 14 Aug 2026 | Ben | **Complete.** `settings.yaml` verbatim from spec §5; `config/loader.py` parses it into 13 frozen dataclasses, validates every field with `ValueError` naming the exact path, exposes `load_config`, `config_hash` (stable SHA-256) and lazy `alpaca_credentials` from `.env`. 39 config tests; suite at 82. |
-| GB-3 | | Ben | |
+| GB-3 | 14 Aug 2026 | Ben | **Complete.** `contracts/schemas.py` — five frozen schemas from spec §4.2 with `__post_init__` shape validation; `contracts/protocols.py` — runtime-checkable `Forecaster`; import-linter layers + forbidden contracts in `pyproject.toml` with the harness above the live path; `tests/contracts/` proves both contracts have teeth. Suite at 108. |
 | GB-4 | | Ben | |
 | GB-5 | | Noy | |
 | GB-6 | | Noy | |
