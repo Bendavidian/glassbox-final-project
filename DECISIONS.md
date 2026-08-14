@@ -7,6 +7,31 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — Python floor raised to 3.12; CI installs from `requirements.lock`
+
+**Decision.** `requires-python` becomes `>=3.12`, CI pins `python-version: "3.12"`, and
+ruff and black target `py312`. CI installs `pip install -r requirements.lock` followed by
+`pip install -e . --no-deps` instead of resolving from `pyproject.toml`. `CLAUDE.md` §4
+and spec §12 now say Python 3.12+.
+
+**Reasoning.** CI went red the moment dependency lower bounds were added. `numpy>=2.5.2`
+and `scipy>=1.18.0` — the versions this project is developed against — both declare
+`requires_python >= 3.12`, so pip cannot satisfy them on the 3.11 floor the workflow
+pinned, and the job died in the install step before reaching torch. The 3.11 floor was
+never real: it was a claim in `pyproject.toml` that the dependency set could not honour,
+and CI was the only thing testing it. Raising the floor makes the metadata true.
+Installing from the lockfile closes the second half of the gap — CI and a developer
+machine now install the identical set, so GB-59's clean-clone audit is exercised on every
+push rather than being discovered in the report week.
+
+**Consequence.** Python 3.11 is no longer supported; the project requires 3.12+, which
+is what the development machine already runs. A dependency change now means regenerating
+`requirements.lock`, or CI installs the old set and the failure appears as a confusing
+test error rather than a resolution error. The lockfile is frozen on 3.12, so the CI
+Python version and the lockfile must be changed together.
+
+---
+
 ## 2026-08-14 — GB-3: the validation harness sits above the live path in the layer contract
 
 **Decision.** The import-linter layers contract, highest first, is: `experiments`,

@@ -21,16 +21,21 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          # Pinned to the lowest version we support, so CI fails on anything that
-          # silently requires 3.12. Attribution's kw_only=True already needs 3.10+.
-          python-version: "3.11"
+          # Matches the interpreter requirements.lock was frozen on, so CI and a
+          # developer machine install an identical set. Attribution's kw_only=True
+          # needs 3.10+; numpy and scipy in the lockfile need 3.12+.
+          python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: requirements.lock
 
+      # Install the locked set, then the package itself without re-resolving its
+      # dependencies. This is the same install GB-59 audits from a clean clone, so
+      # every push exercises it rather than leaving it to be discovered in October.
       - name: Install project and dev tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -r requirements.lock
+          python -m pip install -e . --no-deps
 
       # reference/ is excluded from both tools in pyproject.toml. It is read-only
       # material and is never part of the build.

@@ -25,8 +25,8 @@ Append one line per completed task. Newest at the bottom of each sprint.
 | Task | Date | Owner | What was built |
 |---|---|---|---|
 | GB-1 | 14 Aug 2026 | Ben | **Complete.** Package tree per spec §3.4 as docstring-only stubs (incl. `smoke_offline.py`), `pyproject.toml` (deps + dev extras + ruff/black/pytest config), `tests/` mirror with conftest and a scaffold test that fails on any module not in §3.4, `.gitignore`, Windows CI on Python 3.11. `reference/` excluded from packaging, lint and collection. ruff/black/pytest green: 43 tests. |
-| GB-2 | 14 Aug 2026 | Ben | **Complete.** `settings.yaml` verbatim from spec §5; `config/loader.py` parses it into 13 frozen dataclasses, validates every field with `ValueError` naming the exact path, exposes `load_config`, `config_hash` (stable SHA-256) and lazy `alpaca_credentials` from `.env`. 39 config tests; suite at 82. |
-| GB-3 | 14 Aug 2026 | Ben | **Complete.** `contracts/schemas.py` — five frozen schemas from spec §4.2 with `__post_init__` shape validation; `contracts/protocols.py` — runtime-checkable `Forecaster`; import-linter layers + forbidden contracts in `pyproject.toml` with the harness above the live path; `tests/contracts/` proves both contracts have teeth. Suite at 108. |
+| GB-2 | 14 Aug 2026 | Ben | **PENDING — CI red.** Code and local checks green; acceptance requires green CI. `settings.yaml` verbatim from spec §5; `config/loader.py` parses it into 13 frozen dataclasses, validates every field with `ValueError` naming the exact path, exposes `load_config`, `config_hash` (stable SHA-256) and lazy `alpaca_credentials` from `.env`. 39 config tests; suite at 82. |
+| GB-3 | 14 Aug 2026 | Ben | **PENDING — CI red.** Code and local checks green; acceptance requires green CI. `contracts/schemas.py` — five frozen schemas from spec §4.2 with `__post_init__` shape validation; `contracts/protocols.py` — runtime-checkable `Forecaster`; import-linter layers + forbidden contracts in `pyproject.toml` with the harness above the live path; `tests/contracts/` proves both contracts have teeth. Suite at 108. |
 | GB-4 | | Ben | |
 | GB-5 | | Noy | |
 | GB-6 | | Noy | |
@@ -64,3 +64,11 @@ _not started_
 ## Open questions
 
 _Claude Code: write blocking questions here rather than guessing._
+
+**14 Aug 2026 — CI red on GB-2 (5a1b595) and GB-3 (a31a349); fix in flight.** Both runs
+died at ~42s, before the heavy install. The dependency lower bounds captured in GB-1 came
+from a Python 3.12 environment: `numpy>=2.5.2` and `scipy>=1.18.0` both declare
+`requires_python >= 3.12`, so they cannot be resolved on the 3.11 floor the workflow
+pinned. The 3.11 floor was never installable. Fix: move the project to Python 3.12 and
+have CI install from `requirements.lock`, so CI and local resolve identically. GB-2 and
+GB-3 stay pending until CI is green.

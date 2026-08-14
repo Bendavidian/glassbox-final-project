@@ -46,7 +46,7 @@ A task is complete only when **all** of these hold:
 
 ## 4. Conventions
 
-- Python 3.11+, type hints everywhere, `ruff` + `black` defaults
+- Python 3.12+, type hints everywhere, `ruff` + `black` defaults
 - Tests in `tests/`, mirroring the package structure
 - One module per commit where possible; small commits
 - Docstrings state the contract, not the implementation

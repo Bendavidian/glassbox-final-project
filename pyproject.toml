@@ -6,7 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "glassbox-trader"
 version = "0.1.0"
 description = "An autonomous equities trading system that explains every decision with exact attribution"
-requires-python = ">=3.11"
+# 3.12, not 3.11: numpy 2.5.2 and scipy 1.18.0 both declare requires_python >= 3.12,
+# so the pinned dependency set below has never been installable on 3.11.
+# See DECISIONS.md, 2026-08-14.
+requires-python = ">=3.12"
 # readme = "README.md" is added in GB-12, when the file exists.
 
 # Lower bounds are the versions this project was developed and tested against.
@@ -44,11 +47,11 @@ include = ["glassbox*"]
 exclude = ["reference*", "tests*", "docs*", "prompts*"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 extend-exclude = ["reference"]
 
 [tool.black]
-target-version = ["py311"]
+target-version = ["py312"]
 extend-exclude = '''
 /(
     reference

@@ -747,7 +747,7 @@ FITS uses the same architecture for anomaly detection: instead of forecasting fo
 
 ## 12. Coding Conventions
 
-- Python 3.11+, `ruff` + `black` defaults, type hints everywhere, `pytest`
+- Python 3.12+, `ruff` + `black` defaults, type hints everywhere, `pytest`
 - Every feature function is **pure**: DataFrame in → DataFrame out, no hidden state, no I/O
 - No config values hardcoded in modules — always via `config/loader.py`
 - Any change to feature or model code requires the full causality and contract suites to pass
