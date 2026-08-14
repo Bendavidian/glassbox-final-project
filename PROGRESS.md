@@ -7,9 +7,10 @@ Append one line per completed task. Newest at the bottom of each sprint.
 
 ## Current state
 
-**Sprint:** 1 — Foundations (15–28 Aug 2026)
-**Next task:** GB-12 (last of Sprint 1)
-**Last gate passed:** none
+**Sprint:** 1 — Foundations · **complete, 14 Aug 2026** (12/12, day 6 of 14)
+**Next task:** GB-17 → GB-18 (Sprint 2; see `SOLO_BUILD_PLAN.md` §7 for why the harness
+chain goes first)
+**Last gate passed:** none — GATE 1 target revised to ~22 Aug, commitment 11 Sep
 **Blockers:** none
 
 ---
@@ -35,7 +36,91 @@ Append one line per completed task. Newest at the bottom of each sprint.
 | GB-9 | 14 Aug 2026 | Ben | **Complete.** `features/builder.py` — the keystone. `build_feature_frame` (provenance-gated, warm-up trimmed), `fit_stats` (external, records its fitted range), `build_windows` (one slicing path; `as_of` filters the same positions the batch path uses). Contract additions: `ChannelStats` and `WindowBatch.source` in spec §4.2. `min_history_bars` = 352 for C0, derived from per-channel warm-ups and verified byte-identical against full history. 30 tests; suite at 240. |
 | GB-10 | 14 Aug 2026 | Ben | **Complete.** `tests/causality.py` — reusable `assert_causal` (per-timestamp) and `assert_fit_isolated` (fitting), each running two perturbation modes at 25/50/75% splits. All four indicators, `build_feature_frame` and `build_windows` pass on real AAPL bars; a centred rolling mean, tomorrow's close and a whole-frame fitter are all rejected. `scale` alone is blind to a leaked *direction* and `shuffle` alone to a leaked *mean*, both measured. 16 tests; suite at 256. |
 | GB-11 | 14 Aug 2026 | Ben | **Complete.** `model/persistence.py` — `PersistenceForecaster`, the zero-return baseline every result is reported against; JSON checkpoint, versioned. `tests/model/test_forecaster_contract.py` — spec §4.4's six properties plus a seventh, parameterised over a registry so GB-13/GB-41 plug in by appending one line (verified: 27 tests → 35). Seven deliberately broken forecasters prove every property can fail, and a confinement test proves each break is narrow. Contract additions: `FitProvenance` (§4.2) and `Forecaster.fitted` (§4.3). 43 tests; suite at 299. |
-| GB-12 | | Noy | |
+| GB-12 | 14 Aug 2026 | Ben | **Complete.** `README.md` — clone to running with no prior context: prerequisites, venv activation spelled out per shell, install from `requirements.lock`, credential setup, the runnable snippets, the test suites that carry the correctness argument, the repository map, and a troubleshooting table. `ARCHITECTURE.md` — layer stack, responsibilities, frozen contracts, the keystone, causality, explainability, validation; cross-references the spec rather than duplicating it. `readme` re-enabled in `pyproject.toml`. |
+
+### Sprint 1 review
+
+**Closed 14 Aug 2026 — day 6 of a 14-day budget.** 12 of 12 tasks complete. `pytest` 299
+green, `ruff`/`black` clean, CI green, both import-linter contracts kept.
+
+#### Contract and spec changes, one line each
+
+Every one is recorded in full in `DECISIONS.md`.
+
+| Ruling | Change |
+|---|---|
+| GB-0b | `Attribution.per_lag` optional and the dataclass `kw_only`, so GB-31's cut costs no contract change later |
+| GB-0b | GB-14/31/43 struck through in spec §9 rather than deleted, so a reader sees the decision instead of a gap |
+| GB-0b | `SOLO_BUILD_PLAN.md` governs execution; the Jira 70/30 split is a formal record only (CLAUDE.md §6) |
+| GB-0b | Code freeze corrected to Sat 3 Oct after checking every weekday label against the real 2026 calendar |
+| GB-1 | `smoke_offline.py` added to spec §3.4; `scripts/` declared outside the package |
+| GB-2 | Python floor raised to 3.12 — the pinned numpy and scipy were never installable on 3.11 |
+| GB-7 | Alpaca pinned to `feed=SIP`, `adjustment=ALL`; `live.py` does not cache |
+| GB-8 | Indicator periods are definitions, not config — a `vol_z` with a configurable window is a different indicator |
+| GB-9 | `WindowBatch.source` and `ChannelStats` added to spec §4.2; provenance travels as a column, not `.attrs` |
+| GB-9 | Features computed once on the full series and sliced per fold; statistics fitted per fold |
+| GB-9 | `min_history_bars(cfg)` derived from per-channel warm-ups; spec §9 GB-26 must request it |
+| GB-9 | The canonical channel renamed `close` → `close_logret` — a channel named for a price that holds a return is a defect in the explanation layer |
+| GB-10 | `tests/causality.py` is shared test infrastructure in `tests/`, with the promotion trigger named |
+| GB-11 | `FitProvenance` added to spec §4.2 and `Forecaster.fitted` to §4.3; §4.4 gains a seventh property |
+| GB-11 | Spec §4.4 records that properties 5 and 6 presuppose property 2, and the test defers rather than triple-failing |
+| Security | `git add -A` banned in CLAUDE.md §3 after a real key reached a local commit; `tests/test_no_secrets.py` enforces it |
+| Scope | The Regime Guard returns to consideration at GATE 2, and only if that gate is green |
+
+#### The four findings that were the sprint's real output
+
+The code was mostly specified in advance. These were not, and each changes what a later
+task must do.
+
+**1. Alpaca's default `RAW` adjustment silently disagrees with yfinance by a split
+factor.** Across AAPL's 2020 4:1 split, `RAW` closes 499.75 where the adjusted series
+closes 121.08. Every dtype and schema assertion passes; only the prices are wrong, by 4×.
+Discovered by comparing the two sources field by field rather than by trusting a matching
+schema. Now pinned to `adjustment=ALL`, with the measured tolerance table in the module
+docstring. The related trap: Alpaca stamps bars at 04:00 UTC and yfinance at 00:00, so a
+naive join of the same trading day returns zero rows while every assertion passes.
+
+**2. The 352-bar parity floor.** A live window built from a 197-bar tail — the window
+length plus the point where RSI stops visibly distorting — differs from the training
+window at the same timestamp by 4.261e-03, permanently and invisibly. 352 bars is where
+Wilder's seed decays below float32 resolution and the difference becomes exactly zero
+(197 → 4.261e-03, 250 → 7.713e-05, 300 → 5.960e-07, 352 → 0.000e+00). GB-27's parity test
+could not have found this: it compares builder outputs on one frame, not on histories of
+different length. The number is now derived from per-channel declared warm-ups, so GB-47's
+wavelets update it without an edit.
+
+**3. A multiplicative perturbation is blind to a leaked direction.** `sign(1.5·x) ==
+sign(x)`, exactly — so a function leaking tomorrow's direction passes the perturb-the-
+future causality test specified for GB-10 with every value bit-identical. Direction
+accuracy is one of the two headline metrics in spec §1.4, which makes it the most
+expensive leak the project could ship. Demonstrated with a leaky function that passes
+under `scale` and fails under `shuffle`. The blindness runs both ways: a permutation
+cannot move a full-sample mean (measured: `scale` moves it 4.4e+00 relative, `shuffle`
+1.2e-15), so neither mode subsumes the other and both run by default.
+
+**4. For a model, "the future" is later windows, not later lags.** Every lag in a window is
+at or before that window's own timestamp by construction, so the causality property spec
+§4.4 states literally is not the one that bites. What remains is a statistic computed
+across a time-ordered batch — instance normalisation implemented as *batch* normalisation,
+which pulls later windows into earlier predictions. It is a live risk for FITS's RIN stage
+in GB-41, and no single-window check can find it, because a batch of one centres to zero.
+Now property 6, asserted with GB-10's harness.
+
+#### Still open
+
+- **`smoke_offline`, `live_loop` and the dashboard are stubs.** README says so at each
+  command. `python -m glassbox.smoke_offline` exits 0 silently today; GB-24 fills it.
+- **GB-26 carries two standing requirements** it must satisfy: a named, tested
+  `drop_incomplete_bar`, and a live fetch of at least `min_history_bars(cfg)` bars.
+- **GB-47 must declare `wav_a1..a3: 64`** in `builder.PARITY_WARMUP`. `C2_hybrid` raises
+  until it does, rather than silently assembling `C0`.
+- **GB-57 must record the 2018-05-02/03 vendor volume event** in the data-quality
+  appendix: yfinance and Alpaca disagree materially on those two days for all five symbols
+  at once, visible in `vol_z` and in no other channel.
+- **GB-15 may need `stats` on `FitProvenance`.** If a checkpoint cannot link a model to
+  the statistics it was normalised with, that is the additive move. The trigger has not
+  fired.
+- **No blocking questions.**
 
 ## Sprint 2 — Offline Vertical Slice · 29 Aug – 11 Sep 2026 → GATE 1
 
@@ -55,9 +140,9 @@ _not started_
 
 | Gate | Date | Result | Notes |
 |---|---|---|---|
-| GATE 1 | 11 Sep 2026 | pending | |
-| GATE 2 | 25 Sep 2026 | pending | |
-| GATE 3 | 10 Oct 2026 | pending | |
+| GATE 1 | ~22 Aug (commitment 11 Sep) | pending | Sprint 1 closed on day 6 of 14 |
+| GATE 2 | ~1–3 Sep (commitment 25 Sep) | pending | Needs 2–3 real market sessions; see `SOLO_BUILD_PLAN.md` §4.1 |
+| GATE 3 | 10 Oct 2026 | pending | **Unchanged.** The submission date does not move. |
 
 ---
 

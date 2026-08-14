@@ -10,7 +10,7 @@ description = "An autonomous equities trading system that explains every decisio
 # so the pinned dependency set below has never been installable on 3.11.
 # See DECISIONS.md, 2026-08-14.
 requires-python = ">=3.12"
-# readme = "README.md" is added in GB-12, when the file exists.
+readme = "README.md"
 
 # Lower bounds are the versions this project was developed and tested against.
 # A clean clone that must reproduce reported results installs requirements.lock

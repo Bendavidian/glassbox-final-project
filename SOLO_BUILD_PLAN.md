@@ -42,148 +42,204 @@ Assume an effective capacity of **110–120 points**. Everything below is scoped
 
 ## 3. Three rules that protect the schedule
 
-**Never work ahead of a gate.** If Gate 1 is red on 11 September, Sprint 3 does not
-start. Fix or cut. The gate is what converts "I am behind" into a decision rather
-than a slow drift into a failed submission.
+**Never work ahead of a gate.** If Gate 1 is red, Sprint 3 does not start. Fix or cut.
+The gate is what converts "I am behind" into a decision rather than a slow drift into a
+failed submission.
 
 **One task, one session, one commit.** Do not batch. A session that has run for two
 hours has drifted from `CLAUDE.md` and will start inventing.
 
-**Friday is a light day.** Reserve it for reading your own diffs, fixing what the
-tests missed, and updating `PROGRESS.md`. The exception is a sprint's final day: a
-gate must land on the last day of its sprint, so 11 Sep, 25 Sep and the tasks
-immediately preceding them are build days.
+**Running ahead is buffer, not a new deadline.** Sprint 1 closed on day 6 of a 14-day
+budget. That does not move the submission date; it moves the *risk*. Spend the surplus
+on the two things that cannot be compressed later — live market sessions and review
+bandwidth (§4) — not on starting Sprint 2 tasks in a hurry.
 
 ---
 
-## 4. Sprint 1 — Foundations · 15–28 August
+## 4. Two constraints that do not compress
 
-**Goal:** the data and feature layers exist, are causally correct, and are proven so
-by tests. Nothing forecasts yet.
+Everything else in this plan is elastic. These two are not, and both bite late, which is
+why they are stated before the sequences rather than after.
 
-| Day | Date | Task | SP | What lands |
-|---|---|---|---|---|
-| 1 | Sat 15 Aug | GB-1 | 2 | Repo scaffold, tooling, CI green |
-| 2 | Sun 16 Aug | GB-2 | 2 | `settings.yaml` + typed loader, fails loud |
-| 3 | Mon 17 Aug | GB-3 | 3 | Frozen schemas, `Forecaster` protocol, layer test |
-| 4 | Tue 18 Aug | GB-4 | 3 | Historical loader + parquet cache |
-| 5 | Wed 19 Aug | GB-5 | 2 | Data quality report |
-| 6 | Thu 20 Aug | GB-6 | 2 | Alpaca paper account, secrets handling |
-| 7 | Fri 21 Aug | — | — | **Review day.** Read every diff so far. |
-| 8 | Sat 22 Aug | GB-7 | 3 | Live data client, schema identical to historical |
-| 9 | Sun 23 Aug | GB-8 | 3 | Four indicators, trailing windows only |
-| 10–12 | Mon–Wed 24–26 Aug | **GB-9** | 5 | **The builder.** The most important module. |
-| 13 | Thu 27 Aug | GB-10 | 3 | Causality harness, proven to have teeth |
-| 14 | Fri 28 Aug | GB-11, GB-12 | 5 | Persistence + contract test, README |
+### 4.1 Live market sessions
 
-**Sprint 1 is done when:** `pytest` is green, CI is green, the causality harness
-rejects a deliberately leaky function, and the contract test passes for
-`PersistenceForecaster`.
+`GB-22` (first paper order) and `GB-26` (unattended live loop) cannot be tested against
+anything but a real session. The US market is open **16:30–23:00 Israel time, weekdays
+only**, and `GATE 2` cannot be called on a single successful run: it needs **at least two
+or three separate sessions**, because the failures that matter — a partial fill, a
+reconnect, an in-progress bar arriving mid-cycle — do not all appear on the first evening.
 
-> **GB-9 gets three days on purpose.** Every module downstream inherits its
-> correctness, and its contract is expensive to change once the model layer depends
-> on it. If it slips, take a fourth day from GB-12 rather than rushing it.
+Consequences for scheduling:
+
+- **Land `GB-22` and `GB-26` early in a week, never on a Friday.** A Friday landing means
+  the first real test is the following Monday and three sessions become a nine-day tail.
+- A session is an evening of *your* time, not the agent's. Two hours from 16:30, at the
+  desk, watching.
+- Sprint 3 needs at least one full working week with market sessions in it. Compressing
+  Sprint 3 below that does not buy time, it just moves `GATE 2` past the sessions that
+  would have validated it.
+
+### 4.2 Review bandwidth
+
+The quality mechanism in this project is not the test suite. It is that **every diff is
+read, line by line, by one person** — which is also the mechanism that caught the
+credential in `.env.example` after the suite had gone green.
+
+That mechanism has a hard ceiling: **three tasks per working session, maximum.** Past
+three, diffs get skimmed, and a skimmed diff is worse than an unreviewed one because it
+carries the confidence of a review without the substance. When a day's tasks are large
+(`GB-18`, `GB-41`), the cap is one.
+
+This is why "Claude Code makes me faster" has a limit that is not about the agent.
 
 ---
 
-## 5. Sprint 2 — Offline vertical slice · 29 August – 11 September → **GATE 1**
+## 5. Gate targets
+
+Sprint 1 finished ahead of plan, so every gate has a revised target. **The original date
+is the commitment; the revised date is the intent.** A gate called early is a gate whose
+slack goes to the next sprint. A gate missed against the revised date is not late — it is
+late only against the original.
+
+| Gate | Revised target | Original commitment | Meaning |
+|---|---|---|---|
+| **GATE 1** | ~22 Aug | 11 Sep | The offline slice is real |
+| **GATE 2** | ~1–3 Sep | 25 Sep | The system is a product — **the decisive one** |
+| **GATE 3** | 10 Oct | 10 Oct | Submitted. **Unchanged, and not negotiable.** |
+
+`GATE 3` does not move, because the submission date does not move. The three weeks the
+revised targets open up are not spare capacity to fill with scope — §2's cuts stay cut.
+They are there so that Sprint 4's report has room and so that `GATE 2` can absorb the
+market sessions §4.1 describes without pressure.
+
+---
+
+## 6. Sprint 1 — Foundations · **complete**
+
+**Goal:** the data and feature layers exist, are causally correct, and are proven so by
+tests. Nothing forecasts yet.
+
+```
+GB-1 scaffold ─→ GB-2 config ─→ GB-3 contracts ─┬─→ GB-4 historical ─→ GB-5 quality
+                                                │        │
+                                                │        └─→ GB-6 credentials ─→ GB-7 live
+                                                │
+                                                └─→ GB-8 indicators ─→ GB-9 BUILDER ─┬─→ GB-10 causality
+                                                                                     └─→ GB-11 persistence
+                                                                                            │
+                                                                                     GB-12 docs ←┘
+```
+
+All twelve landed on 14 Aug. See `PROGRESS.md` for the per-task record and the Sprint 1
+review, which lists the four findings that were the sprint's real output.
+
+---
+
+## 7. Sprint 2 — Offline vertical slice → **GATE 1** (~22 Aug)
 
 **Goal:** one command runs data → features → DLinear → backtest → metrics, with the
 persistence baseline on the same folds.
 
-| Day | Date | Task | SP | What lands |
-|---|---|---|---|---|
-| 1–3 | Sat–Mon 29–31 Aug | GB-13 | 5 | `DLinearForecaster`, passes the contract test |
-| 4–5 | Tue–Wed 1–2 Sep | GB-15 | 5 | Training loop, seeded, reproducible |
-| 6 | Thu 3 Sep | GB-16 | 2 | Inference, batch and single-window |
-| 7 | Fri 4 Sep | — | — | **Review day.** |
-| 8 | Sat 5 Sep | GB-17 | 3 | Walk-forward fold generator |
-| 9–11 | Sun–Tue 6–8 Sep | **GB-18** | 8 | **The backtester.** Fees, slippage, SL/TP. |
-| 12 | Wed 9 Sep | GB-19 | 3 | Metrics, every one reporting a delta |
-| 13 | Thu 10 Sep | GB-20 | 5 | Signal engine, thresholds calibrated on validation |
-| 14 | Fri 11 Sep | GB-24, GB-25 | 5 | `smoke_offline`, **GATE 1 review** |
+**Two independent chains.** They only meet at `GB-20`, which is worth knowing on the day
+one of them blocks — if DLinear is fighting you, the harness chain is not waiting on it.
 
-### GATE 1 — 11 September
+```
+model chain      GB-13 DLinear ─→ GB-15 train ─→ GB-16 predict ─┐
+                   (needs GB-9, GB-11)                          ├─→ GB-20 signal ─→ GB-24 smoke ─→ GB-25 GATE 1
+harness chain    GB-17 walkforward ─→ GB-18 BACKTEST ─→ GB-19 metrics ─┘
+                   (needs GB-4 only)
+```
+
+**Start with `GB-17` → `GB-18`, not with `GB-13`.** The backtester is the largest single
+task in the project at 8 SP and depends on nothing in the model layer. Front-loading it
+puts the biggest schedule risk where there is still room to absorb it, and `GB-13` is the
+better-specified task of the two, so it suffers less from being second.
+
+### GATE 1 — target ~22 Aug (commitment 11 Sep)
 
 - [ ] `python -m glassbox.smoke_offline` runs the full offline path in one command
 - [ ] Persistence baseline produces numbers on the same folds
 - [ ] `test_no_lookahead.py` and `test_forecaster_contract.py` green
 - [ ] At least one walk-forward fold completes end to end
 
-**If red:** stop. Sprint 3 does not begin. The most likely culprits are GB-18 and
-GB-20 — the backtester is the largest single task in the project, and threshold
-calibration is where leakage hides.
+**If red:** stop. Sprint 3 does not begin. The most likely culprits are `GB-18` and
+`GB-20` — the backtester is the largest single task, and threshold calibration is where
+leakage hides.
 
 ---
 
-## 6. Sprint 3 — Live end to end · 12–25 September → **GATE 2**
+## 8. Sprint 3 — Live end to end → **GATE 2** (~1–3 Sep)
 
 **Goal:** the system is a product. It trades unattended and explains itself.
 
-| Day | Date | Task | SP | What lands |
-|---|---|---|---|---|
-| 1 | Sat 12 Sep | GB-21 | 3 | Risk layer, property-tested caps |
-| 2–3 | Sun–Mon 13–14 Sep | GB-22, GB-23 | 7 | Executor + broker reconciliation |
-| 4–5 | Tue–Wed 15–16 Sep | GB-26 | 5 | Live loop, unattended session |
-| 6 | Thu 17 Sep | GB-27, GB-28 | 5 | **Parity test**, ranking |
-| 7 | Fri 18 Sep | — | — | **Review day.** |
-| 8 | Sat 19 Sep | GB-29 | 3 | Decision records + config hashing |
-| 9–10 | Sun–Mon 20–21 Sep | GB-30, GB-33 | 7 | **Exact attribution** + exactness test |
-| 11 | Tue 22 Sep | GB-32 | 3 | Natural-language narration |
-| 12–13 | Wed–Thu 23–24 Sep | GB-34/35/36 | 8 | Dashboard: positions, forecast, decision log |
-| 14 | Fri 25 Sep | GB-37/38/39, GB-40 | 6 | Co-Pilot, Replay, faults, **GATE 2** |
+```
+GB-21 risk ─→ GB-22 executor ★ ─→ GB-23 reconcile ─→ GB-26 live loop ★ ─→ GB-27 PARITY
+                                                            │
+                                                            ├─→ GB-28 rank ─→ GB-29 records
+                                                            │
+                                                            └─→ GB-30 attribution ─→ GB-33 exactness ─→ GB-32 narrate
+                                                                                                            │
+                                    GB-34/35/36 dashboard ←──────────────────────────────────────────────────┘
+                                            │
+                                            └─→ GB-37 co-pilot · GB-38 replay · GB-39 faults ─→ GB-40 GATE 2
 
-### GATE 2 — 25 September · the decisive checkpoint
+★ needs a live market session — see §4.1. Land these early in a week, never on a Friday.
+```
+
+### GATE 2 — target ~1–3 Sep (commitment 25 Sep) · the decisive checkpoint
 
 - [ ] Live loop runs a full session against Alpaca paper unattended
 - [ ] At least one order placed, filled and reconciled
 - [ ] Every decision carries an exact attribution visible in the dashboard
 - [ ] Replay mode reproduces a recorded day with no network
 - [ ] Co-Pilot approve/reject works
+- [ ] **Two or three separate live sessions, not one** (§4.1)
 
-**If red: FITS is cancelled, not postponed.** Sprint 4 becomes hardening and the
-report. You submit a working v1 with a DLinear-versus-persistence comparison. That
-is a complete, defensible project — the proposal says so explicitly, so nobody is
-surprised.
+**If red: FITS is cancelled, not postponed.** Sprint 4 becomes hardening and the report.
+You submit a working v1 with a DLinear-versus-persistence comparison. That is a complete,
+defensible project — the proposal says so explicitly, so nobody is surprised.
 
-> **GB-27, the parity test, is the highest-leverage hour of Sprint 3.** If training
-> and live assemble windows differently, everything downstream is subtly wrong and
-> nothing will tell you. Do not skip it because the loop "seems to work".
+> **`GB-27`, the parity test, is the highest-leverage hour of Sprint 3.** If training and
+> live assemble windows differently, everything downstream is subtly wrong and nothing
+> will tell you. Do not skip it because the loop "seems to work". GB-9 already found the
+> mechanism: a live fetch shorter than `min_history_bars(cfg)` produces values that differ
+> from training at the same timestamp, silently.
 
 ---
 
-## 7. Sprint 4 — FITS, study, report · 26 September – 10 October → **GATE 3**
+## 9. Sprint 4 — FITS, study, report → **GATE 3** (10 Oct, unchanged)
 
 **Goal:** the research arm lands, the study runs, the report is written.
 
-| Day | Date | Task | SP | What lands |
-|---|---|---|---|---|
-| 1–3 | Sat–Mon 26–28 Sep | **GB-41, GB-42** | 10 | **FITS core + the amplitude test** |
-| 4 | Tue 29 Sep | GB-44 | 3 | FITS integrated, shared weights across the universe |
-| 5–6 | Wed–Thu 30 Sep–1 Oct | GB-45, GB-46 | 8 | Spectral attribution + frequency-response plot |
-| 7 | Fri 2 Oct | GB-47, GB-48 | 8 | Causal wavelets + causality/additivity tests |
-| 8 | Sat 3 Oct | GB-49, GB-50, GB-51 | 11 | Study runner, COF sweep, significance tests |
-| — | **Sat 3 Oct** | — | — | **CODE FREEZE.** Anything not working is future work. |
-| 9 | Sun 4 Oct | GB-52, GB-53 | 6 | Report generator, spectral dashboard panel |
-| 10–12 | Mon–Wed 5–7 Oct | GB-55, GB-56, GB-57 | 11 | The technical report |
-| 13 | Thu 8 Oct | GB-58, GB-54 | 5 | Deck + two demo rehearsals |
-| 14 | Fri 9 Oct | GB-59 | 3 | Reproducibility audit from a clean clone |
-| 15 | Sat 10 Oct | GB-60 | 2 | **GATE 3** — tag `v1.0-submission`, submit |
+```
+GB-42 sinusoid test ─→ GB-41 FITS core ─→ GB-44 shared weights ─→ GB-45 spectral ─→ GB-46 response plot
+   (write it FIRST)                                                                          │
+GB-47 wavelets ─→ GB-48 causality (reuse assert_causal)                                       │
+   │                                                                                          │
+   └────────────────┬─────────────────────────────────────────────────────────────────────────┘
+                    ↓
+       GB-49 study ─→ GB-50 COF sweep ─→ GB-51 Wilcoxon ─→ GB-52 report generator · GB-53 spectral panel
+                    ↓
+            ═══ CODE FREEZE — 3 Oct ═══
+                    ↓
+       GB-55 · GB-56 · GB-57 report ─→ GB-54 rehearsals · GB-58 deck ─→ GB-59 clean-clone audit ─→ GB-60 GATE 3
+```
 
 ### The Sprint 4 rule
 
-Anything not working by **3 October** does not enter the report as a result. It is
-written up as declared future work. The last week is for writing, and the report is
-what you are actually graded on.
+Anything not working by **3 October** does not enter the report as a result. It is written
+up as declared future work. The last week is for writing, and the report is what you are
+actually graded on. This date does **not** move with the revised gate targets — an early
+`GATE 2` buys report time, it does not buy build time.
 
-> **GB-42 before any training run.** The irFFT amplitude trap costs a full day if you
-> discover it after training, because the symptom — systematically flat forecasts with
-> a slightly *better* MSE — looks like a modelling problem rather than a bug. Write the
-> sinusoid test first.
+> **`GB-42` before any training run** — note it comes *before* `GB-41` in the sequence
+> above, and that is deliberate. The irFFT amplitude trap costs a full day if you discover
+> it after training, because the symptom — systematically flat forecasts with a slightly
+> *better* MSE — looks like a modelling problem rather than a bug.
 
 ---
 
-## 8. Where the schedule will actually hurt
+## 10. Where the schedule will actually hurt
 
 | Risk | When | What you do |
 |---|---|---|
@@ -193,7 +249,7 @@ what you are actually graded on.
 | FITS forecasts look flat | Sprint 4 | GB-42. Every time. |
 | Report runs out of days | Sprint 4 | Cut GB-53 (spectral panel) first — it is the only Sprint 4 item that is purely presentational |
 
-## 9. The daily loop
+## 11. The daily loop
 
 ```
 morning   open a fresh Claude Code session

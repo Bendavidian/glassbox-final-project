@@ -7,6 +7,38 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — The Regime Guard returns to consideration at GATE 2, and only if it is green
+
+**Decision.** The Regime Guard — the FITS reconstruction head used as an out-of-distribution
+detector — stays in `IDEAS_PARKED.md` and stays unimplemented. It is reconsidered **at
+GATE 2, if and only if that gate is green**. A red or partial GATE 2 closes the question
+for this project; it is written up as declared future work per spec §11 and nothing else.
+
+**Reasoning.** Sprint 1 closed on day 6 of a 14-day budget, and surplus is exactly when a
+cut idea argues its way back in. Naming the condition now, while there is no pressure,
+means the decision is made on a rule rather than on how the week happens to feel.
+
+GATE 2 is the right condition and no earlier gate is. Spec §8 already says a red GATE 2
+cancels FITS outright — and the Regime Guard is a FITS *extension*, so considering it
+before FITS itself is proven live would be reasoning about the roof while the walls are
+unbuilt. GATE 2 green means the live loop, execution and explanation all work, which is
+the only state in which a one-week addition is a real option rather than a wish.
+
+The estimate stands at one week (spec §11), and one week is precisely the buffer the
+revised gate targets opened. That is the trap: the buffer exists so Sprint 4's report has
+room and so GATE 2 can absorb two or three live market sessions without pressure
+(`SOLO_BUILD_PLAN.md` §4). Spending it on scope converts schedule risk back into exactly
+the shape it had before Sprint 1 ran ahead — with the difference that the report, which is
+what the project is graded on, would be the thing paying for it.
+
+**Consequence.** `IDEAS_PARKED.md`'s standing rule — nothing implemented before GATE 3 —
+gains one named, conditional exception, and it is the only one. If GATE 2 is green, the
+decision is taken then, recorded here, and requires a spec §9 task entry before a line is
+written. Until then the answer is no, and "we have time now" is not an argument that
+reopens it.
+
+---
+
 ## 2026-08-14 — GB-11: `FitProvenance` enters the protocol, and the contract test gets teeth
 
 **Decision.** Spec §4.2 gains `FitProvenance` and §4.3 gains `Forecaster.fitted`. Every

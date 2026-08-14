@@ -19,6 +19,13 @@ percentile. New entries paused."
 Estimated cost: one week. Excluded solely for schedule. Written up in the report
 as declared future work.
 
+> **The one conditional exception to the rule above** (decided 14 Aug 2026, recorded in
+> `DECISIONS.md`). This idea returns to consideration **at GATE 2, if and only if that
+> gate is green** — never earlier, because it extends FITS and a red GATE 2 cancels FITS
+> outright. If GATE 2 is red or partial, the question is closed for this project. Until
+> GATE 2 the answer is no, and "we are ahead of schedule" is not an argument that
+> reopens it.
+
 ## Adaptive per-symbol cutoff frequency
 
 Choose the FITS cutoff per symbol from measured spectral content rather than using

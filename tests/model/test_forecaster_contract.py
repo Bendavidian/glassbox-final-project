@@ -232,8 +232,57 @@ NEEDS_WINDOWS = frozenset(
     {check_explain_total_matches_predict, check_channels_sum_to_total}
 )
 
+# Property -> the property it presupposes.
+#
+# Properties 5 and 6 both work by recomputing and comparing exactly, so neither can hold
+# for a model whose output changes between two calls, and — the part that matters —
+# neither can tell non-determinism apart from the fault it is looking for. Reported as
+# three plain failures, they would send a reader to debug a leak that is not there.
+# So the dependency is structural: the dependants skip, naming property 2 as the cause,
+# and exactly one red remains for the reader to follow.
+#
+# This mapping is the single definition of the relation. The confinement test derives its
+# exemptions from it rather than restating them.
+DEPENDS_ON = {
+    check_save_load_roundtrip: check_determinism,
+    check_no_cross_window_leakage: check_determinism,
+}
+
+
+def dependants_of(check) -> frozenset:
+    """Every property that presupposes ``check``."""
+    return frozenset(
+        dependant
+        for dependant, prerequisite in DEPENDS_ON.items()
+        if prerequisite is check
+    )
+
+
+def unmet_dependency(check, model: Forecaster, batch: WindowBatch) -> str | None:
+    """The reason ``check`` cannot be evaluated for ``model``, or ``None``.
+
+    Returned as a string rather than raised, so the behaviour is directly assertable
+    without catching pytest's control-flow exception.
+    """
+    prerequisite = DEPENDS_ON.get(check)
+    if prerequisite is None:
+        return None
+    try:
+        prerequisite(model, batch, Path())
+    except AssertionError:
+        return (
+            f"{check.__name__} presupposes {prerequisite.__name__}, which fails for "
+            f"{type(model).__name__}. Its result here would be meaningless: this check "
+            "recomputes and compares exactly, so it cannot tell non-determinism apart "
+            f"from the fault it looks for. Fix {prerequisite.__name__} first."
+        )
+    return None
+
 
 def run_property(check, model, batch, tmp_path, windows) -> None:
+    reason = unmet_dependency(check, model, batch)
+    if reason is not None:
+        pytest.skip(reason)
     if check in NEEDS_WINDOWS:
         check(model, batch, tmp_path, windows)
     else:
@@ -357,58 +406,29 @@ class ForgetfulFitForecaster(PersistenceForecaster):
         del batch, val
 
 
-# (broken class, the property it must break, the properties that break with it).
-#
-# The third entry is almost always empty, and where it is not, it records a real
-# dependency between the properties rather than a sloppy break. Determinism is the one
-# that has dependants: properties 5 and 6 both work by recomputing and comparing exactly,
-# so neither can hold for a model whose output changes between two calls, and neither can
-# tell non-determinism apart from the fault it is looking for. Property 2 must pass before
-# 5 and 6 mean anything — worth knowing before FITS arrives with a stochastic layer.
 BROKEN = [
-    pytest.param(WrongDtypeForecaster, check_shape_and_dtype, frozenset(), id="dtype"),
+    pytest.param(WrongDtypeForecaster, check_shape_and_dtype, id="dtype"),
+    pytest.param(JitteryForecaster, check_determinism, id="determinism"),
     pytest.param(
-        JitteryForecaster,
-        check_determinism,
-        frozenset({check_save_load_roundtrip, check_no_cross_window_leakage}),
-        id="determinism",
+        MisreportingForecaster, check_explain_total_matches_predict, id="explain-total"
     ),
-    pytest.param(
-        MisreportingForecaster,
-        check_explain_total_matches_predict,
-        frozenset(),
-        id="explain-total",
-    ),
-    pytest.param(
-        NonAdditiveForecaster, check_channels_sum_to_total, frozenset(), id="additivity"
-    ),
-    pytest.param(
-        AmnesiacForecaster, check_save_load_roundtrip, frozenset(), id="save-load"
-    ),
-    pytest.param(
-        BatchNormForecaster, check_no_cross_window_leakage, frozenset(), id="batch-leak"
-    ),
-    pytest.param(
-        ForgetfulFitForecaster,
-        check_fit_records_provenance,
-        frozenset(),
-        id="provenance",
-    ),
+    pytest.param(NonAdditiveForecaster, check_channels_sum_to_total, id="additivity"),
+    pytest.param(AmnesiacForecaster, check_save_load_roundtrip, id="save-load"),
+    pytest.param(BatchNormForecaster, check_no_cross_window_leakage, id="batch-leak"),
+    pytest.param(ForgetfulFitForecaster, check_fit_records_provenance, id="provenance"),
 ]
 
 
-@pytest.mark.parametrize("broken,check,dependants", BROKEN)
+@pytest.mark.parametrize("broken,check", BROKEN)
 def test_each_property_rejects_a_forecaster_that_breaks_it(
     broken,
     check,
-    dependants,
     batch: WindowBatch,
     windows: np.ndarray,
     cfg: Config,
     tmp_path: Path,
 ) -> None:
     """The property under test must fail on the model built to break it."""
-    del dependants
     model = broken(input_len=cfg.window.input_len, horizon=cfg.window.horizon)
     model.fit(batch)
 
@@ -416,11 +436,10 @@ def test_each_property_rejects_a_forecaster_that_breaks_it(
         run_property(check, model, batch, tmp_path, windows)
 
 
-@pytest.mark.parametrize("broken,check,dependants", BROKEN)
+@pytest.mark.parametrize("broken,check", BROKEN)
 def test_a_broken_forecaster_still_passes_the_unrelated_properties(
     broken,
     check,
-    dependants,
     batch: WindowBatch,
     windows: np.ndarray,
     cfg: Config,
@@ -431,14 +450,55 @@ def test_a_broken_forecaster_still_passes_the_unrelated_properties(
     Without this, a single sloppy break could satisfy every ``pytest.raises`` above while
     leaving several properties unproven — the suite would look thorough and be hollow.
     It caught two such breaks on first run.
+
+    Dependants are exempt and come from :data:`DEPENDS_ON`, not from a second list, so
+    the relation cannot be stated twice and drift.
     """
     model = broken(input_len=cfg.window.input_len, horizon=cfg.window.horizon)
     model.fit(batch)
+    exempt = dependants_of(check)
 
     for other in PROPERTIES:
-        if other is check or other in dependants:
+        if other is check or other in exempt:
             continue
         run_property(other, model, batch, tmp_path, windows)
+
+
+@pytest.mark.parametrize("dependant", sorted(DEPENDS_ON, key=lambda fn: fn.__name__))
+def test_a_dependent_property_defers_instead_of_failing(
+    dependant,
+    batch: WindowBatch,
+    windows: np.ndarray,
+    cfg: Config,
+    tmp_path: Path,
+) -> None:
+    """A reader facing three reds cannot tell which is real, and debugs the wrong one.
+
+    So when property 2 fails, its dependants must not report as ordinary failures. They
+    skip, naming property 2, leaving exactly one red to follow.
+    """
+    model = JitteryForecaster(
+        input_len=cfg.window.input_len, horizon=cfg.window.horizon
+    )
+    model.fit(batch)
+
+    reason = unmet_dependency(dependant, model, batch)
+    assert reason is not None
+    assert "check_determinism" in reason
+    assert "meaningless" in reason
+
+    with pytest.raises(pytest.skip.Exception, match="check_determinism"):
+        run_property(dependant, model, batch, tmp_path, windows)
+
+
+def test_a_sound_forecaster_has_no_unmet_dependencies(
+    batch: WindowBatch, cfg: Config
+) -> None:
+    """The guard must not swallow a real failure by deferring for a healthy model."""
+    model = _persistence(batch, cfg)
+
+    for check in PROPERTIES:
+        assert unmet_dependency(check, model, batch) is None
 
 
 # ── the baseline says what it means ──────────────────────────────────────────
