@@ -77,6 +77,19 @@ def test_package_dir_is_a_package(package_root: Path, relative_path: str) -> Non
     assert (package_root / relative_path / "__init__.py").is_file()
 
 
+def test_every_script_guards_its_imports(repo_root: Path) -> None:
+    """A script run with the wrong interpreter must say so, not raise ModuleNotFoundError.
+
+    This bites on any fresh machine, including GB-59's clean-clone audit.
+    """
+    unguarded = [
+        path.name
+        for path in (repo_root / "scripts").glob("*.py")
+        if "except ImportError" not in path.read_text(encoding="utf-8")
+    ]
+    assert not unguarded
+
+
 def test_tree_has_no_extra_modules(package_root: Path) -> None:
     """Nothing beyond spec 3.4 has been added. New modules need a spec entry first."""
     allowed = {package_root / p for p in SPEC_MODULES}

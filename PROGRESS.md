@@ -29,7 +29,7 @@ Append one line per completed task. Newest at the bottom of each sprint.
 | GB-3 | 14 Aug 2026 | Ben | **Complete.** `contracts/schemas.py` — five frozen schemas from spec §4.2 with `__post_init__` shape validation; `contracts/protocols.py` — runtime-checkable `Forecaster`; import-linter layers + forbidden contracts in `pyproject.toml` with the harness above the live path; `tests/contracts/` proves both contracts have teeth. Suite at 108. |
 | GB-4 | 14 Aug 2026 | Ben | **Complete.** `data/historical.py` — `load_history` fetches daily bars per symbol via yfinance, normalises to UTC/lowercase/sorted/deduplicated, adds unfilled `log_return`, and caches to `{cache_dir}/{symbol}.parquet`; a cache hit never touches the network. All five symbols cached 2016-01-04 → 2026-08-13, 2668 bars each. 16 offline tests on a committed CSV fixture; suite at 124. |
 | GB-5 | 14 Aug 2026 | Ben | **Complete.** `data/quality.py` — `check_quality` reports missing NYSE trading days, per-column NaN counts, single-bar log returns above 0.25, duplicates and span; `report_all` prints a table and writes `data_cache/quality_report.json` (committed as provenance). Real universe: 0 missing bars, 0 duplicates, 1 NaN each (the unfilled first return), 1 large move total — NVDA 2016-11-11, +29.8%. 12 tests; suite at 136. |
-| GB-6 | 14 Aug 2026 | Ben | **PENDING — awaiting real keys.** Code complete: credentials load only via `alpaca_credentials()`, `require_paper_endpoint()` refuses any non-paper endpoint (verified, exit 2), `.env.example` committed, `scripts/smoke_alpaca.py` written, git history scan clean. `.env` currently holds the placeholder values, so the account-equity print is unverified. 9 new tests; suite at 145. |
+| GB-6 | 14 Aug 2026 | Ben | **Complete.** Credentials load only via `alpaca_credentials()`; `require_paper_endpoint()` refuses any non-paper endpoint (verified, exit 2); `.env.example` committed, `.env` ignored; git history scan clean. `scripts/smoke_alpaca.py` prints the paper account: ACTIVE, equity 100000, buying power 400000. Scripts guard their imports and name the venv command. |
 | GB-7 | | Noy | |
 | GB-8 | | Ben | |
 | GB-9 | | Ben | |
@@ -68,8 +68,4 @@ _Claude Code: write blocking questions here rather than guessing._
 _The 14 Aug CI failure is resolved — see DECISIONS.md, "Python floor raised to 3.12";
 green on 176fe01._
 
-**14 Aug 2026 — GB-6 blocked on real Alpaca keys.** `.env` exists but contains the
-placeholder values copied from `.env.example`, so `scripts/smoke_alpaca.py` reaches
-Alpaca and receives `unauthorized`. Everything else in GB-6 is verified. Paste the paper
-account's key and secret into `.env` and re-run `python scripts/smoke_alpaca.py`; it
-should print account status, equity and buying power.
+_None open._

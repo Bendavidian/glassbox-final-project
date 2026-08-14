@@ -16,13 +16,21 @@ from __future__ import annotations
 
 import sys
 
-from alpaca.trading.client import TradingClient
+try:
+    from alpaca.trading.client import TradingClient
 
-from glassbox.config.loader import (
-    PAPER_ENDPOINT,
-    alpaca_credentials,
-    require_paper_endpoint,
-)
+    from glassbox.config.loader import (
+        PAPER_ENDPOINT,
+        alpaca_credentials,
+        require_paper_endpoint,
+    )
+except ImportError as error:  # pragma: no cover - depends on the caller's interpreter
+    raise SystemExit(
+        f"cannot import {error.name!r}: this script needs the project environment.\n"
+        "    .venv\\Scripts\\activate      (Windows)\n"
+        "    source .venv/bin/activate    (macOS, Linux)\n"
+        'then, if the environment is new:  pip install -e ".[dev]"'
+    ) from error
 
 EXIT_REFUSED = 2
 EXIT_FAILED = 1
