@@ -15,7 +15,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from glassbox.contracts.schemas import Attribution, WindowBatch
+from glassbox.contracts.schemas import Attribution, FitProvenance, WindowBatch
 
 
 @runtime_checkable
@@ -30,10 +30,14 @@ class Forecaster(Protocol):
     name: str
     input_len: int  # L
     horizon: int  # H
+    fitted: FitProvenance | None  # None until fit() has been called
 
     def fit(self, batch: WindowBatch, val: WindowBatch | None = None) -> None:
         """Train. MUST use only `batch` (+ `val` for early stopping).
-        MUST store any normalisation statistics internally."""
+        MUST store any normalisation statistics internally.
+        MUST set `self.fitted` to `FitProvenance.from_batch(batch, ...)`, even when
+        training itself is a no-op — a checkpoint that cannot say what it was fitted
+        on cannot be audited for leakage."""
         ...
 
     def predict(self, X: np.ndarray) -> np.ndarray:

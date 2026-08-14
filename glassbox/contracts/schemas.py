@@ -132,6 +132,73 @@ class ChannelStats:
 
 
 @dataclass(frozen=True)
+class FitProvenance:
+    """What a forecaster was fitted on. Recorded by every implementation, uniformly.
+
+    A no-op ``fit`` is honest, but a checkpoint that records nothing about its training
+    data cannot be audited: "was this model fitted on data that overlaps its test fold?"
+    has to be answerable from the checkpoint alone, for every forecaster, or GB-25's
+    leakage audit becomes a manual reading of training scripts. This is the same argument
+    that put ``fitted_start`` / ``fitted_end`` on :class:`ChannelStats`, applied one layer
+    up.
+
+    ``symbols`` is a tuple although a ``WindowBatch`` carries one symbol, because spec 6.4
+    trains one model across the universe (``individual_weights: false``). GB-44 will fit
+    from a batch assembled over five symbols, and a tuple absorbs that without a contract
+    change.
+
+    Normalisation statistics are deliberately **not** duplicated here. Their fitted range
+    already lives on :class:`ChannelStats`, which the builder produces and the checkpoint
+    stores; recording the same range in two places invites the two to disagree, and the
+    audit would then have to decide which one to believe.
+    """
+
+    channels: tuple[str, ...]  # the channel set and its order
+    symbols: tuple[str, ...]  # every symbol whose windows were used
+    source: str  # provenance of the underlying bars, e.g. "yfinance"
+    fitted_start: pd.Timestamp  # first window timestamp in the training batch
+    fitted_end: pd.Timestamp  # last — with fitted_start, the training range
+    n_windows: int
+    input_len: int  # L, as the model was configured
+    horizon: int  # H
+
+    @classmethod
+    def from_batch(
+        cls, batch: WindowBatch, input_len: int, horizon: int
+    ) -> FitProvenance:
+        """Derive provenance from the batch a forecaster was handed.
+
+        A classmethod rather than a helper in each model, so Persistence, DLinear and
+        FITS cannot record subtly different things and leave the audit comparing
+        apples to pears.
+        """
+        if len(batch.timestamps) == 0:
+            _fail("FitProvenance", "a batch with at least one window", 0)
+        return cls(
+            channels=batch.channels,
+            symbols=(batch.symbol,),
+            source=batch.source,
+            fitted_start=batch.timestamps[0],
+            fitted_end=batch.timestamps[-1],
+            n_windows=len(batch.timestamps),
+            input_len=input_len,
+            horizon=horizon,
+        )
+
+    def __post_init__(self) -> None:
+        if self.n_windows <= 0:
+            _fail("FitProvenance.n_windows", "a positive window count", self.n_windows)
+        if self.fitted_start > self.fitted_end:
+            _fail(
+                "FitProvenance.fitted_start",
+                f"no later than fitted_end ({self.fitted_end})",
+                self.fitted_start,
+            )
+        if not self.symbols:
+            _fail("FitProvenance.symbols", "at least one symbol", self.symbols)
+
+
+@dataclass(frozen=True)
 class Forecast:
     """A predicted log-return path for one symbol, as of one timestamp."""
 
@@ -197,6 +264,7 @@ __all__ = [
     "Attribution",
     "ChannelStats",
     "DecisionRecord",
+    "FitProvenance",
     "Forecast",
     "Signal",
     "WindowBatch",

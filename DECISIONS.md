@@ -7,6 +7,67 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — GB-11: `FitProvenance` enters the protocol, and the contract test gets teeth
+
+**Decision.** Spec §4.2 gains `FitProvenance` and §4.3 gains `Forecaster.fitted`. Every
+forecaster records what it was fitted on, including a no-op `fit`. Property 6 of §4.4 is
+asserted with GB-10's `assert_causal` rather than a model-specific check, and §4.4 gains a
+seventh property covering the protocol addition. `tests/model/test_forecaster_contract.py`
+carries a deliberately broken forecaster per property.
+
+**Reasoning.**
+
+*Provenance belongs in the protocol, not in each model.* GB-25 audits leakage by asking
+one question of a checkpoint — "does what this was fitted on overlap what it was tested
+on?" — and that question has to be answerable the same way for Persistence, DLinear and
+FITS or the audit becomes a manual reading of three training scripts. A protocol member is
+what "uniformly, for every forecaster" means in this codebase. `FitProvenance.from_batch`
+is a classmethod so the three models cannot record subtly different things and leave the
+audit comparing apples to pears. `symbols` is a tuple against GB-44, which fits one model
+across the universe; `fitted` is `None` before `fit`, so "never trained" is distinguishable
+from "trained on nothing".
+
+*Normalisation statistics are deliberately not duplicated into it.* Their fitted range
+already lives on `ChannelStats`, which the builder produces and the checkpoint stores.
+Recording the same range twice invites the two to disagree, and the audit would then have
+to decide which to believe. **If GB-15 finds the checkpoint cannot link a model to the
+statistics it was normalised with, adding `stats: ChannelStats | None` to `FitProvenance`
+is the additive move — that is the trigger, and it has not fired yet.**
+
+*Property 6 reuses `assert_causal`, because for a model "the future" means later windows.*
+Every lag inside a window is at or before that window's own timestamp — GB-9 assembles it
+that way and GB-10 proved it — so there is no within-window future for a model to reach
+into. What a model can still do is compute a statistic across the batch, and because a
+batch is ordered in time that pulls later windows into earlier predictions. Instance
+normalisation implemented as *batch* normalisation is exactly that bug and is a live risk
+for FITS's RIN stage in GB-41. Reuse also inherits both perturbation modes: `scale` sees a
+leaked batch mean, `shuffle` sees a model carrying state across rows in order. A
+model-specific check would have had to reinvent both, and the second one is the mode this
+project nearly did without.
+
+*Every property is proved able to fail, before a second model exists.* Persistence
+satisfies all seven trivially by returning zeros, so a suite that only ever ran against it
+would still pass with an assertion deleted — the same hollowness GB-10 refused. Seven
+deliberately broken forecasters, each subclassing Persistence so the break is the only
+difference, and a second test asserting each break is **confined** to its own property.
+That confinement test caught two of my own breaks on first run: a jitter that also broke
+the exactness identities, and a misreported total that also broke additivity. Both were
+narrowed.
+
+*A measured dependency between the properties.* Properties 5 and 6 both work by
+recomputing and comparing exactly, so neither holds for a non-deterministic model and
+neither can tell non-determinism apart from the fault it is hunting. Property 2 must pass
+before 5 and 6 mean anything. Recorded in §4.4 rather than worked around, because FITS may
+arrive with a stochastic layer and this is the order to debug it in.
+
+**Consequence.** Adding a model is one line appended to `FORECASTERS`. Verified by
+registering a second forecaster and re-collecting: 27 tests became 35, all passing, with no
+other edit. GB-13 and GB-41 inherit all seven properties for free. `_CompleteForecaster` in
+`tests/contracts/test_schemas.py` needed `fitted` added — the GB-3 structural test caught
+the protocol change by itself, which is the behaviour that test exists for.
+
+---
+
 ## 2026-08-14 — A credential reached a local commit; the rule fired, and is now a test
 
 **What happened.** While committing GB-10, `git add -A` staged `.env.example`, which had

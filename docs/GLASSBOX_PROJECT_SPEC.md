@@ -283,6 +283,20 @@ class ChannelStats:
     n_rows: int
 
 @dataclass(frozen=True)
+class FitProvenance:
+    """What a forecaster was fitted on (GB-11). Every implementation records this at
+       fit time, even a no-op fit, so GB-25 can audit any checkpoint the same way.
+       Built by FitProvenance.from_batch(batch, input_len, horizon)."""
+    channels: tuple[str, ...]     # the channel set and its order
+    symbols: tuple[str, ...]      # tuple: GB-44 fits one model across the universe
+    source: str                   # provenance of the underlying bars
+    fitted_start: pd.Timestamp    # first window timestamp in the training batch
+    fitted_end: pd.Timestamp      # last — with fitted_start, the training range
+    n_windows: int
+    input_len: int
+    horizon: int
+
+@dataclass(frozen=True)
 class Forecast:
     path: np.ndarray       # (H,) float32 — predicted log returns
     symbol: str
@@ -342,10 +356,14 @@ class Forecaster(Protocol):
     name: str
     input_len: int      # L
     horizon: int        # H
+    fitted: FitProvenance | None   # None until fit() has been called
 
     def fit(self, batch: WindowBatch, val: WindowBatch | None = None) -> None:
         """Train. MUST use only `batch` (+ `val` for early stopping).
-        MUST store any normalisation statistics internally."""
+        MUST store any normalisation statistics internally.
+        MUST set `self.fitted` to `FitProvenance.from_batch(batch, ...)`, even when
+        training itself is a no-op — a checkpoint that cannot say what it was
+        fitted on cannot be audited for leakage (GB-25)."""
         ...
 
     def predict(self, X: np.ndarray) -> np.ndarray:
@@ -380,9 +398,24 @@ class Forecaster(Protocol):
 3. `explain(x).forecast_total ≈ predict(x[None])[0].sum()` within `1e-5`
 4. `Σ attribution.per_channel.values() ≈ forecast_total` within `1e-5`
 5. `save` → `load` → `predict` reproduces identical output
-6. Perturbing `x[t+1:]` does not change `predict(x[:t+1])`
+6. Perturbing `x[t+1:]` does not change `predict(x[:t+1])` — for a model, "the future" is
+   later **windows**, not later lags: every lag in a window is at or before that window's
+   own timestamp by construction (GB-9), so the leak a model can still introduce is a
+   statistic computed across the batch. Asserted with GB-10's `assert_causal`.
+7. `fit` records `FitProvenance` truthfully, even when training is a no-op (GB-11)
 
-**A new model is not integrated until it passes this test unchanged.**
+**A new model is not integrated until it passes this test unchanged.** Adding one is a
+single line appended to `FORECASTERS` in the test; nothing else in that file changes.
+
+**Two dependencies between the properties, measured in GB-11.** Properties 5 and 6 both
+work by recomputing and comparing exactly, so neither holds for a non-deterministic model
+and neither can tell non-determinism apart from the fault it is looking for. Property 2
+must pass before 5 and 6 mean anything.
+
+**A note before FITS (GB-41).** Property 6 is what catches instance normalisation
+implemented as *batch* normalisation. Because a batch is ordered in time, a batch
+statistic pulls later windows into earlier predictions — and a single-window check cannot
+see it, since a batch of one centres to zero.
 
 ---
 
@@ -668,7 +701,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 | GB-8 | `indicators.py` — rsi14, vol_z, mom10, ma_dist20 | E3 | B | 3 | Values match a hand-computed fixture |
 | GB-9 | `builder.py` — window assembly from channel config → `WindowBatch` | E3 | B | 5 | Shapes correct for C0 and C2; warm-up trimmed |
 | GB-10 | `test_no_lookahead.py` — perturb-future causality harness in reusable `tests/causality.py` | E3 | B | 3 | Perturbing `t+1` leaves all values at `t` unchanged, in **both** perturbation modes; a deliberately leaky function is rejected |
-| GB-11 | `PersistenceForecaster` + the `Forecaster` contract test | E4 | B | 3 | Contract test passes for persistence |
+| GB-11 | `PersistenceForecaster` + the `Forecaster` contract test. Adds `FitProvenance` (§4.2) and `Forecaster.fitted` (§4.3) | E4 | B | 3 | Contract test passes for persistence; a future model plugs in by appending one line to `FORECASTERS`; every property is demonstrably able to fail |
 | GB-12 | `README.md`, `ARCHITECTURE.md`, `PROGRESS.md`, `DECISIONS.md`. The README must state that a clean install reproducing reported results uses `pip install -r requirements.lock`, not the unpinned upper bounds in `pyproject.toml` | E1 | N | 2 | A newcomer can run the project from README alone |
 
 ### Sprint 2 — Offline Vertical Slice · 29 Aug – 11 Sep → **GATE 1**

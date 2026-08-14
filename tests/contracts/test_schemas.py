@@ -14,6 +14,7 @@ from glassbox.contracts.protocols import Forecaster
 from glassbox.contracts.schemas import (
     Attribution,
     DecisionRecord,
+    FitProvenance,
     Forecast,
     Signal,
     WindowBatch,
@@ -46,6 +47,21 @@ def make_attribution(**overrides: Any) -> Attribution:
     }
     fields.update(overrides)
     return Attribution(**fields)
+
+
+def make_provenance(**overrides: Any) -> FitProvenance:
+    fields: dict[str, Any] = {
+        "channels": ("close_logret", "rsi14", "vol_z"),
+        "symbols": ("AAPL",),
+        "source": "yfinance",
+        "fitted_start": pd.Timestamp("2020-01-01", tz="UTC"),
+        "fitted_end": pd.Timestamp("2021-01-01", tz="UTC"),
+        "n_windows": BATCH,
+        "input_len": LAGS,
+        "horizon": HORIZON,
+    }
+    fields.update(overrides)
+    return FitProvenance(**fields)
 
 
 # ── Construction ─────────────────────────────────────────────────────────────
@@ -206,6 +222,47 @@ def test_validation_message_follows_the_config_convention() -> None:
     assert str(excinfo.value) == "WindowBatch.X must be float32, got dtype('float64')"
 
 
+# ── FitProvenance ────────────────────────────────────────────────────────────
+
+
+def test_fit_provenance_is_derived_from_the_batch() -> None:
+    """One derivation for every model, so GB-25 never compares apples to pears."""
+    batch = make_batch()
+    provenance = FitProvenance.from_batch(batch, LAGS, HORIZON)
+
+    assert provenance.channels == batch.channels
+    assert provenance.symbols == (batch.symbol,)
+    assert provenance.source == batch.source
+    assert provenance.fitted_start == batch.timestamps[0]
+    assert provenance.fitted_end == batch.timestamps[-1]
+    assert provenance.n_windows == len(batch.timestamps)
+    assert (provenance.input_len, provenance.horizon) == (LAGS, HORIZON)
+
+
+def test_fit_provenance_rejects_a_range_that_runs_backwards() -> None:
+    with pytest.raises(ValueError, match="FitProvenance.fitted_start"):
+        make_provenance(
+            fitted_start=pd.Timestamp("2021-01-01", tz="UTC"),
+            fitted_end=pd.Timestamp("2020-01-01", tz="UTC"),
+        )
+
+
+def test_fit_provenance_rejects_an_empty_window_count() -> None:
+    with pytest.raises(ValueError, match="FitProvenance.n_windows"):
+        make_provenance(n_windows=0)
+
+
+def test_fit_provenance_rejects_a_batch_with_no_windows() -> None:
+    """An empty training batch is a bug upstream; recording it as provenance hides it."""
+    empty = make_batch(
+        X=np.zeros((0, LAGS, CHANNELS), dtype=np.float32),
+        y=np.zeros((0, HORIZON), dtype=np.float32),
+        timestamps=pd.DatetimeIndex([], tz="UTC"),
+    )
+    with pytest.raises(ValueError, match="at least one window"):
+        FitProvenance.from_batch(empty, LAGS, HORIZON)
+
+
 # ── The Forecaster protocol ──────────────────────────────────────────────────
 
 
@@ -216,8 +273,10 @@ class _CompleteForecaster:
         self.name = "complete"
         self.input_len = LAGS
         self.horizon = HORIZON
+        self.fitted: FitProvenance | None = None
 
-    def fit(self, batch: WindowBatch, val: WindowBatch | None = None) -> None: ...
+    def fit(self, batch: WindowBatch, val: WindowBatch | None = None) -> None:
+        self.fitted = FitProvenance.from_batch(batch, self.input_len, self.horizon)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return np.zeros((X.shape[0], self.horizon), dtype=np.float32)
@@ -246,8 +305,21 @@ class _IncompleteForecaster:
         return np.zeros((X.shape[0], self.horizon), dtype=np.float32)
 
 
+class _ProvenanceFreeForecaster(_CompleteForecaster):
+    """Complete but for ``fitted`` — a model that cannot say what it was trained on."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        del self.fitted
+
+
 def test_protocol_is_runtime_checkable() -> None:
     assert isinstance(_CompleteForecaster(), Forecaster)
+
+
+def test_a_forecaster_without_provenance_is_rejected() -> None:
+    """GB-11 added ``fitted`` to the protocol, so the structural check must require it."""
+    assert not isinstance(_ProvenanceFreeForecaster(), Forecaster)
 
 
 def test_incomplete_implementation_is_rejected() -> None:
