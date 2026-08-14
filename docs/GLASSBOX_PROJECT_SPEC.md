@@ -675,7 +675,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 
 | ID | Task | Epic | Own | SP | Done when |
 |---|---|---|---|---|---|
-| GB-26 | `live_loop.py` — scheduler, market-hours guard, 60s polling | E7 | N | 5 | Runs a full session unattended |
+| GB-26 | `live_loop.py` — scheduler, market-hours guard, 60s polling. **Must drop the in-progress bar for the current session** via a function named for what it does (`drop_incomplete_bar` or similar), logging each drop with its timestamp — the model is trained on completed daily bars only | E7 | N | 5 | Runs a full session unattended; an in-progress bar is excluded by an explicitly tested function, and each drop appears in the run log |
 | GB-27 | **Train/live parity test** — identical windows from both paths | E3 | B | 3 | Byte-identical `X` for the same timestamp |
 | GB-28 | `rank.py` — cross-sectional top-K selection | E6 | B | 2 | Deterministic ordering; ties broken stably |
 | GB-29 | `DecisionRecord` persistence (JSONL) + config hashing | E6 | B | 3 | A record can be replayed into an identical decision |

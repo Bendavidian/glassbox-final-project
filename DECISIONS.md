@@ -36,9 +36,21 @@ volume dtype (`int64`), index resolution (`ms`), and index freq (`None`).
 
 **Consequence.** Prices from the two sources agree to under 1 bp; volume differs by
 34-111 bps and always will, so no feature may assume cross-source volume equality.
-During market hours Alpaca returns an in-progress bar for the current day — GB-26 must
-decide whether the live loop acts on a partial bar, and this is flagged there rather than
-silently dropped here.
+During market hours Alpaca returns an in-progress bar for the current day — see the
+ruling below.
+
+**Ruling, same day: the live loop uses completed bars only.** The in-progress bar for
+the current session is dropped. The model is trained exclusively on completed daily bars,
+so feeding it a half-formed close puts the live input distribution outside the training
+distribution — and GB-27 would still pass, because the window *shapes* match. This is the
+class of failure that parity tests cannot see, which is why it is decided now rather than
+in Sprint 3: it fixes the `as_of` semantics GB-9 must implement.
+
+Implemented in GB-26, not before, and required to be visible rather than incidental: a
+function named for what it does (`drop_incomplete_bar` or similar), a test that
+constructs an in-progress bar and asserts its exclusion, and a log line naming the
+dropped timestamp. Spec §9 carries this in GB-26's "Done when" so it sits in the
+acceptance criterion, not only here.
 
 ---
 
