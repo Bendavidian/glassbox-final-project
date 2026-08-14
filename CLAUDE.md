@@ -30,6 +30,7 @@ A task is complete only when **all** of these hold:
 - [ ] `ruff check .` and `black --check .` pass
 - [ ] The code contains no hardcoded config values
 - [ ] `PROGRESS.md` is updated with the task ID, the date, and one line on what was built
+- [ ] Staged by **named path**, and `git diff --cached` read in full before committing
 - [ ] Committed with the task ID as the message prefix: `GB-42: fix irFFT amplitude scaling`
 
 ## 3. Non-negotiable engineering rules
@@ -41,6 +42,8 @@ A task is complete only when **all** of these hold:
 **The keystone.** `features/builder.py` is the only place in the codebase where a model input window is assembled. Both offline training and the live loop call it with the same config. Do not create a second path.
 
 **Exactness.** Attribution is algebra, not approximation. `sum(per_channel.values()) == forecast` within `1e-5`. Never import SHAP, LIME, captum, or any perturbation-based attribution library.
+
+**Staging.** Never `git add -A`, `git add .`, or `git commit -a`. Stage the paths you changed, by name, and read `git diff --cached` in full before every commit. On 14 Aug 2026 a blanket `git add -A` swept a real Alpaca key into a commit from a file nobody had touched in the task. Blanket staging commits work you did not write and have not read. `tests/test_no_secrets.py` is the backstop, not the practice.
 
 **Reporting.** Every result is a delta against the persistence baseline. MSE on prices is banned as a headline metric. A backtest Sharpe above 2.0 is a leakage alarm, not a success — stop and audit.
 

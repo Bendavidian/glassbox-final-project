@@ -7,6 +7,50 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — A credential reached a local commit; the rule fired, and is now a test
+
+**What happened.** While committing GB-10, `git add -A` staged `.env.example`, which had
+been edited outside the task to hold a real Alpaca **paper** API key and secret in place
+of its placeholders. The blanket stage swept a file the task never touched into commit
+`2dee07b`. It was caught in the post-commit review, before any push.
+
+**Response, in the order the standing GB-6 rule prescribes.** Work stopped and the finding
+was reported immediately rather than quietly fixed. The keys were rotated and revoked at
+Alpaca. Only then was history rewritten: `.env.example` restored from `787e1c3` and the
+commit amended to `a2915f4`. Verified afterwards — `2dee07b` is unreachable from any
+branch, nothing was ever pushed, `git log -p` contains no key-shaped string, and `.env` is
+untracked and ignored.
+
+**Why the rule was worth having even though exposure was local.** The keys were paper
+credentials on an account holding virtual money, never pushed, in a private repository —
+the realistic loss was zero. Rotating anyway is the point: a security rule that is
+followed only when the loss looks large is a rule that will be reasoned away exactly when
+it matters. The cost here was five minutes, and it bought a documented, rehearsed
+response. GB-59's clean-clone audit and the report's methodology chapter both want a
+repository whose posture is demonstrated rather than asserted.
+
+**The enforcement.** `tests/test_no_secrets.py` asserts that **no tracked file** contains a
+credential-shaped string, by shape rather than by known value — a test that matches
+today's secrets is useless against tomorrow's and would have to contain them to work. Two
+patterns: a vendor key prefix (`PK`/`AK` followed by a long uppercase run) and any
+unbroken 32-character-plus alphanumeric run mixing case and digits. A separate rule holds
+`.env.example` to placeholders that are obviously placeholders — every honest one has
+separators, so an opaque run of 16 or more characters is a paste from any vendor, not only
+the two prefixes. Run against the offending blob it flags both values; against the
+restored file, nothing. Six innocent strings — a git SHA, a lockfile hash, the paper
+endpoint, the placeholders themselves — are asserted **not** to match, because a scanner
+that fires on commit hashes gets switched off and then guards nothing. The failure message
+reports file, line and match length, never the matched text: a security test that prints
+what it found has moved the secret into a CI log.
+
+**The process change, which matters more than the test.** `git add -A` is now banned in
+CLAUDE.md §3, with staging by named path and a full read of `git diff --cached` added to
+the §2 definition of done. The test is a backstop for the case where a human misses
+something; the practice is not committing work you have not read. Blanket staging is how
+the next one would get in too.
+
+---
+
 ## 2026-08-14 — GB-10: two perturbation modes, two harnesses, and it lives in `tests/`
 
 **Decision.** `tests/causality.py` exposes `assert_causal` and `assert_fit_isolated`. Both
