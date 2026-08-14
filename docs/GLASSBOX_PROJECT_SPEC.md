@@ -697,10 +697,10 @@ rather than deleted, so a reader sees the decision instead of a gap.
 | GB-46 | Learned frequency-response visualisation (`\|W\|` vs period) | E8 | B | 3 | Plot generated from a trained model |
 | GB-47 | `wavelets.py` — causal rolling DWT → `wav_a1..a3` | E11 | B | 5 | Emits values from bar 64 onward |
 | GB-48 | Wavelet causality + additivity tests | E11 | B | 3 | `a3+d3+d2+d1 ≈ returns`; future perturbation inert |
-| GB-49 | `study.py` — grid runner, seeds, `results.csv` | E12 | B | 5 | One command runs the full grid |
+| GB-49 | `study.py` — grid runner, seeds, `results.csv`. **`results.csv` must carry a `data_snapshot_last_bar` column** recording the last bar date of the cached data each arm ran against (see GB-4: the cache is a snapshot and never refreshes itself) | E12 | B | 5 | One command runs the full grid; every row carries `data_snapshot_last_bar` |
 | GB-50 | COF sweep for FITS (2/5/10/20-day cutoff) | E12 | B | 3 | Four arms in results, one row each |
 | GB-51 | Paired Wilcoxon vs persistence on direction accuracy and Sharpe | E12 | B | 3 | p-values in the results table |
-| GB-52 | `report.py` — tables + per-fold boxplots from `results.csv` | E12 | B | 3 | Report regenerates from CSV alone |
+| GB-52 | `report.py` — tables + per-fold boxplots from `results.csv`. **The summary table header must print `data_snapshot_last_bar`**, so a report built on stale data says so on its own face rather than only in a log | E12 | B | 3 | Report regenerates from CSV alone; the snapshot date is visible in the header |
 | GB-53 | Dashboard — spectral explanation panel | E9 | N | 5 | Frequency bars + gain/phase visible live |
 | GB-54 | Demo script + two full rehearsals | E12 | N | 3 | Runs end to end twice without intervention |
 | GB-55 | Technical report — architecture and system design chapters | E12 | N | 5 | Draft reviewed by Ben |

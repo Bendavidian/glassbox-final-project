@@ -29,6 +29,14 @@ rather than a side effect of what day it happens to be.
 refreshed deliberately. Every cache hit logs its last bar, so staleness is visible in the
 run log. The live loop does not use this module — it reads `data/live.py` (GB-7).
 
+**Enforcement, added the same day.** A log line is not enough: it relies on someone
+remembering to refresh in the last week of the project, which is exactly the week nobody
+remembers anything. So the snapshot date is carried into the deliverable instead. Spec §9
+now requires `results.csv` to carry a `data_snapshot_last_bar` column (GB-49) and the
+generated report to print it in the summary table header (GB-52). A report built on
+August data then says so on the page the supervisor reads, which turns a discipline
+problem into a visible fact. Implemented in GB-49 and GB-52, not before.
+
 ---
 
 ## 2026-08-14 — Python floor raised to 3.12; CI installs from `requirements.lock`
