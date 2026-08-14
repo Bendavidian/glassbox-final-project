@@ -96,7 +96,7 @@ def test_default_config_values_match_the_spec() -> None:
     assert cfg.fits.individual_weights is False
     assert cfg.channels.active == "C0_base"
     assert cfg.channels.active_channels == (
-        "close",
+        "close_logret",
         "rsi14",
         "vol_z",
         "mom10",

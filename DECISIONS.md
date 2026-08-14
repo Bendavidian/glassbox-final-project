@@ -7,6 +7,35 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — The canonical channel is `close_logret`, not `close`
+
+**Decision.** The channel carrying the close log-return series is renamed `close` →
+`close_logret` everywhere it appears as a channel name: spec §4.1's canonical list and
+§6.4, `settings.yaml`'s `C0_base` and `C2_hybrid`, `builder.CHANNEL_BUILDERS`,
+`builder.PARITY_WARMUP`, `builder.TARGET_CHANNEL`, and the tests. The `close` column of
+the OHLCV bar frame is untouched — that one really is the price, and the backtester takes
+it for PnL.
+
+**Reasoning.** The behaviour was already right; the name was not. A channel called `close`
+that contains a return is a trap in the deliverable itself, not a style preference. GB-30
+renders per-channel attribution as prose, and "62% of the forecast came from the close
+channel" leaves a reader — a supervisor, an examiner — unable to tell whether that means
+the price level or its return. Ambiguity in the explanation layer is a product defect for
+a project whose entire thesis is that the box is made of glass. The two readings are not
+equally harmless either: the price reading suggests a model that trades on levels, which
+is precisely what §7.3 bans, so the ambiguous name invites the reader to suspect the one
+error the design most carefully avoids.
+
+Renaming costs six find-and-replaces at GB-9. After the model layer, the attribution
+layer, saved checkpoints and a written report have consumed the name, it costs all of
+those plus a migration for anything already serialised.
+
+**Consequence.** `close` is now unambiguous throughout: as a channel name it does not
+exist, and as a column name it is always the price. GB-47 adds `wav_a1..a3` alongside
+`close_logret`, and GB-30's narratives name the channel exactly as the config does.
+
+---
+
 ## 2026-08-14 — GB-9: the keystone, and two contract additions
 
 **Decision.** Spec §4.2 gains `ChannelStats` and `WindowBatch.source`. Provenance travels
@@ -58,7 +87,8 @@ float32 resolution and the gap becomes exactly zero.
 *`close` is a log return.* Spec §4.1 fixes the model input series as log returns and §7.3
 bans price levels as a headline quantity, so the channel named `close` is the modelled
 quantity *of* close. Raw prices stay in the bars frame, where the backtester takes them
-for PnL.
+for PnL. — *Superseded the same day: the behaviour stands, the name does not. See
+"The canonical channel is `close_logret`" above.*
 
 *A NaN target for the live window.* At the most recent bar the next H returns do not
 exist. NaN says so; a zero would be a fabricated observation and an exception would force

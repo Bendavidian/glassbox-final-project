@@ -27,7 +27,7 @@ def make_batch(**overrides: Any) -> WindowBatch:
     fields: dict[str, Any] = {
         "X": np.zeros((BATCH, LAGS, CHANNELS), dtype=np.float32),
         "y": np.zeros((BATCH, HORIZON), dtype=np.float32),
-        "channels": ("close", "rsi14", "vol_z"),
+        "channels": ("close_logret", "rsi14", "vol_z"),
         "timestamps": pd.date_range("2026-01-01", periods=BATCH, tz="UTC"),
         "symbol": "AAPL",
         "source": "yfinance",
@@ -38,7 +38,7 @@ def make_batch(**overrides: Any) -> WindowBatch:
 
 def make_attribution(**overrides: Any) -> Attribution:
     fields: dict[str, Any] = {
-        "per_channel": {"close": 0.4, "rsi14": -0.1},
+        "per_channel": {"close_logret": 0.4, "rsi14": -0.1},
         "per_lag": None,
         "per_frequency": None,
         "gain_phase": None,
@@ -54,7 +54,7 @@ def make_attribution(**overrides: Any) -> Attribution:
 def test_valid_window_batch_constructs() -> None:
     batch = make_batch()
     assert batch.X.shape == (BATCH, LAGS, CHANNELS)
-    assert batch.channels == ("close", "rsi14", "vol_z")
+    assert batch.channels == ("close_logret", "rsi14", "vol_z")
     assert batch.symbol == "AAPL"
 
 
@@ -81,7 +81,7 @@ def test_attribution_accepts_a_per_lag_matrix() -> None:
 def test_attribution_is_keyword_only() -> None:
     """kw_only=True is load-bearing: per_lag carries a default (DECISIONS 2026-08-14)."""
     with pytest.raises(TypeError):
-        Attribution({"close": 0.4}, None, None, None, 0.4)  # type: ignore[misc]
+        Attribution({"close_logret": 0.4}, None, None, None, 0.4)  # type: ignore[misc]
 
 
 def test_decision_record_holds_the_full_decision() -> None:
@@ -102,7 +102,7 @@ def test_decision_record_holds_the_full_decision() -> None:
             passed_threshold=True,
         ),
         order=None,
-        narrative="Driven by the close channel.",
+        narrative="Driven by the close_logret channel.",
         config_hash="0" * 64,
     )
     assert record.order is None
@@ -180,7 +180,7 @@ def test_timestamps_must_align_with_windows() -> None:
 
 def test_channel_names_must_align_with_x() -> None:
     with pytest.raises(ValueError, match=r"WindowBatch\.channels must be one name"):
-        make_batch(channels=("close", "rsi14"))
+        make_batch(channels=("close_logret", "rsi14"))
 
 
 def test_forecast_path_must_be_one_dimensional() -> None:

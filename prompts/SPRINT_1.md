@@ -311,7 +311,7 @@ Implement features/builder.py:
 
 Requirements:
 - Channel order is exactly cfg.channels[cfg.channels.active], deterministic
-- Target y is the future log-return path of `close`, H steps ahead
+- Target y is the future path of the `close_logret` channel, H steps ahead
 - Normalisation statistics are PASSED IN, never fitted inside build_windows.
   Fitting inside would leak test data into training — this is the single most
   likely place for leakage to enter the system.

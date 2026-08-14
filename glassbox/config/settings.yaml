@@ -25,8 +25,8 @@ fits:
   individual_weights: false   # false = one shared model across the universe
 
 channels:
-  C0_base:    [close, rsi14, vol_z, mom10, ma_dist20]
-  C2_hybrid:  [close, rsi14, vol_z, mom10, ma_dist20, wav_a1, wav_a2, wav_a3]
+  C0_base:    [close_logret, rsi14, vol_z, mom10, ma_dist20]
+  C2_hybrid:  [close_logret, rsi14, vol_z, mom10, ma_dist20, wav_a1, wav_a2, wav_a3]
   active: C0_base       # updated after the study picks a winner
 
 model:

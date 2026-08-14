@@ -240,9 +240,15 @@ want to reuse belongs in the package instead. They are deliberately absent from
 **Canonical channel names:**
 
 ```
-close      rsi14      vol_z      mom10      ma_dist20
-wav_a1     wav_a2     wav_a3     wav_d1     wav_d2     wav_d3
+close_logret   rsi14      vol_z      mom10      ma_dist20
+wav_a1         wav_a2     wav_a3     wav_d1     wav_d2     wav_d3
 ```
+
+`close_logret` is the log-return series `r_t = ln(C_t / C_{t-1})`, not the price level.
+The name is explicit because the explanation layer renders it: "62% from the
+`close_logret` channel" is unambiguous where "62% from the `close` channel" would leave
+a reader unable to tell price from return. The raw `close` column stays in the bar
+frame, where the backtester takes it for PnL — that one really is the price.
 
 ### 4.2 Core schemas (`contracts/schemas.py`)
 
@@ -410,8 +416,8 @@ fits:
   individual_weights: false   # false = one shared model across the universe
 
 channels:
-  C0_base:    [close, rsi14, vol_z, mom10, ma_dist20]
-  C2_hybrid:  [close, rsi14, vol_z, mom10, ma_dist20, wav_a1, wav_a2, wav_a3]
+  C0_base:    [close_logret, rsi14, vol_z, mom10, ma_dist20]
+  C2_hybrid:  [close_logret, rsi14, vol_z, mom10, ma_dist20, wav_a1, wav_a2, wav_a3]
   active: C0_base       # updated after the study picks a winner
 
 model:
@@ -498,7 +504,7 @@ x : (B, L)  log returns, one channel
 
 ### 6.4 Multivariate handling
 
-FITS in the paper shares weights across channels. Here, the forecast target is the `close` log-return channel only. Auxiliary channels (indicators, wavelets) are **not** fed to FITS in the primary configuration — the spectral pipeline is univariate by design.
+FITS in the paper shares weights across channels. Here, the forecast target is the `close_logret` channel only. Auxiliary channels (indicators, wavelets) are **not** fed to FITS in the primary configuration — the spectral pipeline is univariate by design.
 
 This creates a **deliberately empty cell** in the study grid: `FITS × C2_hybrid`. Feeding pre-filtered wavelet bands into a model whose first act is to filter frequencies is redundant. **State this reasoning explicitly in the report.** Do not fill a cell to make a table look complete.
 

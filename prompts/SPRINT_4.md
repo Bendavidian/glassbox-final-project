@@ -57,7 +57,7 @@ Use Plan mode. Read §6.2 and §6.3 carefully before proposing an approach.
 Implement model/fits.py with FITSForecaster, following the pipeline in spec §6.2
 exactly:
 
-    x : (B, L) log returns, close channel only
+    x : (B, L) log returns, close_logret channel only
       → RIN: subtract instance mean, store it for inversion
       → rFFT → (B, L//2 + 1) complex
       → LPF: keep the first COF bins, where COF = input_len // cutoff_period_days
@@ -70,7 +70,7 @@ exactly:
       → split: [:L] backcast, [L:] forecast
 
 Requirements:
-- Univariate by design: FITS consumes the close log-return channel only. Auxiliary
+- Univariate by design: FITS consumes the `close_logret` channel only. Auxiliary
   channels are not fed to it. See spec §6.4 — this is deliberate, not an oversight.
 - Supervision is B+F (backcast + forecast), hardcoded. The toggle is cut from scope.
 - Expose reconstruct(x) returning the backcast segment, for the GB-42 test

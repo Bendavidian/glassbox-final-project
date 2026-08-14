@@ -37,17 +37,21 @@ from glassbox.features import indicators
 
 # Channel name -> the function that produces it from a canonical bar frame.
 #
-# `close` maps to the log-return series, not the raw price. Spec 4.1 fixes the model
-# input series as log returns and spec 7.3 bans price levels as a modelling target; the
-# channel named `close` is therefore the modelled quantity *of* close. Raw prices stay in
-# the bars frame, where the backtester takes them for PnL.
+# `close_logret` is the log-return series, not the raw price. Spec 4.1 fixes the model
+# input series as log returns and spec 7.3 bans price levels as a modelling target. The
+# name says so because GB-30 renders it: "62% from the close_logret channel" is
+# unambiguous where "the close channel" would not be. The raw `close` column stays in the
+# bars frame, where the backtester takes it for PnL.
 CHANNEL_BUILDERS = {
-    "close": lambda bars: bars[LOG_RETURN],
+    "close_logret": lambda bars: bars[LOG_RETURN],
     "rsi14": indicators.rsi14,
     "vol_z": indicators.vol_z,
     "mom10": indicators.mom10,
     "ma_dist20": indicators.ma_dist20,
 }
+
+# The channel the forecast targets (spec 6.4: the spectral pipeline is univariate).
+TARGET_CHANNEL = "close_logret"
 
 # How much history each channel needs behind a window before its value at a given
 # timestamp is the same number training would have computed there.
@@ -61,7 +65,7 @@ CHANNEL_BUILDERS = {
 # GB-47 must add wav_a1..wav_a3 at 64 (the wavelet rolling window). min_history_bars then
 # updates itself with no edit anywhere else.
 PARITY_WARMUP = {
-    "close": 1,
+    "close_logret": 1,
     "rsi14": 232,
     "vol_z": indicators.VOL_Z_WINDOW,
     "mom10": indicators.MOMENTUM_LOOKBACK,
@@ -276,11 +280,11 @@ def _end_positions(
 
 def _target_channel(channels: tuple[str, ...]) -> str:
     """The channel the forecast targets: the close log-return series."""
-    if "close" not in channels:
+    if TARGET_CHANNEL not in channels:
         raise ValueError(
-            "the active channel set has no `close` channel to use as the target"
+            f"the active channel set has no `{TARGET_CHANNEL}` channel to target"
         )
-    return "close"
+    return TARGET_CHANNEL
 
 
 def _single_source(bars: pd.DataFrame) -> str:

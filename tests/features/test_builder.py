@@ -81,13 +81,13 @@ def test_no_nans_survive_the_warmup_trim(cfg: Config) -> None:
     assert len(frame) < BARS  # the warm-up really was trimmed
 
 
-def test_close_channel_is_the_log_return_series(cfg: Config) -> None:
-    """Spec 4.1 fixes the model input series as log returns, so `close` is close's."""
+def test_close_logret_channel_is_the_log_return_series(cfg: Config) -> None:
+    """Spec 4.1 fixes the model input series as log returns, and the name says so."""
     bars = make_bars()
     frame = builder.build_feature_frame(bars, cfg)
 
     pd.testing.assert_series_equal(
-        frame["close"], bars.loc[frame.index, "log_return"], check_names=False
+        frame["close_logret"], bars.loc[frame.index, "log_return"], check_names=False
     )
 
 
@@ -155,7 +155,9 @@ def test_min_history_bars_tracks_the_active_channel_set(cfg: Config) -> None:
     smaller = replace(
         cfg,
         channels=replace(
-            cfg.channels, sets=(("only_close", ("close",)),), active="only_close"
+            cfg.channels,
+            sets=(("only_close", ("close_logret",)),),
+            active="only_close",
         ),
     )
     assert builder.min_history_bars(smaller) == cfg.window.input_len + 1
@@ -165,7 +167,9 @@ def test_min_history_bars_raises_for_an_undeclared_channel(cfg: Config) -> None:
     exotic = replace(
         cfg,
         channels=replace(
-            cfg.channels, sets=(("exotic", ("close", "wav_a1")),), active="exotic"
+            cfg.channels,
+            sets=(("exotic", ("close_logret", "wav_a1")),),
+            active="exotic",
         ),
     )
     with pytest.raises(ValueError, match="wav_a1"):
@@ -221,7 +225,7 @@ def test_y_is_the_next_h_close_log_returns(cfg: Config) -> None:
 
     for row in (0, 42, len(batch.timestamps) - 1):
         position = frame.index.get_loc(batch.timestamps[row])
-        expected = frame["close"].iloc[position + 1 : position + 1 + HORIZON]
+        expected = frame["close_logret"].iloc[position + 1 : position + 1 + HORIZON]
         np.testing.assert_allclose(
             batch.y[row], expected.to_numpy(dtype="float32"), rtol=0, atol=0
         )
@@ -375,7 +379,7 @@ def test_normalisation_uses_the_supplied_statistics(cfg: Config) -> None:
 def test_stats_for_other_channels_are_refused(cfg: Config) -> None:
     frame = builder.build_feature_frame(make_bars(), cfg)
     wrong = ChannelStats(
-        channels=("close", "rsi14"),
+        channels=("close_logret", "rsi14"),
         mean=(0.0, 50.0),
         std=(1.0, 10.0),
         fitted_start=frame.index[0],
