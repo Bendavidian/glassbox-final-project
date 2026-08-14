@@ -7,6 +7,42 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — GB-8: RSI emits nothing until its seed has decayed; vol_z is source-safe
+
+**Decision.** `rsi14` holds its first 77 rows NaN, not the conventional 14. `vol_z` stays
+in the channel set for both training and live. Indicator periods are module constants.
+
+**Reasoning.**
+
+*RSI warm-up.* Wilder's average is recursive: it is seeded with a simple mean of the
+first 14 changes and then updated as `(prev * 13 + new) / 14`. The seed never leaves —
+its weight decays geometrically at `(1 - 1/14)` per bar, so the conventional first
+published value at bar 14 is *entirely* seed. Holding rows until the seed's weight falls
+below 1% gives 63 further bars, so 77 in total: `RSI_WARMUP = RSI_PERIOD +
+ceil(log(0.01) / log(1 - 1/14))`, computed rather than chosen. The cost is 77 of 2668
+bars, under 3% of the history. The alternative — emitting values that are technically
+defined but still remembering their own warm-up — would put a subtly different quantity
+into the first weeks of every fold, and no test would see it.
+
+*vol_z across sources.* Measured over all 2668 overlapping bars rather than assumed. The
+Alpaca/yfinance volume ratio averages 1.04-1.09, sd 0.045-0.076, and drifts by era:
+~1.08-1.12 (2016-2019), ~1.05-1.13 (2020-2022), ~1.006-1.014 (2023-2026). The drift is
+real but multi-year, so within any 20-bar window the ratio is constant and cancels in the
+z-score. Residual divergence between a z computed from each source: median 0.016-0.039,
+p95 0.15-0.29, against a z whose own sd is 1.06 — a few percent of a standard deviation.
+The tails reach 1.3-4.6, but every one of those lands on 2018-05-02 or 2018-05-03 for all
+five symbols at once, which is a vendor-side event on two days, not per-symbol noise.
+
+**Consequence.** vol_z is safe in the live channel set, on one condition that is now
+stated in the module docstring: **a single window must be assembled from a single
+source.** Splicing cached yfinance history onto live Alpaca bars inside one 20-bar window
+would put a ~5% level step inside the normalising window and fabricate a z-score spike.
+GB-9 must keep assembling each window from one loader. The two 2018 dates are worth a
+line in the data-quality appendix of the report; they are visible in `vol_z` and in
+nothing else.
+
+---
+
 ## 2026-08-14 — GB-7: one normaliser defines the schema; SIP + Adjustment.ALL; no live cache
 
 **Decision.** `historical.normalise_bars` is the single definition of the bar schema, and
