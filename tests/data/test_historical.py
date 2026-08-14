@@ -205,7 +205,7 @@ def test_stale_cache_is_returned_unchanged(
     """A cache ending before today is served as-is; refreshing is explicit (GB-59)."""
     cache_dir = Path(cfg.data.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    old = historical._normalise(multiindex_frame("AAPL"), "AAPL")
+    old = historical.normalise_bars(multiindex_frame("AAPL"), "AAPL")
     old.to_parquet(cache_dir / "AAPL.parquet")
 
     frame = historical.load_history(["AAPL"], cfg)["AAPL"]

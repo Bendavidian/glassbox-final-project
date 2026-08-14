@@ -7,6 +7,41 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — GB-7: one normaliser defines the schema; SIP + Adjustment.ALL; no live cache
+
+**Decision.** `historical.normalise_bars` is the single definition of the bar schema, and
+`data/live.py` calls it. Live requests pin `feed=SIP` and `adjustment=ALL`. Live does not
+cache. The shared normaliser also pins three things the two vendors disagree about:
+volume dtype (`int64`), index resolution (`ms`), and index freq (`None`).
+
+**Reasoning.** Measured, not assumed, on this account:
+
+* **Adjustment.** Alpaca's default is `RAW`. Across AAPL's 2020-08-31 4:1 split, RAW
+  closes 499.75 where yfinance's adjusted series closes 121.08; `SPLIT` alone closes
+  124.94 because it leaves dividends in. Only `ALL` matches. Taking the default would
+  have produced a *perfect* schema match with prices off by a factor of four — the exact
+  failure GB-27 would not catch, since shapes and dtypes would agree.
+* **Feed.** SIP returns 2669 daily bars back to 2016-01-04; IEX returns 1521 back to
+  2020-07-27. Both exceed the 120-bar input window, so either would serve the live loop,
+  but SIP is the consolidated tape and is what yfinance reports. Pinning it means a lost
+  subscription fails loudly instead of silently switching to a single venue's prices.
+* **No cache.** GB-4 caches because a study needs a fixed snapshot. Live has the
+  opposite requirement: a cached bar served into a trading decision is a stale price.
+  The same reasoning produces opposite designs because the two modules answer different
+  questions.
+* **Schema by construction.** Two implementations that agree today drift tomorrow. One
+  function that both call cannot. The dtype and index pins came out of measurement:
+  Alpaca reports volume as `float64` and stamps bars at midnight New York in microsecond
+  resolution; yfinance reports `int64` at the bare date in milliseconds.
+
+**Consequence.** Prices from the two sources agree to under 1 bp; volume differs by
+34-111 bps and always will, so no feature may assume cross-source volume equality.
+During market hours Alpaca returns an in-progress bar for the current day — GB-26 must
+decide whether the live loop acts on a partial bar, and this is flagged there rather than
+silently dropped here.
+
+---
+
 ## 2026-08-14 — GB-6: the paper endpoint is a constant, and the guard lives in the config layer
 
 **Decision.** `PAPER_ENDPOINT` is a module constant in `config/loader.py`.

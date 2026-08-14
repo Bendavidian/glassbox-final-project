@@ -46,7 +46,12 @@ LOGGER = logging.getLogger(__name__)
 
 OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
 CLOSE = "close"
+VOLUME = "volume"
 LOG_RETURN = "log_return"
+
+# The canonical index resolution. yfinance via parquet lands on milliseconds, the Alpaca
+# SDK on microseconds; the same trading day in two resolutions is two different dtypes.
+INDEX_UNIT = "ms"
 
 
 def load_history(
@@ -123,7 +128,7 @@ def _fetch(symbol: str, start: str) -> pd.DataFrame:
         auto_adjust=True,
         progress=False,
     )
-    return _normalise(raw, symbol)
+    return normalise_bars(raw, symbol)
 
 
 def _end_exclusive() -> str:
@@ -132,8 +137,18 @@ def _end_exclusive() -> str:
     return tomorrow.strftime("%Y-%m-%d")
 
 
-def _normalise(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
-    """Turn a yfinance frame into the shape this project's contracts assume."""
+def normalise_bars(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """Turn a raw bar frame into the one schema the feature layer is allowed to see.
+
+    This is the single definition of that schema. ``data/live.py`` calls it too, so the
+    two sources cannot drift apart: identical columns, identical dtypes, identical index
+    convention, by construction rather than by two implementations agreeing. GB-27's
+    parity test depends on that.
+
+    Accepts any frame carrying OHLCV columns in any case, with or without MultiIndex
+    columns and with or without extra columns, and returns
+    ``open, high, low, close, volume, log_return``.
+    """
     if raw is None or raw.empty:
         raise ValueError(f"{symbol} returned no bars")
 
@@ -157,17 +172,29 @@ def _normalise(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
     frame = frame[~frame.index.duplicated(keep="last")]
     frame = frame.sort_index()
 
+    # Alpaca returns volume as float, yfinance as int. Pin it, or two sources with the
+    # same numbers still fail a dtype comparison.
+    frame[VOLUME] = frame[VOLUME].astype("int64")
+
     frame[LOG_RETURN] = np.log(frame[CLOSE] / frame[CLOSE].shift(1))
     return frame
 
 
 def _normalise_index(index: pd.Index, symbol: str) -> pd.DatetimeIndex:
-    """Coerce an index to a tz-aware UTC DatetimeIndex."""
+    """Coerce an index to a tz-aware UTC DatetimeIndex, at midnight, in one resolution.
+
+    Alpaca stamps a daily bar at midnight New York (04:00 or 05:00 UTC); yfinance stamps
+    the bare date. Both mean the same trading day, so both are floored to midnight UTC.
+    """
     converted = pd.DatetimeIndex(pd.to_datetime(index))
     if converted.tz is None:
         converted = converted.tz_localize("UTC")
     else:
         converted = converted.tz_convert("UTC")
+    converted = converted.normalize().as_unit(INDEX_UNIT)
+    # freq is part of an index's identity to assert_frame_equal, and a parquet roundtrip
+    # can restore an inferred one. Pin it to None so every path agrees.
+    converted.freq = None
     converted.name = "date"
     if converted.hasnans:
         raise ValueError(f"{symbol} has an unparseable date in its index")
