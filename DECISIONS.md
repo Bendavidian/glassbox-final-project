@@ -7,6 +7,30 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — GB-4: the parquet cache is a snapshot, and downloads are per-symbol
+
+**Decision.** `load_history` downloads one symbol per yfinance call rather than
+requesting the universe in bulk. A cached symbol is returned exactly as stored, however
+old; there is no incremental top-up. Refreshing is explicit, via `force_refresh=True`.
+
+**Reasoning.** Per-symbol keeps one parsing path — yfinance's column layout changes shape
+with the number of tickers requested — and maps one-to-one onto the per-symbol cache
+files, so a partial cache fetches only what is missing and one bad ticker cannot fail the
+universe. Five daily requests cost about eleven seconds, once.
+
+Staleness is the more consequential half. Spec §7.4 caches the study's data to parquet so
+the grid runs against a fixed snapshot, and GB-59 requires a clean clone to reproduce
+reported results. A loader that silently extended its data each day would make two runs
+of the same study disagree with no code change, and the disagreement would be invisible
+in the output. Explicit refresh makes the snapshot boundary a decision someone took,
+rather than a side effect of what day it happens to be.
+
+**Consequence.** Re-running the study tomorrow uses today's data unless the cache is
+refreshed deliberately. Every cache hit logs its last bar, so staleness is visible in the
+run log. The live loop does not use this module — it reads `data/live.py` (GB-7).
+
+---
+
 ## 2026-08-14 — Python floor raised to 3.12; CI installs from `requirements.lock`
 
 **Decision.** `requires-python` becomes `>=3.12`, CI pins `python-version: "3.12"`, and
