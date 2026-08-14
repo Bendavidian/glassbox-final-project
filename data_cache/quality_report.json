@@ -1,0 +1,92 @@
+{
+  "AAPL": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "volume": 0
+    },
+    "symbol": "AAPL"
+  },
+  "AMZN": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "volume": 0
+    },
+    "symbol": "AMZN"
+  },
+  "GOOGL": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "volume": 0
+    },
+    "symbol": "GOOGL"
+  },
+  "MSFT": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "volume": 0
+    },
+    "symbol": "MSFT"
+  },
+  "NVDA": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [
+      [
+        "2016-11-11",
+        0.26087632725560284
+      ]
+    ],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "volume": 0
+    },
+    "symbol": "NVDA"
+  }
+}

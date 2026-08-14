@@ -4,7 +4,12 @@
 !.env.example
 
 # Data and model artefacts
-data_cache/
+# The parquet snapshots stay out of git; the quality report does not. It is a provenance
+# artifact — it records what the data looked like when a result was produced, which a
+# reader of that result needs and cannot reconstruct. Note the pattern: `data_cache/`
+# would exclude the directory itself and make the negation below unreachable.
+data_cache/*
+!data_cache/quality_report.json
 checkpoints/
 
 # Python

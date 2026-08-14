@@ -7,6 +7,27 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — Considered and rejected: caching site-packages in CI
+
+**Decision.** CI keeps `actions/setup-python`'s pip cache and installs from
+`requirements.lock` on every run. No site-packages or virtualenv caching is added.
+
+**Reasoning.** Measured, not assumed. Run 176fe01 (cold cache) took **2m45s**; run
+067d10f (warm cache, lockfile unchanged) took **2m12s**. The 33-second difference
+confirms what the mechanism predicts: `setup-python`'s pip cache stores the HTTP download
+cache, so torch is not re-downloaded but every wheel is still reinstalled, and
+installation dominates. Caching site-packages keyed on the lockfile hash would skip
+installation, but it breaks in subtle ways — absolute paths in `.pth` files, editable
+install metadata — and CI that fails incomprehensibly costs far more than CI that takes
+thirty seconds longer. At roughly 40 remaining pushes to submission, the whole
+optimisation is worth about 20 minutes.
+
+**Consequence.** Expect ~2m10s per push. If a future change makes CI materially slower —
+a heavier dependency, a long test suite — revisit with fresh measurements rather than
+from memory of this entry.
+
+---
+
 ## 2026-08-14 — GB-4: the parquet cache is a snapshot, and downloads are per-symbol
 
 **Decision.** `load_history` downloads one symbol per yfinance call rather than
