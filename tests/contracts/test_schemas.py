@@ -30,6 +30,7 @@ def make_batch(**overrides: Any) -> WindowBatch:
         "channels": ("close", "rsi14", "vol_z"),
         "timestamps": pd.date_range("2026-01-01", periods=BATCH, tz="UTC"),
         "symbol": "AAPL",
+        "source": "yfinance",
     }
     fields.update(overrides)
     return WindowBatch(**fields)

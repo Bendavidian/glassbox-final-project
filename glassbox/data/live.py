@@ -64,6 +64,8 @@ from glassbox.data.historical import normalise_bars
 
 LOGGER = logging.getLogger(__name__)
 
+SOURCE_ALPACA = "alpaca"
+
 # A trading day is about 1.45 calendar days once weekends and holidays are counted.
 # Two gives roughly a 38% margin, which covers the longest holiday stretches.
 CALENDAR_DAYS_PER_TRADING_DAY = 2
@@ -102,7 +104,7 @@ def load_live_bars(
         if symbol not in raw.index.get_level_values(0):
             raise ValueError(f"{symbol} returned no live bars since {start:%Y-%m-%d}")
 
-        frame = normalise_bars(raw.xs(symbol), symbol)
+        frame = normalise_bars(raw.xs(symbol), symbol, SOURCE_ALPACA)
         if len(frame) < cfg.window.input_len:
             raise ValueError(
                 f"{symbol} returned {len(frame)} bars, fewer than the "

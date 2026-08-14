@@ -49,6 +49,14 @@ CLOSE = "close"
 VOLUME = "volume"
 LOG_RETURN = "log_return"
 
+# Provenance travels with the bars as a column rather than in `frame.attrs`, because
+# attrs are silently dropped by many pandas operations and are not stored by parquet,
+# so they would produce false alarms. A column survives slicing, concat and the cache,
+# and a spliced frame shows up directly as two distinct values. features/builder.py
+# refuses to assemble a window from a frame whose provenance is missing or mixed.
+SOURCE_COLUMN = "source"
+SOURCE_YFINANCE = "yfinance"
+
 # The canonical index resolution. yfinance via parquet lands on milliseconds, the Alpaca
 # SDK on microseconds; the same trading day in two resolutions is two different dtypes.
 INDEX_UNIT = "ms"
@@ -128,7 +136,7 @@ def _fetch(symbol: str, start: str) -> pd.DataFrame:
         auto_adjust=True,
         progress=False,
     )
-    return normalise_bars(raw, symbol)
+    return normalise_bars(raw, symbol, SOURCE_YFINANCE)
 
 
 def _end_exclusive() -> str:
@@ -137,7 +145,7 @@ def _end_exclusive() -> str:
     return tomorrow.strftime("%Y-%m-%d")
 
 
-def normalise_bars(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
+def normalise_bars(raw: pd.DataFrame, symbol: str, source: str) -> pd.DataFrame:
     """Turn a raw bar frame into the one schema the feature layer is allowed to see.
 
     This is the single definition of that schema. ``data/live.py`` calls it too, so the
@@ -177,6 +185,7 @@ def normalise_bars(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
     frame[VOLUME] = frame[VOLUME].astype("int64")
 
     frame[LOG_RETURN] = np.log(frame[CLOSE] / frame[CLOSE].shift(1))
+    frame[SOURCE_COLUMN] = pd.Series(source, index=frame.index, dtype="string")
     return frame
 
 
@@ -202,9 +211,15 @@ def _normalise_index(index: pd.Index, symbol: str) -> pd.DatetimeIndex:
 
 
 def _read_cache(path: Path, symbol: str) -> pd.DataFrame:
-    """Read a cached frame and re-assert the index contract on the way out."""
+    """Read a cached frame and re-assert the index and provenance contracts."""
     frame = pd.read_parquet(path)
     frame.index = _normalise_index(frame.index, symbol)
+    # Caches written before provenance existed carry no source column; this file is a
+    # yfinance snapshot by construction, so stamping it is a statement of fact.
+    if SOURCE_COLUMN not in frame.columns:
+        frame[SOURCE_COLUMN] = pd.Series(
+            SOURCE_YFINANCE, index=frame.index, dtype="string"
+        )
     return frame
 
 

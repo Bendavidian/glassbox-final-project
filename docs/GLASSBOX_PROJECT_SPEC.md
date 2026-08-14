@@ -263,6 +263,18 @@ class WindowBatch:
     channels: tuple[str, ...]   # length C, ordered, matches X's last axis
     timestamps: pd.DatetimeIndex  # length B, the 't' of each window
     symbol: str
+    source: str            # provenance: the data source these windows were built from
+
+@dataclass(frozen=True)
+class ChannelStats:
+    """Normalisation statistics, fitted on a training split only (GB-9).
+       Passed into build_windows; NEVER fitted inside it."""
+    channels: tuple[str, ...]     # ordered, matches WindowBatch's channel axis
+    mean: tuple[float, ...]       # aligned to `channels`
+    std: tuple[float, ...]        # aligned to `channels`
+    fitted_start: pd.Timestamp    # first row the statistics were fitted on
+    fitted_end: pd.Timestamp      # last row — with fitted_start, identifies the split
+    n_rows: int
 
 @dataclass(frozen=True)
 class Forecast:
@@ -675,7 +687,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 
 | ID | Task | Epic | Own | SP | Done when |
 |---|---|---|---|---|---|
-| GB-26 | `live_loop.py` — scheduler, market-hours guard, 60s polling. **Must drop the in-progress bar for the current session** via a function named for what it does (`drop_incomplete_bar` or similar), logging each drop with its timestamp — the model is trained on completed daily bars only | E7 | N | 5 | Runs a full session unattended; an in-progress bar is excluded by an explicitly tested function, and each drop appears in the run log |
+| GB-26 | `live_loop.py` — scheduler, market-hours guard, 60s polling. **Must drop the in-progress bar for the current session** via a function named for what it does (`drop_incomplete_bar` or similar), logging each drop with its timestamp — the model is trained on completed daily bars only. **Must request at least `builder.min_history_bars(cfg)` bars** (352 for `C0_base`), never `input_len`: recursive channels need warm-up beyond the window, or the live values differ from the training values at the same timestamp | E7 | N | 5 | Runs a full session unattended; an in-progress bar is excluded by an explicitly tested function, and each drop appears in the run log; the live fetch requests at least `min_history_bars(cfg)` |
 | GB-27 | **Train/live parity test** — identical windows from both paths | E3 | B | 3 | Byte-identical `X` for the same timestamp |
 | GB-28 | `rank.py` — cross-sectional top-K selection | E6 | B | 2 | Deterministic ordering; ties broken stably |
 | GB-29 | `DecisionRecord` persistence (JSONL) + config hashing | E6 | B | 3 | A record can be replayed into an identical decision |
@@ -711,7 +723,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 | GB-54 | Demo script + two full rehearsals | E12 | N | 3 | Runs end to end twice without intervention |
 | GB-55 | Technical report — architecture and system design chapters | E12 | N | 5 | Draft reviewed by Ben |
 | GB-56 | Technical report — methodology and leak-freedom chapters | E12 | B | 5 | Draft reviewed by Noy |
-| GB-57 | Technical report — results, discussion, future work | E12 | B | 5 | Every table carries a persistence delta |
+| GB-57 | Technical report — results, discussion, future work. The data-quality appendix must note the **2026-08 finding that yfinance and Alpaca volumes disagree materially on 2018-05-02 and 2018-05-03 for all five symbols at once** — a two-day vendor-side event, visible in `vol_z` and in no other channel | E12 | B | 5 | Every table carries a persistence delta; the appendix records the 2018 volume event |
 | GB-58 | Presentation deck | E12 | N | 3 | Rehearsed within time limit |
 | GB-59 | Reproducibility audit: clean clone → full run | E1 | B | 3 | Fresh machine reproduces results |
 | GB-60 | **GATE 3** — final tag, submission | E1 | B | 2 | Repo tagged `v1.0-submission` |

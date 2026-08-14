@@ -48,6 +48,7 @@ class WindowBatch:
     channels: tuple[str, ...]  # length C, ordered, matches X's last axis
     timestamps: pd.DatetimeIndex  # length B, the 't' of each window
     symbol: str
+    source: str  # the data source these windows were built from, e.g. "yfinance"
 
     def __post_init__(self) -> None:
         if self.X.ndim != 3:
@@ -76,6 +77,58 @@ class WindowBatch:
                 f"one name per channel in X ({self.X.shape[2]})",
                 len(self.channels),
             )
+
+
+@dataclass(frozen=True)
+class ChannelStats:
+    """Normalisation statistics for one symbol's channels.
+
+    Fitted on a training split only, by ``features.builder.fit_stats``, and passed into
+    ``build_windows``. Never fitted inside window assembly: doing so would fold the test
+    period's mean and variance into the training input, which is the single most likely
+    place for leakage to enter this system.
+
+    ``mean`` and ``std`` are positional against ``channels``, so ordering is explicit and
+    two folds' statistics compare with a plain equality check. Every field is a float,
+    a string or a timestamp, so a checkpoint (GB-15) serialises it without a custom
+    encoder.
+
+    ``fitted_start`` and ``fitted_end`` record which rows produced these numbers. They
+    are what make "were these fitted on training data only?" an answerable question:
+    GB-25's leakage audit intersects that range against the fold's test range.
+    """
+
+    channels: tuple[str, ...]  # ordered, matches WindowBatch's channel axis
+    mean: tuple[float, ...]  # aligned to `channels`
+    std: tuple[float, ...]  # aligned to `channels`
+    fitted_start: pd.Timestamp  # first row the statistics were fitted on
+    fitted_end: pd.Timestamp  # last row — with fitted_start, identifies the split
+    n_rows: int
+
+    def __post_init__(self) -> None:
+        if len(self.mean) != len(self.channels):
+            _fail(
+                "ChannelStats.mean",
+                f"one value per channel ({len(self.channels)})",
+                len(self.mean),
+            )
+        if len(self.std) != len(self.channels):
+            _fail(
+                "ChannelStats.std",
+                f"one value per channel ({len(self.channels)})",
+                len(self.std),
+            )
+        if self.n_rows <= 0:
+            _fail("ChannelStats.n_rows", "a positive row count", self.n_rows)
+        if self.fitted_start > self.fitted_end:
+            _fail(
+                "ChannelStats.fitted_start",
+                f"no later than fitted_end ({self.fitted_end})",
+                self.fitted_start,
+            )
+        for channel, deviation in zip(self.channels, self.std, strict=True):
+            if not deviation > 0:
+                _fail(f"ChannelStats.std[{channel}]", "greater than zero", deviation)
 
 
 @dataclass(frozen=True)
@@ -142,6 +195,7 @@ class DecisionRecord:
 
 __all__ = [
     "Attribution",
+    "ChannelStats",
     "DecisionRecord",
     "Forecast",
     "Signal",

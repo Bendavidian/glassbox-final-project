@@ -91,7 +91,17 @@ def test_columns_are_lowercase_ohlcv_plus_log_return(
         "close",
         "volume",
         "log_return",
+        "source",
     ]
+
+
+def test_bars_carry_their_provenance(
+    cfg: Config, stub_download: dict[str, int]
+) -> None:
+    """A window must never be assembled from a frame of mixed provenance (GB-9)."""
+    frame = historical.load_history(["AAPL"], cfg)["AAPL"]
+
+    assert frame["source"].unique().tolist() == [historical.SOURCE_YFINANCE]
 
 
 def test_index_is_tz_aware_utc_monotonic_and_unique(
@@ -205,7 +215,9 @@ def test_stale_cache_is_returned_unchanged(
     """A cache ending before today is served as-is; refreshing is explicit (GB-59)."""
     cache_dir = Path(cfg.data.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    old = historical.normalise_bars(multiindex_frame("AAPL"), "AAPL")
+    old = historical.normalise_bars(
+        multiindex_frame("AAPL"), "AAPL", historical.SOURCE_YFINANCE
+    )
     old.to_parquet(cache_dir / "AAPL.parquet")
 
     frame = historical.load_history(["AAPL"], cfg)["AAPL"]

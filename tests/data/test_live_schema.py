@@ -116,7 +116,15 @@ def test_extra_alpaca_columns_are_dropped(cfg: Config, stub_live: None) -> None:
 
     assert "trade_count" not in frame.columns
     assert "vwap" not in frame.columns
-    assert list(frame.columns) == [*historical.OHLCV_COLUMNS, "log_return"]
+    assert list(frame.columns) == [*historical.OHLCV_COLUMNS, "log_return", "source"]
+
+
+def test_live_bars_are_stamped_alpaca(cfg: Config, stub_live: None) -> None:
+    """Both loaders stamp provenance, so the schemas stay identical and GB-9 can tell
+    a spliced frame from a clean one."""
+    frame = live.load_live_bars(["AAPL"], cfg)["AAPL"]
+
+    assert frame["source"].unique().tolist() == [live.SOURCE_ALPACA]
 
 
 def test_log_return_is_present_and_unfilled(cfg: Config, stub_live: None) -> None:

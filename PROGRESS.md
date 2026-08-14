@@ -8,7 +8,7 @@ Append one line per completed task. Newest at the bottom of each sprint.
 ## Current state
 
 **Sprint:** 1 — Foundations (15–28 Aug 2026)
-**Next task:** GB-9
+**Next task:** GB-10
 **Last gate passed:** none
 **Blockers:** none
 
@@ -32,7 +32,7 @@ Append one line per completed task. Newest at the bottom of each sprint.
 | GB-6 | 14 Aug 2026 | Ben | **Complete.** Credentials load only via `alpaca_credentials()`; `require_paper_endpoint()` refuses any non-paper endpoint (verified, exit 2); `.env.example` committed, `.env` ignored; git history scan clean. `scripts/smoke_alpaca.py` prints the paper account: ACTIVE, equity 100000, buying power 400000. Scripts guard their imports and name the venv command. |
 | GB-7 | 14 Aug 2026 | Ben | **Complete.** `data/live.py` fetches Alpaca daily bars through `historical.normalise_bars`, the single schema definition, so live and historical are indistinguishable by construction. Pins `feed=SIP` and `adjustment=ALL` (default RAW is off by 4× across a split); no caching. Measured vs yfinance over 163 bars: prices agree to <0.3 bps, volume differs 34–111 bps. 10 schema tests on a recorded response fixture; suite at 155. |
 | GB-8 | 14 Aug 2026 | Ben | **Complete.** `features/indicators.py` — `rsi14` (Wilder, explicit recursion), `vol_z`, `mom10`, `ma_dist20`; all pure, trailing-only, warm-up left NaN. RSI holds 77 rows, not 14, until its seed's weight decays below 1%. vol_z verified source-safe over 2668 bars. 53 tests against an independent pure-Python reference; suite at 208. |
-| GB-9 | | Ben | |
+| GB-9 | 14 Aug 2026 | Ben | **Complete.** `features/builder.py` — the keystone. `build_feature_frame` (provenance-gated, warm-up trimmed), `fit_stats` (external, records its fitted range), `build_windows` (one slicing path; `as_of` filters the same positions the batch path uses). Contract additions: `ChannelStats` and `WindowBatch.source` in spec §4.2. `min_history_bars` = 352 for C0, derived from per-channel warm-ups and verified byte-identical against full history. 30 tests; suite at 240. |
 | GB-10 | | Ben | |
 | GB-11 | | Ben | |
 | GB-12 | | Noy | |

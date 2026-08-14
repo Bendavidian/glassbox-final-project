@@ -7,6 +7,69 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — GB-9: the keystone, and two contract additions
+
+**Decision.** Spec §4.2 gains `ChannelStats` and `WindowBatch.source`. Provenance travels
+as a `source` column on the bar frame. Features are computed once on the full series and
+sliced per fold. `min_history_bars(cfg)` is derived from per-channel declared warm-ups.
+The channel named `close` carries the close **log-return** series. `build_windows`
+returns a NaN target when the future is not yet known.
+
+**Reasoning.**
+
+*The two contract additions cost one line each today.* `ChannelStats` crosses a layer
+boundary and is persisted in a checkpoint, which is exactly `WindowBatch`'s profile, so
+it belongs beside it rather than in `features/`. Its `fitted_start` / `fitted_end` make
+"were these statistics fitted on training data only?" answerable rather than hoped —
+GB-25's leakage audit intersects that range against the fold's test range. This is the
+GB-0b lesson applied early: `Attribution` was cheap to fix before three models consumed
+it, and expensive after.
+
+*Provenance as a column, not `.attrs`.* Measured: `.attrs` survive slicing but are erased
+by a concat of differing values and are not stored by parquet, so the cache would lose
+them and unrelated pandas operations would raise false alarms. A test that fails for
+unrelated reasons teaches you to ignore it. A column survives everything and shows a
+splice directly as two distinct values.
+
+*Compute once, slice per fold.* Both are causally valid since every indicator is
+trailing. Recomputing per fold would pay the warm-up at every boundary — 232 bars against
+a 24-month training window is 46% of it, and a 3-month test slice could not produce a
+single RSI value. It would also make the same timestamp carry different feature values in
+different folds, breaking cross-fold comparability and train/live parity. What must *not*
+be computed once is the normalisation statistics, which is why `fit_stats` is separate.
+
+*The 352-bar parity warm-up, verified empirically.* A live window built from a tail of N
+bars was compared against the same window built from the full 2668-bar history, on real
+AAPL data:
+
+| Tail bars | Byte-identical | Max abs difference |
+|---|---|---|
+| 197 | no | 4.261e-03 |
+| 250 | no | 7.713e-05 |
+| 300 | no | 5.960e-07 |
+| **352** | **yes** | **0.000e+00** |
+
+Every difference sits in the `rsi14` channel, as predicted. 197 — `input_len` plus the
+emit warm-up — leaves a permanent train/live gap of about 0.06 RSI points that GB-27
+would never see, because the parity test compares builder outputs on one frame rather
+than on histories of different length. 352 is where the seed's residue falls below
+float32 resolution and the gap becomes exactly zero.
+
+*`close` is a log return.* Spec §4.1 fixes the model input series as log returns and §7.3
+bans price levels as a headline quantity, so the channel named `close` is the modelled
+quantity *of* close. Raw prices stay in the bars frame, where the backtester takes them
+for PnL.
+
+*A NaN target for the live window.* At the most recent bar the next H returns do not
+exist. NaN says so; a zero would be a fabricated observation and an exception would force
+a second code path, which is the one thing this module exists to prevent.
+
+**Consequence.** GB-26 must request `min_history_bars(cfg)` bars, now in its "Done when".
+GB-47 must declare `wav_a1..a3: 64` in `PARITY_WARMUP`, after which the number updates
+itself. `C2_hybrid` raises until then rather than silently degrading to C0.
+
+---
+
 ## 2026-08-14 — GB-8: RSI emits nothing until its seed has decayed; vol_z is source-safe
 
 **Decision.** `rsi14` holds its first 77 rows NaN, not the conventional 14. `vol_z` stays
