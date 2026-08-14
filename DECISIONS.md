@@ -7,6 +7,63 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — GB-10: two perturbation modes, two harnesses, and it lives in `tests/`
+
+**Decision.** `tests/causality.py` exposes `assert_causal` and `assert_fit_isolated`. Both
+run two perturbation modes by default — `scale` (multiply future rows by 1.5) and
+`shuffle` (permute future rows with a frozen seed). The harness stays in `tests/` rather
+than in the package, reached from anywhere in the suite via `pythonpath = ["tests"]`.
+
+**Reasoning.**
+
+*A scalar multiply has a blind spot, and it is exactly this project's blind spot.*
+`sign(1.5 · x) == sign(x)`, exactly, so a function leaking **tomorrow's direction** passes
+a purely multiplicative causality test with every value bit-identical. Direction accuracy
+is one of the two headline metrics in §1.4, which makes that the single most expensive
+leak the project could ship, and the one perturbation the spec named cannot see it.
+Measured on real AAPL bars: `np.sign(log_return.shift(-1))` **passes** under `scale` at
+all three splits and is **rejected** under `shuffle`. The second mode is not belt and
+braces; it covers the case that matters most.
+
+*The blindness runs both ways, so neither mode replaces the other.* A permutation
+preserves the multiset, so it cannot move a full-sample mean or variance — the leak that
+`fit_stats` on the whole frame commits. Measured: `scale` moves those statistics by
+4.4e+00 relative, `shuffle` by 1.218e-15. That residue is float non-associativity, not
+information: the exact comparison still rejects the leaky fitter under `shuffle`, but for
+an arithmetic reason rather than an evidential one, and it is recorded here so nobody
+later mistakes it for detection. Both modes run by default because each one is blind
+where the other sees.
+
+*Fitting needs its own harness.* `assert_causal` compares a value per timestamp, and a set
+of normalisation statistics has no such value — it is one object for a whole range, so
+there is nothing to slice at `t`. `assert_fit_isolated` therefore hands the fitter the
+**whole** frame plus the boundary, exactly as a walk-forward caller holds it, and asserts
+the result is unchanged when rows outside the range are perturbed. Slicing before the call
+would test the harness's own slicing rather than the fitter's; handing over the full frame
+catches the realistic mistake, which is a fitter that forgets to slice.
+
+*The harness refuses to pass vacuously.* Three ways a causality test can be green while
+testing nothing: a perturbation that changes no input, a comparison prefix with no rows in
+it, and a prefix that is entirely NaN warm-up. All three raise `ValueError` naming the
+problem, and each has its own test. A test that cannot fail is worse than no test, because
+it leaves a green tick where an audit should have been.
+
+*It lives in `tests/`, and the trigger to move it is named.* It is test infrastructure, and
+`glassbox/` is governed by two contracts it would sit awkwardly inside: spec §3.4 fixes
+the module list, so adding it there needs a spec amendment, and the import-linter layer
+contract governs everything in the package — putting a validation harness in the layer
+stack is precisely what §3.1 keeps out of the live path. In `tests/` the live path
+*cannot* import it, structurally. Both known future consumers (GB-48, GB-25) are tests, so
+they reach it through the same `pythonpath` entry. **If a non-test consumer ever needs it
+— a script, or the dashboard — that is the moment to promote it into the package with a
+spec §3.4 entry, not before.**
+
+**Consequence.** GB-48 reuses `assert_causal` rather than writing a second harness; spec
+§9 now says so on both rows. GB-25's leakage audit has `assert_fit_isolated` plus the
+`ChannelStats` fitted range, which GB-10 also asserts is truthful.
+
+---
+
 ## 2026-08-14 — The canonical channel is `close_logret`, not `close`
 
 **Decision.** The channel carrying the close log-return series is renamed `close` →

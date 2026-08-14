@@ -667,7 +667,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 | GB-7 | `data/live.py` — Alpaca Data API, identical schema to historical | E2 | N | 3 | Same-day bar matches yfinance within tolerance |
 | GB-8 | `indicators.py` — rsi14, vol_z, mom10, ma_dist20 | E3 | B | 3 | Values match a hand-computed fixture |
 | GB-9 | `builder.py` — window assembly from channel config → `WindowBatch` | E3 | B | 5 | Shapes correct for C0 and C2; warm-up trimmed |
-| GB-10 | `test_no_lookahead.py` — perturb-future causality harness | E3 | B | 3 | Perturbing `t+1` leaves all values at `t` unchanged |
+| GB-10 | `test_no_lookahead.py` — perturb-future causality harness in reusable `tests/causality.py` | E3 | B | 3 | Perturbing `t+1` leaves all values at `t` unchanged, in **both** perturbation modes; a deliberately leaky function is rejected |
 | GB-11 | `PersistenceForecaster` + the `Forecaster` contract test | E4 | B | 3 | Contract test passes for persistence |
 | GB-12 | `README.md`, `ARCHITECTURE.md`, `PROGRESS.md`, `DECISIONS.md`. The README must state that a clean install reproducing reported results uses `pip install -r requirements.lock`, not the unpinned upper bounds in `pyproject.toml` | E1 | N | 2 | A newcomer can run the project from README alone |
 
@@ -720,7 +720,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 | GB-45 | `spectral.py` — per-frequency attribution, gain and phase extraction | E8 | B | 5 | Contributions sum to forecast within 1e-5 |
 | GB-46 | Learned frequency-response visualisation (`\|W\|` vs period) | E8 | B | 3 | Plot generated from a trained model |
 | GB-47 | `wavelets.py` — causal rolling DWT → `wav_a1..a3` | E11 | B | 5 | Emits values from bar 64 onward |
-| GB-48 | Wavelet causality + additivity tests | E11 | B | 3 | `a3+d3+d2+d1 ≈ returns`; future perturbation inert |
+| GB-48 | Wavelet causality + additivity tests, via GB-10's `assert_causal` | E11 | B | 3 | `a3+d3+d2+d1 ≈ returns`; future perturbation inert. Reuse the harness — do not write a second one |
 | GB-49 | `study.py` — grid runner, seeds, `results.csv`. **`results.csv` must carry a `data_snapshot_last_bar` column** recording the last bar date of the cached data each arm ran against (see GB-4: the cache is a snapshot and never refreshes itself) | E12 | B | 5 | One command runs the full grid; every row carries `data_snapshot_last_bar` |
 | GB-50 | COF sweep for FITS (2/5/10/20-day cutoff) | E12 | B | 3 | Four arms in results, one row each |
 | GB-51 | Paired Wilcoxon vs persistence on direction accuracy and Sharpe | E12 | B | 3 | p-values in the results table |

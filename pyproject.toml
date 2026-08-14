@@ -61,6 +61,9 @@ extend-exclude = '''
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["reference", "data_cache", "checkpoints", ".git"]
+# tests/causality.py is shared test infrastructure (GB-10), imported by GB-48 and GB-25.
+# It lives in tests/ rather than the package so the live path cannot import it.
+pythonpath = ["tests"]
 
 # Rooted at the glassbox package, so reference/ is outside the contract by construction.
 [tool.importlinter]
