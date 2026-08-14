@@ -33,6 +33,11 @@ from dotenv import load_dotenv
 
 DEFAULT_SETTINGS_PATH = Path(__file__).with_name("settings.yaml")
 
+# The only broker endpoint this project may ever reach. A module constant in the config
+# layer rather than a settings.yaml key: spec 5 froze the config schema, and this is not
+# a tunable — it is the boundary that keeps the system away from real money (spec 2.2).
+PAPER_ENDPOINT = "https://paper-api.alpaca.markets"
+
 VALID_MODELS = ("persistence", "dlinear", "fits")
 VALID_SUPERVISION = ("F", "B+F")
 VALID_LIVE_MODES = ("auto", "co_pilot")
@@ -577,5 +582,26 @@ def alpaca_credentials(dotenv_path: str | Path | None = None) -> AlpacaCredentia
     return AlpacaCredentials(
         api_key=api_key,
         secret_key=secret_key,
-        base_url=base_url or None,
+        base_url=base_url or PAPER_ENDPOINT,
     )
+
+
+def require_paper_endpoint(base_url: str | None) -> None:
+    """Raise unless ``base_url`` is the Alpaca paper endpoint.
+
+    The project trades paper money only (spec 2.2: real money, never). Anything that is
+    about to talk to a broker calls this first, so pointing at the live endpoint fails
+    closed rather than trading real money by accident.
+
+    Raises:
+        ValueError: ``base_url`` is unset or is not the paper endpoint.
+    """
+    if not base_url:
+        raise ValueError(
+            "ALPACA_BASE_URL is not set; refusing to connect without a verified endpoint"
+        )
+    if base_url.rstrip("/") != PAPER_ENDPOINT:
+        raise ValueError(
+            f"refusing to connect: endpoint is {base_url!r}, "
+            f"and this project only ever trades paper money at {PAPER_ENDPOINT}"
+        )

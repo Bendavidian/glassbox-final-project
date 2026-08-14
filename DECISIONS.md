@@ -7,6 +7,40 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-14 — GB-6: the paper endpoint is a constant, and the guard lives in the config layer
+
+**Decision.** `PAPER_ENDPOINT` is a module constant in `config/loader.py`.
+`alpaca_credentials()` now defaults `base_url` to it when `ALPACA_BASE_URL` is unset
+(it previously returned `None`), and a new `require_paper_endpoint()` raises unless the
+resolved endpoint is exactly that. `scripts/smoke_alpaca.py` calls the guard before it
+constructs a client. Operational scripts live in `scripts/`, outside the package.
+
+**Reasoning.** Three small choices, one theme — put the safety check where it can be
+tested and cannot be forgotten:
+
+* The endpoint is not a tunable, so it is not a `settings.yaml` key. Spec §5 froze that
+  schema, and a value whose whole purpose is to be immovable does not belong in a file
+  people edit. This is the second deliberate exception to CLAUDE.md rule 5, after
+  `LARGE_MOVE_LOG_RETURN`; both are flagged rather than buried.
+* Defaulting an unset endpoint to `None` pushed the decision to every caller. Defaulting
+  it to paper makes the safe value the default, so forgetting to configure anything is
+  safe rather than undefined.
+* The guard sits in the config layer, not in the script, because a script cannot be
+  imported by the test suite. Nine tests now cover the accept and refuse paths, including
+  a lookalike host (`paper-api.alpaca.markets.evil.example`) and plain HTTP.
+
+`scripts/` is documented in spec §3.4 as sitting outside the package: scripts import
+`glassbox`, nothing imports them, they are not packaged, and they are outside the layer
+contract. They are deliberately *not* in `SPEC_MODULES`, which guards the importable
+tree; the scaffold test only walks `glassbox/`, so no exemption was needed — only a line
+in the spec so the next session does not put library code there.
+
+**Consequence.** Any future broker-touching code calls `require_paper_endpoint()` first.
+`tests/config/test_config.py` also now scans `scripts/` for direct environment access, so
+the single-source-of-truth rule extends beyond the package.
+
+---
+
 ## 2026-08-14 — Considered and rejected: caching site-packages in CI
 
 **Decision.** CI keeps `actions/setup-python`'s pip cache and installs from

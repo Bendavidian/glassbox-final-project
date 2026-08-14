@@ -190,6 +190,12 @@ glassbox/
     └── app.py                 # Streamlit
 ```
 
+**Outside the package.** `scripts/` holds operational entry points — `smoke_alpaca.py`
+(GB-6) is the first. They import `glassbox`; nothing imports them. They are not packaged,
+are not part of the layer contract, and never hold library code: anything a module would
+want to reuse belongs in the package instead. They are deliberately absent from
+`SPEC_MODULES` in `tests/test_scaffold.py`, which guards the importable tree above.
+
 ### 3.5 The live decision cycle
 
 ```

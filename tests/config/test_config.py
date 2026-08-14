@@ -14,6 +14,7 @@ import yaml
 
 from glassbox.config.loader import (
     DEFAULT_SETTINGS_PATH,
+    PAPER_ENDPOINT,
     AlpacaCredentials,
     BacktestConfig,
     ChannelConfig,
@@ -31,6 +32,7 @@ from glassbox.config.loader import (
     alpaca_credentials,
     config_hash,
     load_config,
+    require_paper_endpoint,
 )
 
 ALPACA_VARS = ("ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_BASE_URL")
@@ -333,7 +335,8 @@ def test_credentials_returned_when_set(
     assert isinstance(creds, AlpacaCredentials)
     assert creds.api_key == "key-123"
     assert creds.secret_key == "secret-456"
-    assert creds.base_url is None
+    # An unset endpoint defaults to paper: the safe value is the default, never None.
+    assert creds.base_url == PAPER_ENDPOINT
 
 
 def test_importing_the_loader_without_credentials_does_not_raise(
@@ -347,6 +350,40 @@ def test_importing_the_loader_without_credentials_does_not_raise(
     import glassbox.config.loader as loader_module
 
     importlib.reload(loader_module)
+
+
+# ── The paper-endpoint guard ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [PAPER_ENDPOINT, f"{PAPER_ENDPOINT}/"],
+    ids=["exact", "trailing_slash"],
+)
+def test_paper_endpoint_is_accepted(endpoint: str) -> None:
+    require_paper_endpoint(endpoint)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://api.alpaca.markets",
+        "https://api.alpaca.markets/",
+        "http://paper-api.alpaca.markets",
+        "https://paper-api.alpaca.markets.evil.example",
+    ],
+    ids=["live", "live_slash", "plain_http", "lookalike_host"],
+)
+def test_non_paper_endpoints_are_refused(endpoint: str) -> None:
+    """Refusal, not a warning: the project never trades real money (spec 2.2)."""
+    with pytest.raises(ValueError, match="refusing to connect"):
+        require_paper_endpoint(endpoint)
+
+
+@pytest.mark.parametrize("endpoint", [None, ""], ids=["none", "empty"])
+def test_unset_endpoint_is_refused(endpoint: str | None) -> None:
+    with pytest.raises(ValueError, match="ALPACA_BASE_URL is not set"):
+        require_paper_endpoint(endpoint)
 
 
 # ── The single-source-of-truth rule ──────────────────────────────────────────
@@ -364,4 +401,15 @@ def test_no_module_reads_settings_or_environ_directly(package_root: Path) -> Non
         for token in FORBIDDEN_OUTSIDE_CONFIG:
             if token in source:
                 offenders.append(f"{path.relative_to(package_root)}: {token}")
+    assert not offenders
+
+
+def test_no_script_reads_the_environment_directly(repo_root: Path) -> None:
+    """scripts/ sits outside the package, so extend the same rule to it explicitly."""
+    offenders: list[str] = []
+    for path in (repo_root / "scripts").rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        for token in FORBIDDEN_OUTSIDE_CONFIG:
+            if token in source:
+                offenders.append(f"{path.relative_to(repo_root)}: {token}")
     assert not offenders
