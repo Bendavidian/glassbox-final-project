@@ -570,6 +570,8 @@ The frequency-response plot is the single strongest visual in the demo. There is
 
 1. **Zero information leakage.** Every feature value and every threshold uses only data available at that moment. Enforced by `tests/test_no_lookahead.py`, which perturbs future bars and asserts past values are unchanged.
 2. **Walk-forward only.** Train 24 months → validate 3 (threshold calibration + early stopping) → test 3 → roll 3. Cross-validation is invalid for time series and is never used.
+   - **The splits are embargoed by `H` bars** (GB-17). A window ending on the last training bar carries the label `r[t+1] .. r[t+H]`, which lies inside validation, so disjoint ranges are not sufficient — the last `H` window-ends of each split are dropped. Derivation and the failing-without-it test are in `backtest/walkforward.py`.
+   - Because folds **roll** rather than block, a timestamp in fold *i*'s test range does reappear in fold *i+2*'s **training** range. That is walk-forward working as intended — retraining on data that has since become available — and is not leakage: within any one fold, training is strictly before test.
 3. **Realistic costs.** `fee_bps` and `slippage_bps` applied in every backtest. Alpaca paper simulates realistic fills.
 
 ### 7.2 Metrics
@@ -712,7 +714,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 | ~~GB-14~~ | ~~`NLinearForecaster`~~ · **CUT** — `DLinear` alone satisfies the baseline requirement | E4 | B | ~~2~~ | — |
 | GB-15 | `train.py` — loop, seeds, early stopping, checkpoints, scaler stats | E4 | B | 5 | Two runs with same seed give identical weights |
 | GB-16 | `predict.py` — batch + single-window inference | E4 | B | 2 | Matches `train.py` outputs on held-out data |
-| GB-17 | `walkforward.py` — fold generator with strict boundaries | E5 | B | 3 | No timestamp appears in two folds' train and test |
+| GB-17 | `walkforward.py` — fold generator with strict boundaries and a **target embargo** | E5 | B | 3 | Within a fold, no timestamp appears in two splits **and no window's target crosses a split boundary** — the last `H` window-ends of each split are dropped. Disjoint ranges alone do not prevent the leak. Asserted directly, and the assertion fails when the embargo is set to zero |
 | GB-18 | `backtest/engine.py` — event-driven, fees, slippage, SL/TP | E5 | B | 8 | Hand-checked 3-trade scenario matches by hand |
 | GB-19 | `metrics.py` — MAE, RMSE, direction accuracy, return, Sharpe, MDD, hit rate | E5 | B | 3 | Verified against a synthetic equity curve |
 | GB-20 | `signal.py` — trend strength → signal, thresholds calibrated on validation | E6 | B | 5 | Thresholds differ per fold; none hardcoded |

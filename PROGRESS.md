@@ -8,8 +8,8 @@ Append one line per completed task. Newest at the bottom of each sprint.
 ## Current state
 
 **Sprint:** 1 — Foundations · **complete, 14 Aug 2026** (12/12, day 6 of 14)
-**Next task:** GB-17 → GB-18 (Sprint 2; see `SOLO_BUILD_PLAN.md` §7 for why the harness
-chain goes first)
+**Sprint 2:** in progress — GB-17 complete 16 Aug
+**Next task:** GB-18, the backtester (8 SP, the largest single task in the project)
 **Last gate passed:** none — GATE 1 target revised to ~22 Aug, commitment 11 Sep
 **Blockers:** none
 
@@ -122,9 +122,24 @@ Now property 6, asserted with GB-10's harness.
   fired.
 - **No blocking questions.**
 
-## Sprint 2 — Offline Vertical Slice · 29 Aug – 11 Sep 2026 → GATE 1
+## Sprint 2 — Offline Vertical Slice · GATE 1 target ~22 Aug (commitment 11 Sep)
 
-_not started_
+Order follows `SOLO_BUILD_PLAN.md` §7: the harness chain (GB-17 → GB-18 → GB-19) runs
+before the model chain, because the backtester is the largest task in the project and
+depends on nothing in the model layer.
+
+| Task | Date | Owner | What was built |
+|---|---|---|---|
+| GB-17 | 16 Aug 2026 | Ben | **Complete.** `backtest/walkforward.py` — calendar-month folds on real NYSE sessions, capped at `max_folds` keeping the **most recent**, truncated final folds dropped rather than shortened. Carries the **target embargo**: each split drops its last `H` window-ends, derived from `build_windows`' label definition (`p+1 .. p+H`), so no window's label crosses a split boundary. Real AAPL data yields 16 folds of 30 candidates. 23 tests, including two leak assertions that fail when the embargo is set to zero. Suite at 325. |
+| GB-18 | | Ben | |
+| GB-19 | | Ben | |
+| GB-13 | | Ben | |
+| GB-15 | | Ben | |
+| GB-16 | | Ben | |
+| GB-20 | | Ben | |
+| GB-21 | | Noy | |
+| GB-24 | | Ben | |
+| GB-25 | | Ben | **GATE 1 review** |
 
 ## Sprint 3 — Live End-to-End · 12–25 Sep 2026 → GATE 2
 

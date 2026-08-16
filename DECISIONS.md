@@ -7,6 +7,81 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-16 — GB-17: the embargo is exactly H, and four smaller rulings that follow
+
+**Decision.** Walk-forward folds drop the last `H` window-ends from **every** split. Folds
+are defined by **calendar months**, not bar counts. A fold whose test range is not fully
+covered by the data is **dropped, not shortened**. When more folds fit than
+`max_folds` allows, the **most recent** are kept.
+
+**Reasoning.**
+
+*The embargo is `H`, derived from `build_windows` rather than recalled from the
+literature.* `build_windows` labels a window ending at position `p` with
+`y[h] = target[p + 1 + h]` for `h` in `0 .. H-1`, so the label occupies positions
+`p+1 .. p+H`. For that label to stay inside a split ending at `b`, we need `p + H <= b`,
+so the last usable end is `b - H` and the dropped ends are `b-H+1 .. b` — **exactly `H`**.
+
+It is not `H-1`. That off-by-one comes from thinking of the boundary bar as the one to
+remove; the label starts at `p+1`, so `p = b-H` is already clean. Worked at `H=4` with a
+split ending at position 9: `p=9` leaks 4 label bars, `p=8` leaks 3, `p=7` leaks 2, `p=6`
+leaks 1, `p=5` is clean, and `5 == 9-4`. Confirmed empirically — with the embargo removed,
+**exactly 4** training windows per fold carry a label reaching into validation.
+
+It is also not "`H` plus something". No margin is needed on the *input* side: a validation
+window reads `input_len` bars of history that reach back into the training range, and that
+is not leakage — it is the model consuming past data exactly as it will live. Padding the
+start of a split would discard usable data to prevent a problem that does not exist.
+
+*Folds are calendar months.* `settings.yaml` states the plan in months, so bar counts would
+mean either a config change or a module quietly reinterpreting its own config — rule 5
+either way. Months also keep fold boundaries legible in the report: "test period Jul–Sep
+2022" is a sentence, "test bars 1508–1570" is not. The cost is measured and small: across
+the 16 folds, train ranges vary 496–501 bars (spread 5), val 57–61, test 57–61 (spread 4
+each, about 7% of a quarter).
+
+What that means for comparing metrics across folds: per-fold sample sizes differ slightly,
+so a fold's direction accuracy has a marginally different standard error, and any
+annualised statistic must use **that fold's actual bar count** rather than a constant
+`252/4`. It does not bias the comparison, because the study design is **paired** — GB-51
+runs a Wilcoxon signed-rank of each arm against persistence on per-fold values, and both
+members of a pair come from the same fold and therefore the same bar count. Fold-size
+variation cancels inside each pair.
+
+*The test split is embargoed too, for a different reason than train and val.* Train and
+val are embargoed to prevent **leakage**. Nothing is fitted on test, so no leakage argument
+applies there. It is embargoed for **independence between folds**: without it, fold *i*'s
+last test windows would be labelled with returns drawn from fold *i+1*'s test range, and
+consecutive folds' scores would share outcome bars. GB-51 treats each fold as one
+observation in a paired signed-rank test, so overlapping outcomes would correlate exactly
+the numbers that test assumes independent. One uniform rule across all three splits is also
+simply less to get wrong.
+
+*A truncated final fold is dropped.* A fold reporting two months of test beside folds
+reporting three is a comparability problem the study would inherit, and the cost of
+dropping it is one fold out of thirty. `make_folds` emits a fold only when its full
+calendar span is covered by the data.
+
+*The cap keeps the most recent folds.* Thirty complete folds fit the 2016–2026 data and
+`max_folds` is 16, so half are discarded and **which half is a real choice, not an
+implementation detail**. Keeping the most recent means the test periods run 2022-07 →
+2026-07: the market the system will actually meet on the paper account, including the 2022
+drawdown and everything after it. Keeping the earliest would have tested on 2018–2022 and
+left the last four years — the most recent regime, and the one the live demo runs in —
+entirely unused. The price is that bars before 2020-04-13 are not used by any kept fold;
+that is 2.5 years of the 10.6 available, and it is the oldest and least representative end.
+
+**Consequence.** Spec §9's GB-17 row said only "no timestamp appears in two folds' train
+and test", which the embargo makes insufficient as a definition of done; it now states the
+embargo requirement and the failing-without-it test. Spec §7.1 gains two clarifications:
+the embargo itself, and the fact that **folds roll rather than block**, so a timestamp in
+fold *i*'s test range does legitimately reappear in fold *i+2*'s training range — measured
+at 60 shared bars. That is walk-forward working as intended, not leakage, because within
+any one fold training is strictly before test. The literal cross-fold reading of the old
+wording is unachievable for a rolling design and would have described a blocked one.
+
+---
+
 ## 2026-08-14 — The Regime Guard returns to consideration at GATE 2, and only if it is green
 
 **Decision.** The Regime Guard — the FITS reconstruction head used as an out-of-distribution
