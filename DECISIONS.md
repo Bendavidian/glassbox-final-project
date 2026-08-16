@@ -7,6 +7,63 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-17 — GB-18 fix: a missing bar is a halt, not an exit; and the accounting invariant
+
+**Decision.** Five changes to `backtest/engine.py`, all consequences of one defect found in
+review.
+
+1. A position is removed from the book **only after** a price has been obtained for it.
+2. An exit order that cannot fill — the symbol printed no bar that day — is **carried
+   forward** to that symbol's next traded open.
+3. An entry order that cannot fill **expires**. The asymmetry with (2) is deliberate.
+4. An open position is marked at its **own last printed close**, carried on the position as
+   `last_mark`, not at the price it was bought at.
+5. `_assert_accounted` runs at the end of **every** backtest, not only in tests: with the
+   book flat, final equity must equal initial cash plus the sum of the trade log.
+
+**Reasoning.** The engine popped the position from `positions` before calling `_price`.
+When the symbol had no bar that day, the position was gone from the book, no cash was
+credited, and no `Trade` was recorded — the holding was simply deleted. Measured on the
+committed engine, on a 100,000 account holding one 10,000 position:
+
+| Case | Final equity | Cash + Σ net_pnl | Gap | Trades logged |
+|---|---|---|---|---|
+| Exit signal on a day the symbol has no bar | 89,999.00 | 100,000.00 | **−10,001.00** | 0 |
+| Symbol whose last bar precedes the final timestamp | 89,999.00 | 100,000.00 | **−10,001.00** | 0 |
+
+**10.0% of the account, silently, with an empty trade log.** The gap is exactly the
+position's notional plus its entry fee — the whole holding, not a rounding error. The
+second case is not an edge case: it fires whenever one symbol's history ends before the
+universe's does, which is an ordinary consequence of listing dates, and it would have hit
+every multi-symbol backtest in the study.
+
+On (2) versus (3): an exit is an obligation on capital already committed, so abandoning it
+leaves a position open with nothing to close it. An entry is a bet on a forecast computed
+from a window ending at a specific bar; by the time the symbol trades again that forecast
+is stale, and GB-26's live loop would recompute it rather than resurrect the order. Carrying
+entries forward would make the backtest describe a system the live loop cannot be.
+
+On (4): marking a halted position at its entry price is the same defect wearing different
+clothes — it reports a holding at a price that is not merely stale but *never was current*
+after the entry bar. In the measured second case it moved the curve by 89.98 on a day
+nothing happened. Carrying `last_mark` also removed a look-ahead nobody had noticed: sizing
+an order that fills at bar `t`'s open previously consulted bar `t`'s **close**, which is the
+reference project's error in a subtler form. The sizer now sees exposure marked at the
+previous close.
+
+On (5): every cash movement in the engine belongs to some trade, and `net_pnl` is defined as
+exactly that movement, so the identity is exact in real arithmetic. That makes it a genuine
+invariant rather than a heuristic, and cheap enough to run always. A test-only assertion
+would not have caught this — the defect needed a bar to be missing, and no test had one.
+
+**Consequence.** `_OpenPosition` gains `last_mark` / `last_mark_time`. `_equity` and
+`_gross_exposure` no longer take `bars` or a timestamp. Seven tests added, six of which fail
+against the previous engine. Spec §9's GB-18 row records the fifth rule and the invariant.
+The invariant will fail loudly if a future change leaves cash unaccounted, which is the
+point: this class of bug is invisible in every metric GB-19 computes.
+
+---
+
 ## 2026-08-16 — GB-13: DLinear departs from the reference in four places, one of them measured
 
 **Decision.** `DLinearForecaster` uses **per-channel** weights, **no intercept**, **zero

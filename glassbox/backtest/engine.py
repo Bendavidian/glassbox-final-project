@@ -26,8 +26,20 @@ individually, and recorded in DECISIONS.md with the measurement that chose it.
    19x the entire friction model. The trade log records ``stop_gap`` separately from
    ``stop`` so the report can say how much of the drawdown came from gaps.
 
+5. **A missing bar is a halt, not an exit.** A symbol with no bar on a day cannot be
+   traded on that day, so an exit order stays live and fills at its next traded open, and
+   the position is marked at its own last printed close rather than at the price it was
+   bought at. A symbol whose history ends before the universe's does is liquidated at its
+   own last close. The alternative - dropping the position when no price is available -
+   deletes the holding from the book while leaving its value out of cash, and it is not an
+   edge case: it fires whenever one symbol has a shorter history than the rest.
+
 Stop and target comparisons are written correctly and each case is tested; see
 reference/REFERENCE_AUDIT.md for the inverted comparisons in the reference project.
+
+``_assert_accounted`` holds the whole module to one identity - with the book flat, final
+equity equals initial cash plus the sum of the trade log - and it runs on every backtest,
+not only in tests.
 
 **Every number this module produces is a TOTAL return, not a price return.**
 ``data/historical.py`` fetches with ``auto_adjust=True``, so dividends and splits are
@@ -153,7 +165,15 @@ class BacktestResult:
 
 @dataclass
 class _OpenPosition:
-    """Engine-internal state. Not part of any contract."""
+    """Engine-internal state. Not part of any contract.
+
+    ``last_mark`` is the most recent close this symbol actually printed, and
+    ``last_mark_time`` is when. A symbol that stops printing bars - a halt, a delisting, or
+    simply a shorter history than the rest of the universe - is still worth something, and
+    it is worth its last traded close rather than the price it was bought at. Carrying the
+    mark also removes a look-ahead: sizing an order filled at bar t's open must not consult
+    bar t's close, so the sizer is shown exposure marked at the previous close.
+    """
 
     symbol: str
     entry_time: pd.Timestamp
@@ -162,6 +182,8 @@ class _OpenPosition:
     entry_fee: float
     stop: float
     target: float
+    last_mark: float
+    last_mark_time: pd.Timestamp
 
 
 def run_backtest(
@@ -205,12 +227,21 @@ def run_backtest(
         # 1. Orders decided at the previous close, filled at this open. Exits first: the
         #    cash they release is available to this bar's entries, which is what a broker
         #    does and what the live loop will experience.
+        unfilled: list[Signal] = []
         for signal in _actions(pending, EXIT):
-            held = positions.pop(signal.symbol, None)
-            if held is not None:
-                price = _price(bars, signal.symbol, timestamp, "open")
-                if price is not None:
-                    cash += _close_out(held, price, SIGNAL, timestamp, trades, cfg)
+            held = positions.get(signal.symbol)
+            if held is None:
+                continue
+            price = _price(bars, signal.symbol, timestamp, "open")
+            if price is None:
+                # No bar for this symbol today. **A missing bar is a halt, not an exit.**
+                # The order stays live and fills at the symbol's next traded open. Closing
+                # the position here - or, worse, dropping it - would delete the holding
+                # from the book while leaving its value out of cash.
+                unfilled.append(signal)
+                continue
+            del positions[signal.symbol]
+            cash += _close_out(held, price, SIGNAL, timestamp, trades, cfg)
 
         for signal in _actions(pending, ENTER_LONG):
             if signal.symbol in positions:
@@ -219,9 +250,15 @@ def run_backtest(
                 continue
             price = _price(bars, signal.symbol, timestamp, "open")
             if price is None:
+                # An unfilled ENTRY expires; an unfilled EXIT above is carried forward.
+                # The asymmetry is deliberate. An entry is a bet on a forecast made from a
+                # window ending at a specific bar, and by the time the symbol trades again
+                # that forecast is stale - a live loop would recompute it, not resurrect
+                # the order. An exit is an obligation on capital already committed, and
+                # abandoning it would leave the position open with nothing to close it.
                 continue
-            equity = _equity(cash, positions, bars, timestamp)
-            exposure = _gross_exposure(positions, bars, timestamp)
+            equity = _equity(cash, positions)
+            exposure = _gross_exposure(positions)
             notional = _require_sizeable(
                 sizer(signal, equity, exposure, cfg), cash, sizer, signal
             )
@@ -251,6 +288,8 @@ def run_backtest(
                 entry_fee=entry_fee,
                 stop=price * (1.0 - cfg.risk.stop_loss_pct),
                 target=price * (1.0 + cfg.risk.take_profit_pct),
+                last_mark=price,
+                last_mark_time=timestamp,
             )
 
         # 2. Stops and targets, against this bar's range. A position opened at this bar's
@@ -266,18 +305,35 @@ def run_backtest(
             del positions[symbol]
             cash += _close_out(held, exit_price, reason, timestamp, trades, cfg)
 
-        # 3. Nothing is left open past the data. Liquidating at the final close keeps the
-        #    curve honest; the reason lets GB-19 exclude these if it wants to.
+        # 3. Mark every survivor at this bar's close, where there is one. A symbol that did
+        #    not trade keeps the mark it had, which is its own last printed close.
+        for held in positions.values():
+            close = _price(bars, held.symbol, timestamp, "close")
+            if close is not None:
+                held.last_mark = close
+                held.last_mark_time = timestamp
+
+        # 4. Nothing is left open past the data. Liquidating keeps the curve honest; the
+        #    reason lets GB-19 exclude these if it wants to. A symbol whose history ends
+        #    before the master index does is liquidated at ITS OWN last close, stamped with
+        #    ITS OWN last traded timestamp - not dropped, and not marked at a price it
+        #    never printed.
         if is_final_bar:
             for symbol in list(positions):
                 held = positions.pop(symbol)
-                price = _price(bars, symbol, timestamp, "close")
-                if price is not None:
-                    cash += _close_out(held, price, END_OF_DATA, timestamp, trades, cfg)
+                cash += _close_out(
+                    held, held.last_mark, END_OF_DATA, held.last_mark_time, trades, cfg
+                )
 
-        curve.append(_equity(cash, positions, bars, timestamp))
-        pending = signals.get(timestamp, ())
+        curve.append(_equity(cash, positions))
+        fresh = signals.get(timestamp, ())
+        superseded = {signal.symbol for signal in _actions(fresh, EXIT)}
+        pending = [
+            *(signal for signal in unfilled if signal.symbol not in superseded),
+            *fresh,
+        ]
 
+    _assert_accounted(curve[-1], positions, trades, cfg)
     return BacktestResult(
         equity=pd.Series(curve, index=index, name="equity", dtype="float64"),
         trades=tuple(trades),
@@ -408,26 +464,48 @@ def _price(
     return None if bar is None else float(bar[column])
 
 
-def _equity(
-    cash: float,
-    positions: Mapping[str, _OpenPosition],
-    bars: Mapping[str, pd.DataFrame],
-    timestamp: pd.Timestamp,
-) -> float:
-    """Cash plus positions marked at this bar's close."""
-    return cash + _gross_exposure(positions, bars, timestamp)
+def _equity(cash: float, positions: Mapping[str, _OpenPosition]) -> float:
+    """Cash plus positions at their current marks."""
+    return cash + _gross_exposure(positions)
 
 
-def _gross_exposure(
+def _gross_exposure(positions: Mapping[str, _OpenPosition]) -> float:
+    return sum(held.shares * held.last_mark for held in positions.values())
+
+
+# Equity is a sum of products of floats; the identity below is exact in real arithmetic
+# but not in binary. This tolerance is far tighter than a cent on a 100k account and far
+# looser than the accumulated rounding of a multi-year run.
+ACCOUNTING_TOLERANCE = 1e-6
+
+
+def _assert_accounted(
+    final_equity: float,
     positions: Mapping[str, _OpenPosition],
-    bars: Mapping[str, pd.DataFrame],
-    timestamp: pd.Timestamp,
-) -> float:
-    total = 0.0
-    for held in positions.values():
-        price = _price(bars, held.symbol, timestamp, "close")
-        total += held.shares * (price if price is not None else held.entry_reference)
-    return total
+    trades: Sequence[Trade],
+    cfg: Config,
+) -> None:
+    """Standing invariant: with nothing open, equity is cash in plus profit realised.
+
+    Every cash movement in this engine belongs to some trade, and ``net_pnl`` is defined as
+    exactly that movement. So once the book is flat, the curve's last point must equal the
+    starting cash plus the sum of the log - and any gap means money left the account
+    without a trade recording it. That is not a rounding question; it is the signature of a
+    position dropped from the book, which is the defect this check exists to make loud.
+
+    Skipped when a position is still open, which the loop's final-bar liquidation should
+    make impossible; the guard is written so that a future change which leaves one open
+    fails visibly rather than tripping this assertion for the wrong reason.
+    """
+    if positions:
+        return
+    expected = float(cfg.backtest.initial_cash) + sum(trade.net_pnl for trade in trades)
+    if abs(final_equity - expected) > ACCOUNTING_TOLERANCE:
+        raise AssertionError(
+            f"backtest accounting is broken: final equity {final_equity!r} but initial "
+            f"cash plus {len(trades)} trades is {expected!r} "
+            f"(gap {final_equity - expected:+.6f}); cash moved without a trade recording it"
+        )
 
 
 REQUIRED_COLUMNS = ("open", "high", "low", "close")
@@ -448,6 +526,8 @@ def _master_index(bars: Mapping[str, pd.DataFrame]) -> pd.DatetimeIndex:
         combined = frame.index if combined is None else combined.union(frame.index)
 
     assert combined is not None
+    if len(combined) == 0:
+        raise ValueError("no bars to backtest")
     return pd.DatetimeIndex(combined).sort_values()
 
 

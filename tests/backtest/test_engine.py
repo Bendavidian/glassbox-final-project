@@ -613,6 +613,181 @@ def test_two_symbols_share_one_equity_curve(cfg: Config) -> None:
     assert len(result.equity) == len(SCENARIO)
 
 
+# ── ruling 5: a missing bar is a halt, not an exit ───────────────────────────
+#
+# These tests exist because of a real defect, and the numbers below are the damage it
+# did rather than an illustration of what it might have done. In both cases the engine
+# popped the position from its book before checking whether the symbol had a price that
+# day; when there was none, the holding vanished, cash was never credited, and no trade was
+# logged. Measured on the committed engine, each case deleted **10,001.00 of a 100,000
+# account - 10.0% - with an empty trade log**. The second case is not exotic: it fires
+# whenever one symbol's history ends before the universe's does.
+
+HALT_INDEX = pd.date_range("2024-01-01", periods=6, freq="B", tz="UTC")
+FLAT_BARS = [(100.00, 100.20, 99.80, 100.00)] * 6
+
+# Days 0, 1, 2, 4, 5 — the symbol does not trade on day 3.
+HALTED_BARS = [
+    (100.00, 100.50, 99.50, 100.00),  # 0  enter_long decided at this close
+    (100.00, 100.60, 99.60, 100.20),  # 1  ENTRY at 100.00; stop 97.00, target 106.00
+    (100.50, 100.80, 100.00, 100.60),  # 2  exit decided at this close
+    # 3  no bar: the exit cannot fill, and the position is marked at 100.60
+    (101.00, 101.50, 100.80, 101.20),  # 4  the carried exit fills at this open, 101.00
+    (101.20, 101.60, 101.00, 101.40),  # 5
+]
+
+# Days 0..3 only, against a universe that runs to day 5.
+SHORT_HISTORY_BARS = [
+    (100.00, 100.50, 99.50, 100.00),  # 0  enter_long decided at this close
+    (100.00, 100.60, 99.60, 100.20),  # 1  ENTRY at 100.00
+    (100.50, 100.80, 100.00, 100.60),  # 2
+    (100.80, 101.00, 100.40, 100.90),  # 3  the last bar this symbol ever prints
+]
+
+
+def frame_on(rows: list[tuple[float, float, float, float]], days: tuple[int, ...]):
+    """A frame on a subset of the shared index, so the master index has gaps in it."""
+    return pd.DataFrame(
+        rows,
+        columns=["open", "high", "low", "close"],
+        index=HALT_INDEX[list(days)],
+        dtype="float64",
+    )
+
+
+@pytest.fixture
+def halted(cfg: Config) -> engine.BacktestResult:
+    bars = {
+        SYMBOL: frame_on(HALTED_BARS, (0, 1, 2, 4, 5)),
+        "OTHER": frame_on(FLAT_BARS, (0, 1, 2, 3, 4, 5)),
+    }
+    signals = {
+        HALT_INDEX[0]: [make_signal(engine.ENTER_LONG)],
+        HALT_INDEX[2]: [make_signal(engine.EXIT)],
+    }
+    return engine.run_backtest(bars, signals, fixed_notional, cfg)
+
+
+@pytest.fixture
+def short_history(cfg: Config) -> engine.BacktestResult:
+    bars = {
+        SYMBOL: frame_on(SHORT_HISTORY_BARS, (0, 1, 2, 3)),
+        "OTHER": frame_on(FLAT_BARS, (0, 1, 2, 3, 4, 5)),
+    }
+    signals = {HALT_INDEX[0]: [make_signal(engine.ENTER_LONG)]}
+    return engine.run_backtest(bars, signals, fixed_notional, cfg)
+
+
+def test_an_exit_on_a_day_with_no_bar_keeps_the_position(
+    halted: engine.BacktestResult,
+) -> None:
+    """The order is carried to the symbol's next traded open and logged there.
+
+    A halt is not a fill. Dropping the position here deleted 10,001.00 of a 100,000
+    account and logged nothing.
+    """
+    assert len(halted.trades) == 1
+    trade = halted.trades[0]
+
+    assert trade.exit_reason == engine.SIGNAL
+    assert trade.exit_time == HALT_INDEX[4]  # not day 3, which the symbol did not trade
+    assert trade.exit_price == pytest.approx(101.00, abs=CENT)
+
+
+def test_a_halted_position_is_marked_at_its_own_last_close(
+    halted: engine.BacktestResult,
+) -> None:
+    """On the untraded day the holding is worth its last print, not its entry price.
+
+    Marking at the entry price is the second half of the same defect: it moved the curve
+    by 60 basis points of the position on a day nothing happened.
+    """
+    cash_after_entry = 89_999.00  # 100_000 - 10_000 notional - 1.00 entry fee
+    at_last_close = cash_after_entry + EXPECTED_SHARES * 100.60
+    at_entry_price = cash_after_entry + EXPECTED_SHARES * 100.00
+
+    assert halted.equity.iloc[3] == pytest.approx(at_last_close, abs=CENT)
+    assert halted.equity.iloc[3] != pytest.approx(at_entry_price, abs=CENT)
+
+
+def test_an_entry_on_a_day_with_no_bar_expires_rather_than_carrying(
+    cfg: Config,
+) -> None:
+    """The asymmetry with the exit above, pinned rather than left to be inferred.
+
+    An entry is a bet on a forecast from a window ending at a particular bar; by the time
+    the symbol trades again the forecast is stale, and a live loop would recompute it
+    rather than resurrect the order. An exit is an obligation on capital already at risk.
+    """
+    bars = {
+        SYMBOL: frame_on(HALTED_BARS, (0, 1, 2, 4, 5)),
+        "OTHER": frame_on(FLAT_BARS, (0, 1, 2, 3, 4, 5)),
+    }
+    signals = {HALT_INDEX[2]: [make_signal(engine.ENTER_LONG)]}  # acts on day 3: no bar
+
+    result = engine.run_backtest(bars, signals, fixed_notional, cfg)
+
+    assert result.trades == ()  # it did not resurface on day 4
+    assert result.equity.iloc[-1] == pytest.approx(cfg.backtest.initial_cash, abs=CENT)
+
+
+def test_a_symbol_ending_early_liquidates_at_its_own_last_close(
+    short_history: engine.BacktestResult,
+) -> None:
+    """Day 3's close, stamped with day 3 — not day 5, where this symbol has no price."""
+    assert len(short_history.trades) == 1
+    trade = short_history.trades[0]
+
+    assert trade.exit_reason == engine.END_OF_DATA
+    assert trade.strategy_exit is False
+    assert trade.exit_price == pytest.approx(100.90, abs=CENT)
+    assert trade.exit_time == HALT_INDEX[3]
+
+
+@pytest.mark.parametrize("case", ["halted", "short_history"])
+def test_both_halt_cases_end_at_cash_plus_every_net_pnl(
+    case: str, cfg: Config, request: pytest.FixtureRequest
+) -> None:
+    """The identity the defect broke, asserted on both of the cases that broke it.
+
+    On the committed engine each of these ended at 89,999.00 against an expected
+    100,000.00 — a gap of exactly the position's notional plus its entry fee.
+    """
+    result: engine.BacktestResult = request.getfixturevalue(case)
+    total = sum(trade.net_pnl for trade in result.trades)
+
+    assert result.equity.iloc[-1] == pytest.approx(
+        cfg.backtest.initial_cash + total, abs=1e-8
+    )
+    assert result.equity.iloc[-1] > cfg.backtest.initial_cash * 0.99
+
+
+def test_the_accounting_invariant_runs_on_every_backtest(cfg: Config) -> None:
+    """Not a test-only assertion: it guards the module in ordinary use.
+
+    Proven to have teeth by handing it a curve that does not reconcile — if it accepted
+    that, it would have accepted the 10,001.00 gap too.
+    """
+    trade = engine.Trade(
+        symbol=SYMBOL,
+        entry_time=HALT_INDEX[0],
+        exit_time=HALT_INDEX[1],
+        size=1.0,
+        entry_price=100.0,
+        exit_price=101.0,
+        gross_pnl=1.0,
+        costs=0.0,
+        net_pnl=1.0,
+        exit_reason=engine.SIGNAL,
+        strategy_exit=True,
+    )
+
+    engine._assert_accounted(cfg.backtest.initial_cash + 1.0, {}, [trade], cfg)
+
+    with pytest.raises(AssertionError, match="without a trade recording it"):
+        engine._assert_accounted(cfg.backtest.initial_cash - 10_001.0, {}, [trade], cfg)
+
+
 # ── input validation ─────────────────────────────────────────────────────────
 
 
