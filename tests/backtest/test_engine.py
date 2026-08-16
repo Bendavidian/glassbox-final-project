@@ -454,6 +454,52 @@ def test_a_zero_notional_means_no_trade(cfg: Config) -> None:
     assert result.equity.nunique() == 1
 
 
+def test_the_sizer_sees_exposure_marked_at_the_previous_close(cfg: Config) -> None:
+    """An order filling at bar t's open must be sized without reading bar t's close.
+
+    This is the reference project's look-ahead in its subtlest form. It survived GB-18
+    because every sizer in that task's tests ignored ``equity`` and ``gross_exposure``
+    entirely, so nothing observed which price the exposure was marked at. The sizer here
+    does consult them, and the two hypotheses are 240 basis points apart on purpose.
+
+    A position is opened in HELD on day 1. On day 3 a second entry is sized, and at that
+    moment HELD's *last printed close* is day 2's 100.60 while day 3's own close is
+    103.00 — a bar that, at the open, has not happened yet.
+    """
+    seen: list[tuple[float, float]] = []
+
+    def recording(signal, equity, gross_exposure, cfg):
+        del signal, cfg
+        seen.append((equity, gross_exposure))
+        return NOTIONAL
+
+    held = frame_from(
+        [
+            (100.00, 100.50, 99.50, 100.00),  # 0  enter_long decided at this close
+            (100.00, 100.60, 99.60, 100.20),  # 1  ENTRY at 100.00
+            (100.50, 100.80, 100.00, 100.60),  # 2  close 100.60 — the honest mark
+            (102.00, 103.50, 101.80, 103.00),  # 3  close 103.00 — the look-ahead value
+            (103.00, 103.20, 102.50, 103.00),
+            (103.00, 103.20, 102.50, 103.00),
+        ]
+    )
+    bars = {SYMBOL: held, "OTHER": frame_from([(100.00, 100.20, 99.80, 100.00)] * 6)}
+    signals = {
+        held.index[0]: [make_signal(engine.ENTER_LONG)],
+        held.index[2]: [make_signal(engine.ENTER_LONG, "OTHER")],  # sized on day 3
+    }
+
+    engine.run_backtest(bars, signals, recording, cfg)
+
+    assert len(seen) == 2
+    _, exposure = seen[1]
+    at_previous_close = EXPECTED_SHARES * 100.60
+    at_this_bars_close = EXPECTED_SHARES * 103.00
+
+    assert exposure == pytest.approx(at_previous_close, abs=CENT)
+    assert exposure != pytest.approx(at_this_bars_close, abs=CENT)
+
+
 def test_the_sizer_sees_equity_and_exposure(cfg: Config) -> None:
     """The interface GB-21 implements, pinned so it cannot drift before it is written."""
     seen: list[tuple[float, float]] = []
