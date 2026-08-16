@@ -7,6 +7,67 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-16 — GB-18: four backtest pricing rules, chosen by measurement
+
+**Decision.** A signal fills at the **next bar's open**. On a bar breaching both levels the
+**stop** fills. Slippage is **adverse on both sides**. A **gap through a level fills at the
+open**, and is logged distinctly. `settings.yaml` gains `backtest.initial_cash`.
+
+**Reasoning.** All four were measured on the real universe before being chosen — 13,309
+entry opportunities across the five symbols at the configured 3% stop and 6% target.
+
+*Next bar's open, not the signal bar's close.* A signal computed from bar `t`'s close
+cannot fill at that close; that is the look-ahead GB-10 exists to catch, and the reference
+project commits a subtler version of it — pricing a same-bar open fill using that bar's
+close. The decisive argument is not realism but **parity**: GB-26's live loop polls after
+the session, drops the incomplete bar, and can only act on the next open. Modelling the
+backtest the same way makes the two agree by construction, which is the `builder.py`
+argument applied to execution. Filling at `t`'s close would make the backtest describe a
+system that cannot be built.
+
+*The stop wins an ambiguous bar.* Daily OHLC cannot say which came first, so it is an
+assumption either way and the assumption should be the one that cannot be accused of
+flattering — this project treats `Sharpe > 2.0` as a leak alarm, and a reviewer who finds
+"target-first" has a reason to discount every number. The measurement supplies the second
+argument: **10 of 13,309 resolutions, 0.08%**. The conservative choice is essentially free,
+which makes it the easiest trade in the module.
+
+*Slippage adverse on both sides.* Buys pay `price × (1 + s)`, sells receive
+`price × (1 − s)`. Round trip on a flat trade is exactly `2 × (fee_bps + slippage_bps)` of
+the reference notional — **6.0 bps**, asserted against the engine's own output rather than
+left as arithmetic in a docstring. The model captures neither size-dependent impact nor
+liquidity thinning in stress; that is a stated limitation for the report, not a silent one.
+
+*A gap fills at the open — and this is the ruling that actually moves the numbers.* If the
+bar opens beyond the level, that level was never available, and filling there is fiction —
+exactly what the reference project does. Measured: **15.6%** of stop exits gap through, and
+filling at the stop instead would understate each by a mean of **116.7 bps** of entry
+notional (median 65.7, p90 296.4, max 1,407.5). Against a 6.0 bps total friction budget,
+this single rule is worth roughly **19× the entire fee-and-slippage model** on the trades it
+touches. Re-measured through the finished engine: 14.16% of stop exits gapped, mean 132.4
+bps — and 168 *target* gaps as well, which the pre-implementation sweep had not counted.
+
+The log therefore distinguishes `stop` from `stop_gap` and `target` from `target_gap`.
+GB-19 and GB-57 can then report how much of the drawdown came from gaps rather than from the
+stop rule — a distinction that cannot be recovered later if the engine does not record it
+now.
+
+*`backtest.initial_cash: 100000.0` added to spec §5.* The engine needs a starting equity
+and there was nowhere to get one. A module constant violates rule 5; a required argument
+moves the magic number into GB-24 rather than removing it. The value matches the Alpaca
+paper account exactly, so backtest and paper-trading numbers are directly comparable rather
+than merely similar.
+
+**Consequence.** Sizing is injected through a `PositionSizer` protocol declared in the
+engine, so no risk logic is stubbed there; the engine validates the returned notional and
+refuses anything negative, non-finite or larger than available cash, which holds GB-21 to
+its property test rather than trusting it. `Trade` and `BacktestResult` stay in `engine.py`
+rather than `contracts/schemas.py`, on the same reasoning as `Fold` in GB-17. Spec §9's
+GB-18 row now names all four rules, so a future reader cannot mistake them for
+implementation detail.
+
+---
+
 ## 2026-08-16 — GB-17: the embargo is exactly H, and four smaller rulings that follow
 
 **Decision.** Walk-forward folds drop the last `H` window-ends from **every** split. Folds
@@ -70,6 +131,13 @@ drawdown and everything after it. Keeping the earliest would have tested on 2018
 left the last four years — the most recent regime, and the one the live demo runs in —
 entirely unused. The price is that bars before 2020-04-13 are not used by any kept fold;
 that is 2.5 years of the 10.6 available, and it is the oldest and least representative end.
+
+*The cost of that choice has a second half, and it belongs in the report.* Keeping the
+recent folds narrows **regime coverage**: the kept test periods contain no 2018 volatility
+episode and no March 2020. If the study finds every arm performing similarly, one honest
+reading is not "frequency structure does not help" but "the test period did not contain a
+regime in which the arms differ". Spec §9's GB-57 now requires the results chapter to state
+that, so it is a stated limitation rather than something a reader has to infer.
 
 **Consequence.** Spec §9's GB-17 row said only "no timestamp appears in two folds' train
 and test", which the embargo makes insufficient as a definition of done; it now states the

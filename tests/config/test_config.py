@@ -108,6 +108,8 @@ def test_default_config_values_match_the_spec() -> None:
     assert cfg.signal.max_trend is None
     assert cfg.live.mode == "co_pilot"
     assert cfg.walkforward.max_folds == 16
+    assert cfg.backtest.initial_cash == 100_000.0
+    assert (cfg.backtest.fee_bps, cfg.backtest.slippage_bps) == (1.0, 2.0)
 
 
 def test_config_is_frozen() -> None:
@@ -169,6 +171,16 @@ INVALID_CASES: tuple[tuple[str, Callable[[dict[str, Any]], None], str], ...] = (
         "supervision_unknown",
         lambda raw: raw["fits"].__setitem__("supervision", "B"),
         "fits.supervision",
+    ),
+    (
+        "initial_cash_zero",
+        lambda raw: raw["backtest"].__setitem__("initial_cash", 0.0),
+        "backtest.initial_cash",
+    ),
+    (
+        "initial_cash_missing",
+        lambda raw: raw["backtest"].pop("initial_cash"),
+        "backtest.initial_cash",
     ),
     (
         "pct_above_one",

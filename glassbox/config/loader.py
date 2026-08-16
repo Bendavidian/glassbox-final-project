@@ -149,8 +149,9 @@ class RiskConfig:
 
 @dataclass(frozen=True)
 class BacktestConfig:
-    """Trading frictions applied in every backtest."""
+    """Starting equity and the trading frictions applied in every backtest."""
 
+    initial_cash: float
     fee_bps: float
     slippage_bps: float
 
@@ -465,6 +466,7 @@ def _build_risk(raw: Mapping[str, Any]) -> RiskConfig:
 def _build_backtest(raw: Mapping[str, Any]) -> BacktestConfig:
     section = _section(raw, "backtest")
     return BacktestConfig(
+        initial_cash=_as_positive_float(section, "backtest", "initial_cash"),
         fee_bps=_as_non_negative_float(section, "backtest", "fee_bps"),
         slippage_bps=_as_non_negative_float(section, "backtest", "slippage_bps"),
     )

@@ -8,8 +8,8 @@ Append one line per completed task. Newest at the bottom of each sprint.
 ## Current state
 
 **Sprint:** 1 — Foundations · **complete, 14 Aug 2026** (12/12, day 6 of 14)
-**Sprint 2:** in progress — GB-17 complete 16 Aug
-**Next task:** GB-18, the backtester (8 SP, the largest single task in the project)
+**Sprint 2:** in progress — GB-17, GB-18 complete 16 Aug
+**Next task:** GB-19, metrics (completes the harness chain; then the model chain, GB-13)
 **Last gate passed:** none — GATE 1 target revised to ~22 Aug, commitment 11 Sep
 **Blockers:** none
 
@@ -131,7 +131,7 @@ depends on nothing in the model layer.
 | Task | Date | Owner | What was built |
 |---|---|---|---|
 | GB-17 | 16 Aug 2026 | Ben | **Complete.** `backtest/walkforward.py` — calendar-month folds on real NYSE sessions, capped at `max_folds` keeping the **most recent**, truncated final folds dropped rather than shortened. Carries the **target embargo**: each split drops its last `H` window-ends, derived from `build_windows`' label definition (`p+1 .. p+H`), so no window's label crosses a split boundary. Real AAPL data yields 16 folds of 30 candidates. 23 tests, including two leak assertions that fail when the embargo is set to zero. Suite at 325. |
-| GB-18 | | Ben | |
+| GB-18 | 16 Aug 2026 | Ben | **Complete.** `backtest/engine.py` — event-driven, one bar at a time, no vectorised shortcut anywhere. Four pricing rules, each measured before being chosen and each tested: fills at the **next** open; the **stop** wins an ambiguous bar (decides 0.08% of resolutions); slippage **adverse both sides**, flat round trip exactly 6.0 bps; a **gap fills at the open** (15.6% of stop exits, worth ~19× the friction model), logged as `stop_gap`. Sizing injected via `PositionSizer`; no risk logic in the engine. Contract addition: `backtest.initial_cash`. Hand-checked three-trade scenario matches literals derived independently in 40-digit decimal. 30 tests; suite at 357. |
 | GB-19 | | Ben | |
 | GB-13 | | Ben | |
 | GB-15 | | Ben | |

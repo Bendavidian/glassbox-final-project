@@ -473,6 +473,7 @@ risk:
   take_profit_pct: 0.06
 
 backtest:
+  initial_cash: 100000.0  # matches the Alpaca paper account, so the two are comparable
   fee_bps: 1.0
   slippage_bps: 2.0
 
@@ -715,7 +716,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 | GB-15 | `train.py` — loop, seeds, early stopping, checkpoints, scaler stats | E4 | B | 5 | Two runs with same seed give identical weights |
 | GB-16 | `predict.py` — batch + single-window inference | E4 | B | 2 | Matches `train.py` outputs on held-out data |
 | GB-17 | `walkforward.py` — fold generator with strict boundaries and a **target embargo** | E5 | B | 3 | Within a fold, no timestamp appears in two splits **and no window's target crosses a split boundary** — the last `H` window-ends of each split are dropped. Disjoint ranges alone do not prevent the leak. Asserted directly, and the assertion fails when the embargo is set to zero |
-| GB-18 | `backtest/engine.py` — event-driven, fees, slippage, SL/TP | E5 | B | 8 | Hand-checked 3-trade scenario matches by hand |
+| GB-18 | `backtest/engine.py` — event-driven, fees, slippage, SL/TP. **Four pricing rules, each tested:** a signal fills at the **next bar's open** (never the signal bar's close); on a bar breaching both levels the **stop** fills; slippage is **adverse on both sides**, so a flat round trip costs `2 × (fee_bps + slippage_bps)`; a **gap through a level fills at the open**, logged as `stop_gap` / `target_gap` so the report can separate rule cost from gap cost. Sizing is **injected** (`PositionSizer`), never stubbed in the engine | E5 | B | 8 | Hand-checked 3-trade scenario matches by hand, to the cent, against literals derived independently of the engine |
 | GB-19 | `metrics.py` — MAE, RMSE, direction accuracy, return, Sharpe, MDD, hit rate | E5 | B | 3 | Verified against a synthetic equity curve |
 | GB-20 | `signal.py` — trend strength → signal, thresholds calibrated on validation | E6 | B | 5 | Thresholds differ per fold; none hardcoded |
 | GB-21 | `risk.py` — sizing, gross exposure cap, SL/TP attachment | E6 | N | 3 | Property test: no config produces an over-limit position |
@@ -764,7 +765,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 | GB-54 | Demo script + two full rehearsals | E12 | N | 3 | Runs end to end twice without intervention |
 | GB-55 | Technical report — architecture and system design chapters | E12 | N | 5 | Draft reviewed by Ben |
 | GB-56 | Technical report — methodology and leak-freedom chapters | E12 | B | 5 | Draft reviewed by Noy |
-| GB-57 | Technical report — results, discussion, future work. The data-quality appendix must note the **2026-08 finding that yfinance and Alpaca volumes disagree materially on 2018-05-02 and 2018-05-03 for all five symbols at once** — a two-day vendor-side event, visible in `vol_z` and in no other channel | E12 | B | 5 | Every table carries a persistence delta; the appendix records the 2018 volume event |
+| GB-57 | Technical report — results, discussion, future work. The data-quality appendix must note the **2026-08 finding that yfinance and Alpaca volumes disagree materially on 2018-05-02 and 2018-05-03 for all five symbols at once** — a two-day vendor-side event, visible in `vol_z` and in no other channel. **The results chapter must also discuss the regime coverage the fold cap buys and costs** (GB-17): `max_folds: 16` keeps the most recent 16 of 30 candidate folds, so the test periods run 2022-07 → 2026-07 — the market the paper account actually meets — but contain **no 2018 volatility episode and no March 2020**. If every arm performs similarly, one honest reading is that the test period did not contain a regime in which the arms differ. State this rather than leaving a reader to infer it | E12 | B | 5 | Every table carries a persistence delta; the appendix records the 2018 volume event; the results chapter states the fold cap's regime-coverage trade-off |
 | GB-58 | Presentation deck | E12 | N | 3 | Rehearsed within time limit |
 | GB-59 | Reproducibility audit: clean clone → full run | E1 | B | 3 | Fresh machine reproduces results |
 | GB-60 | **GATE 3** — final tag, submission | E1 | B | 2 | Repo tagged `v1.0-submission` |
