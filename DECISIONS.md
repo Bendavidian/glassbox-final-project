@@ -7,6 +7,59 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-16 — GB-18 addenda: one share conversion, one exit flag, one return convention
+
+**Decision.** The notional-to-shares conversion lives in **one** function,
+`engine.risk.shares_for`, shared by the backtester and by GB-22's executor. `Trade` gains
+`strategy_exit: bool`. The engine docstring and spec §9 GB-57 record that every figure this
+project reports is a **total** return.
+
+**Reasoning.**
+
+*One conversion, or the two systems describe different things.* The engine sizes
+fractionally — 99.980003999200 shares in the hand-checked scenario. That is a legitimate
+choice only if the live executor does exactly the same. If the backtest buys 99.98 and the
+executor floors to 99, the divergence is invisible: both modules pass their own tests, and
+the gap surfaces months later as an unexplained difference between backtest and paper
+results. This is the GB-7 failure family — a perfect schema match with the numbers wrong —
+caught this time *before* the second module exists. `shares_for` lives in `engine/risk.py`
+(L4), which the harness may import and the executor already will, so neither needs its own
+arithmetic. Spec §9's GB-22 row now requires it and asks for a test asserting both callers
+derive the same count from the same inputs.
+
+*Fractional, and a floor at the broker's minimum.* Flooring to whole shares would
+discretise a percentage-of-equity rule differently for a $500 stock than for a $50 one,
+turning a uniform risk rule into one that depends on price level, and would leave the
+backtest systematically under-invested against the live account. Where a notional buys less
+than `MIN_SHARES` (0.001, Alpaca's minimum fractional quantity) the answer is **no trade**:
+the broker would reject the order, so filling it in a backtest invents a trade that cannot
+happen. `MIN_SHARES` is a module constant rather than config for the GB-8 reason — it is a
+property of the venue, not a knob to tune.
+
+*`strategy_exit`, so GB-19 filters on a field.* Five `end_of_data` liquidations appeared in
+the real-universe sweep. The rule is pinned now rather than invented later: they **are**
+included in the equity curve and total return, because the curve must be complete and the
+capital genuinely was returned — and they **are excluded** from hit rate, average trade and
+every other per-decision statistic, because no decision was made. A boolean rather than a
+string match, so a later rename of an exit reason cannot silently change which trades a
+metric counts.
+
+*Every reported number is a total return.* `data/historical.py` fetches with
+`auto_adjust=True`, so dividends are folded into the price series: a dividend appears as a
+smaller downward step on the ex-date, not as separate cash. Nothing in the engine adds
+dividend income because it is already in the prices. Unstated, a reader comparing against a
+price-only benchmark would find a discrepancy of roughly the universe's dividend yield per
+year and no way to explain it. Now in the engine docstring and required in GB-57's results
+chapter.
+
+**Consequence.** A GB-2 guard (`test_no_module_reads_settings_or_environ_directly`) fired on
+the new module because its *docstring* mentioned the config file by name — a false positive,
+since the guard is a substring scan over the whole source. Reworded rather than loosened;
+the guard stays strict. Worth knowing that it will fire again on any module that explains
+in prose why something is not configurable.
+
+---
+
 ## 2026-08-16 — GB-18: four backtest pricing rules, chosen by measurement
 
 **Decision.** A signal fills at the **next bar's open**. On a bar breaching both levels the

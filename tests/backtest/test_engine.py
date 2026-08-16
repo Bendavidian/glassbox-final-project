@@ -22,6 +22,7 @@ from causality import assert_causal
 from glassbox.backtest import engine
 from glassbox.config.loader import Config, load_config
 from glassbox.contracts.schemas import Signal
+from glassbox.engine import risk
 
 SYMBOL = "TEST"
 NOTIONAL = 10_000.0
@@ -180,6 +181,7 @@ def test_the_trade_log_carries_every_required_column(
         "costs",
         "net_pnl",
         "exit_reason",
+        "strategy_exit",
     ]
     assert len(log) == 3
 
@@ -510,6 +512,88 @@ def test_an_open_position_is_liquidated_at_the_final_close(cfg: Config) -> None:
 
     assert result.trades[-1].exit_reason == engine.END_OF_DATA
     assert result.trades[-1].exit_price == pytest.approx(SCENARIO[2][3], abs=CENT)
+
+
+# ── share granularity, shared with GB-22's executor ──────────────────────────
+
+
+def test_the_engine_converts_notional_through_the_shared_function(cfg: Config) -> None:
+    """One conversion, used by the backtester and by GB-22's live executor.
+
+    If the backtest bought 99.98 shares and the executor floored to 99, the two systems
+    would describe different things and every test would still pass — the failure family
+    GB-7's RAW adjustment belongs to.
+    """
+    trade = None
+    bars = frame_from(SCENARIO)
+    signals = {bars.index[0]: [make_signal(engine.ENTER_LONG)]}
+    trade = engine.run_backtest({SYMBOL: bars}, signals, fixed_notional, cfg).trades[0]
+
+    fill = trade.entry_price * (1 + cfg.backtest.slippage_bps / 10_000)
+
+    assert trade.size == pytest.approx(risk.shares_for(NOTIONAL, fill), abs=1e-12)
+
+
+def test_shares_are_fractional_not_floored() -> None:
+    """Flooring would discretise a percentage-of-equity rule by price level."""
+    assert risk.shares_for(1000.0, 300.0) == pytest.approx(1000.0 / 300.0, abs=1e-12)
+    assert risk.shares_for(1000.0, 300.0) != math.floor(1000.0 / 300.0)
+
+
+def test_a_notional_below_the_brokers_minimum_places_no_order(cfg: Config) -> None:
+    """The broker would reject it, so filling it in a backtest invents a trade."""
+    assert risk.shares_for(0.0001, 1000.0) == 0.0
+
+    def dust(signal, equity, gross_exposure, cfg):
+        del signal, equity, gross_exposure, cfg
+        return 0.01  # 0.0001 shares at a price of 100
+
+    bars = frame_from(SCENARIO)
+    signals = {bars.index[0]: [make_signal(engine.ENTER_LONG)]}
+
+    assert engine.run_backtest({SYMBOL: bars}, signals, dust, cfg).trades == ()
+
+
+def test_shares_for_refuses_a_non_positive_price() -> None:
+    with pytest.raises(ValueError, match="price must be positive"):
+        risk.shares_for(1000.0, 0.0)
+
+
+# ── administrative exits ─────────────────────────────────────────────────────
+
+
+def test_an_administrative_exit_is_flagged_not_string_matched(cfg: Config) -> None:
+    """GB-19 filters on the boolean; `exit_reason` stays a human-readable label."""
+    bars = frame_from(SCENARIO[:3])
+    signals = {bars.index[0]: [make_signal(engine.ENTER_LONG)]}
+
+    result = engine.run_backtest({SYMBOL: bars}, signals, fixed_notional, cfg)
+
+    assert result.trades[-1].exit_reason == engine.END_OF_DATA
+    assert result.trades[-1].strategy_exit is False
+
+
+def test_every_decided_exit_is_flagged_as_one(scenario: engine.BacktestResult) -> None:
+    assert all(trade.strategy_exit for trade in scenario.trades)
+    assert {trade.exit_reason for trade in scenario.trades} == {
+        engine.SIGNAL,
+        engine.STOP,
+        engine.STOP_GAP,
+    }
+
+
+def test_an_administrative_exit_still_moves_the_equity_curve(cfg: Config) -> None:
+    """Included in total return — the capital really was returned — but not a decision."""
+    bars = frame_from(SCENARIO[:3])
+    signals = {bars.index[0]: [make_signal(engine.ENTER_LONG)]}
+
+    result = engine.run_backtest({SYMBOL: bars}, signals, fixed_notional, cfg)
+    liquidation = result.trades[-1]
+
+    assert liquidation.net_pnl != 0.0
+    assert result.equity.iloc[-1] == pytest.approx(
+        cfg.backtest.initial_cash + liquidation.net_pnl, abs=1e-8
+    )
 
 
 def test_two_symbols_share_one_equity_curve(cfg: Config) -> None:

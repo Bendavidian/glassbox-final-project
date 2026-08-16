@@ -29,6 +29,17 @@ individually, and recorded in DECISIONS.md with the measurement that chose it.
 Stop and target comparisons are written correctly and each case is tested; see
 reference/REFERENCE_AUDIT.md for the inverted comparisons in the reference project.
 
+**Every number this module produces is a TOTAL return, not a price return.**
+``data/historical.py`` fetches with ``auto_adjust=True``, so dividends and splits are
+folded into the price series: a dividend appears as a smaller downward step on the
+ex-date rather than as separate cash. Nothing here adds dividend income, because it is
+already in the prices. A reader comparing these figures against a price-only benchmark
+would find a discrepancy of roughly the universe's dividend yield per year and have no
+way to explain it, so GB-57 must state the convention in the results chapter.
+
+Notional becomes a share count through ``engine.risk.shares_for`` - the one place that
+conversion happens, shared with GB-22's live executor so the two cannot diverge.
+
 Long-only, per spec 2.1.
 
 Implemented in GB-18.
@@ -45,6 +56,7 @@ import pandas as pd
 
 from glassbox.config.loader import Config
 from glassbox.contracts.schemas import Signal
+from glassbox.engine.risk import shares_for
 
 BPS = 10_000.0
 
@@ -83,6 +95,14 @@ class Trade:
     chose, before slippage. Slippage lives in ``costs`` rather than being folded into the
     prices, so the log answers "what did the rule pick?" and "what did the frictions take?"
     separately. ``net_pnl == gross_pnl - costs`` exactly, and is asserted for every trade.
+
+    ``strategy_exit`` is ``False`` only for ``end_of_data``: the position was liquidated
+    because the data ran out, not because the strategy decided anything. **GB-19's rule,
+    pinned here rather than left to be invented later:** such trades ARE included in the
+    equity curve and total return, because the curve must be complete and the capital was
+    genuinely returned - but they are EXCLUDED from hit rate, average trade and any other
+    per-decision statistic, because no decision was made. Filter on this field, never on
+    an ``exit_reason`` string.
     """
 
     symbol: str
@@ -95,6 +115,7 @@ class Trade:
     costs: float
     net_pnl: float
     exit_reason: str
+    strategy_exit: bool  # False when the exit was administrative, not a decision
 
 
 @dataclass(frozen=True, eq=False)
@@ -121,6 +142,7 @@ class BacktestResult:
             "costs",
             "net_pnl",
             "exit_reason",
+            "strategy_exit",
         ]
         rows = [
             {column: getattr(trade, column) for column in columns}
@@ -207,12 +229,18 @@ def run_backtest(
                 continue
 
             fill = price * (1.0 + slippage)
-            shares = notional / fill
+            shares = shares_for(notional, fill)
+            if shares <= 0.0:
+                # Below the broker's minimum fractional quantity. The order would be
+                # rejected, so filling it here would invent a trade that cannot happen.
+                continue
             entry_fee = shares * fill * fee
             if shares * fill + entry_fee > cash:
                 # The fee pushes the order past the cash the sizer was shown. Shrink to
                 # fit rather than overdraw: an account cannot go negative.
-                shares = cash / (fill * (1.0 + fee))
+                shares = shares_for(cash / (1.0 + fee), fill)
+                if shares <= 0.0:
+                    continue
                 entry_fee = shares * fill * fee
             cash -= shares * fill + entry_fee
             positions[signal.symbol] = _OpenPosition(
@@ -326,6 +354,7 @@ def _close_out(
             costs=costs,
             net_pnl=gross - costs,
             exit_reason=reason,
+            strategy_exit=reason != END_OF_DATA,
         )
     )
     return proceeds
