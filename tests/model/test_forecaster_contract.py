@@ -28,6 +28,7 @@ from causality import assert_causal
 from glassbox.config.loader import Config, load_config
 from glassbox.contracts.protocols import Forecaster
 from glassbox.contracts.schemas import Attribution, FitProvenance, WindowBatch
+from glassbox.model import ALL_FORECASTERS
 from glassbox.model.persistence import PersistenceForecaster
 
 INPUT_LEN = 30
@@ -41,23 +42,26 @@ EXACTNESS_SAMPLES = 1000
 
 EXACTNESS_TOLERANCE = 1e-5
 
+# Keeps the contract suite quick for models that fit by gradient descent.
+EPOCHS = 3
+PATIENCE = 2
 
-# ── the registry: the only thing GB-13 and GB-41 touch ───────────────────────
+
+# ── the registry lives in the package, not here ──────────────────────────────
+#
+# GB-13 moved it. Every forecaster is built through `glassbox.model.ALL_FORECASTERS`, so
+# integrating a new one is a line in that registry and NO change to this file — which
+# matters, because a test a model can edit is a test that model has judged itself with.
 
 
-def _persistence(batch: WindowBatch, cfg: Config) -> Forecaster:
-    model = PersistenceForecaster(
-        input_len=cfg.window.input_len, horizon=cfg.window.horizon
-    )
+FORECASTERS = [pytest.param(name, id=name) for name in sorted(ALL_FORECASTERS)]
+
+
+def build(name: str, batch: WindowBatch, cfg: Config) -> Forecaster:
+    """Construct and fit the registered forecaster called ``name``."""
+    model = ALL_FORECASTERS[name](cfg, batch.channels)
     model.fit(batch)
     return model
-
-
-FORECASTERS = [
-    pytest.param(_persistence, id="persistence"),
-    # GB-13: pytest.param(_dlinear, id="dlinear")
-    # GB-41: pytest.param(_fits, id="fits")
-]
 
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
@@ -68,7 +72,11 @@ def cfg() -> Config:
     """Production config with a smaller window, so the suite stays fast."""
     base = load_config()
     return replace(
-        base, window=replace(base.window, input_len=INPUT_LEN, horizon=HORIZON)
+        base,
+        window=replace(base.window, input_len=INPUT_LEN, horizon=HORIZON),
+        # Trainable forecasters actually train here. A handful of epochs is enough to
+        # exercise every property; the study uses the configured budget.
+        model=replace(base.model, epochs=EPOCHS, patience=PATIENCE),
     )
 
 
@@ -302,7 +310,7 @@ def test_forecaster_contract(
     cfg: Config,
     tmp_path: Path,
 ) -> None:
-    run_property(check, factory(batch, cfg), batch, tmp_path, windows)
+    run_property(check, build(factory, batch, cfg), batch, tmp_path, windows)
 
 
 @pytest.mark.parametrize("factory", FORECASTERS)
@@ -310,7 +318,7 @@ def test_forecaster_satisfies_the_protocol(
     factory, batch: WindowBatch, cfg: Config
 ) -> None:
     """A structural check, cheap and independent of the properties above."""
-    assert isinstance(factory(batch, cfg), Forecaster)
+    assert isinstance(build(factory, batch, cfg), Forecaster)
 
 
 # ── the properties have teeth ────────────────────────────────────────────────
@@ -495,7 +503,7 @@ def test_a_sound_forecaster_has_no_unmet_dependencies(
     batch: WindowBatch, cfg: Config
 ) -> None:
     """The guard must not swallow a real failure by deferring for a healthy model."""
-    model = _persistence(batch, cfg)
+    model = build("persistence", batch, cfg)
 
     for check in PROPERTIES:
         assert unmet_dependency(check, model, batch) is None
@@ -506,7 +514,7 @@ def test_a_sound_forecaster_has_no_unmet_dependencies(
 
 def test_persistence_predicts_exactly_zero(batch: WindowBatch, cfg: Config) -> None:
     """`ln(C_t / C_t) == 0`: predicting zero is the statement "the price does not move"."""
-    model = _persistence(batch, cfg)
+    model = build("persistence", batch, cfg)
 
     assert not model.predict(batch.X).any()
 
@@ -515,7 +523,7 @@ def test_persistence_names_every_channel_in_its_attribution(
     batch: WindowBatch, cfg: Config
 ) -> None:
     """An empty attribution is indistinguishable from a bug; zeros are an answer."""
-    attribution = _persistence(batch, cfg).explain(batch.X[0], batch.channels)
+    attribution = build("persistence", batch, cfg).explain(batch.X[0], batch.channels)
 
     assert tuple(attribution.per_channel) == batch.channels
     assert set(attribution.per_channel.values()) == {0.0}
@@ -528,7 +536,7 @@ def test_predict_refuses_a_window_of_the_wrong_length(
     batch: WindowBatch, cfg: Config
 ) -> None:
     """Zeros of any requested shape would pass a contract a real model would fail."""
-    model = _persistence(batch, cfg)
+    model = build("persistence", batch, cfg)
 
     with pytest.raises(ValueError, match=f"{INPUT_LEN} lags"):
         model.predict(batch.X[:, :-1, :])
@@ -544,7 +552,7 @@ def test_a_checkpoint_from_another_version_is_refused(
     batch: WindowBatch, cfg: Config, tmp_path: Path
 ) -> None:
     path = tmp_path / "checkpoint.json"
-    _persistence(batch, cfg).save(str(path))
+    build("persistence", batch, cfg).save(str(path))
     path.write_text(
         path.read_text(encoding="utf-8").replace('"version": 1', '"version": 99'),
         encoding="utf-8",

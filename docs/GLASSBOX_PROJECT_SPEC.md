@@ -711,7 +711,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 
 | ID | Task | Epic | Own | SP | Done when |
 |---|---|---|---|---|---|
-| GB-13 | `DLinearForecaster` — trend/remainder decomposition + linear maps | E4 | B | 5 | Contract test passes; trains on one fold |
+| GB-13 | `DLinearForecaster` — trend/remainder decomposition + linear maps, **one map per component per channel** so GB-30's attribution is a regrouping rather than a reconstruction. No intercept, so `Σ per_channel == forecast` holds by construction. Registered in `glassbox.model.ALL_FORECASTERS` | E4 | B | 5 | Contract test passes **unchanged**; trains on one fold; weights addressable by channel name |
 | ~~GB-14~~ | ~~`NLinearForecaster`~~ · **CUT** — `DLinear` alone satisfies the baseline requirement | E4 | B | ~~2~~ | — |
 | GB-15 | `train.py` — loop, seeds, early stopping, checkpoints, scaler stats | E4 | B | 5 | Two runs with same seed give identical weights |
 | GB-16 | `predict.py` — batch + single-window inference | E4 | B | 2 | Matches `train.py` outputs on held-out data |
@@ -749,7 +749,7 @@ rather than deleted, so a reader sees the decision instead of a gap.
 
 | ID | Task | Epic | Own | SP | Done when |
 |---|---|---|---|---|---|
-| GB-41 | `fits.py` core — RIN, rFFT, LPF, complex linear, irFFT | E10 | B | 8 | Contract test passes |
+| GB-41 | `fits.py` core — RIN, rFFT, LPF, complex linear, irFFT. **Report the actual parameter count**: at `input_len 120` and `cutoff_period_days 5`, `COF = 24` and the output is `ceil(124/120 × 24) = 25` bins, so the complex layer holds `24 × 25 = 600` complex = **1,200 real** parameters — not the ~10k of §6.1, which is the paper's figure for its own configuration. DLinear holds 4,800 (GB-13), so FITS is the **smaller** model by 4× | E10 | B | 8 | Contract test passes; the reported parameter count is measured, not quoted from the paper |
 | GB-42 | **Amplitude scale fix `(L+H)/L` + sinusoid reconstruction test** | E10 | B | 2 | Known sinusoid reconstructed within 1e-4 |
 | ~~GB-43~~ | ~~Backcast + forecast supervision (`B+F`) toggle~~ · **CUT** — `B+F` hardcoded per §5; the ablation is not essential | E10 | B | ~~3~~ | — |
 | GB-44 | FITS integration + shared-weights-across-universe training | E10 | B | 3 | One model serves all 5 symbols |

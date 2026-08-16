@@ -7,6 +7,100 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-16 — GB-13: DLinear departs from the reference in four places, one of them measured
+
+**Decision.** `DLinearForecaster` uses **per-channel** weights, **no intercept**, **zero
+initialisation**, and fits with torch while predicting with numpy. The forecaster registry
+moves out of the contract test into `glassbox/model/__init__.py` as `ALL_FORECASTERS`.
+
+**Reasoning.**
+
+*Per-channel weights, because GB-30 decides it.* The reference maps every channel through
+one shared `nn.Linear` and emits a forecast per channel; this project forecasts one series
+from a channel set. Giving each channel its own matrix per component makes the forward pass
+a plain sum of per-channel terms, so `explain` is a **regrouping of the terms `predict`
+already computed** rather than a reconstruction. A joint split — decomposing some
+projection of the channel set — would mix channels into the components and make the
+weights inseparable, which would end the exactness claim. So the question in the task
+brief answers itself: attribution must decompose by channel, therefore the split is per
+channel. It also could not be otherwise mechanically: a moving average of a multi-channel
+window is a moving average of each channel.
+
+*No intercept.* `nn.Linear` carries a bias. With one, `sum(per_channel.values())` falls
+short of the forecast by exactly the bias and there is no honest channel to charge it to —
+`Attribution.per_channel` is keyed by channel name, and an `"intercept"` key would be a
+channel that does not exist. Per-channel biases would restore exactness but are collinear
+and meaningless. Since the target is a log return with a mean near zero, an intercept buys
+almost nothing, so it goes. Exactness then holds by construction, and a test asserts a zero
+window forecasts exactly zero — which would fail the moment someone added one.
+
+*Zero initialisation, and this one was found by measuring rather than reasoning.* Porting
+`nn.Linear`'s `U(-1/sqrt(L), 1/sqrt(L))` is wrong for this architecture. That bound assumes
+a fan-in of `L` because the reference maps one channel to one output; this model **sums**
+`C x 2` such maps, so the true fan-in is `C * 2 * L` — 1200 against 120. A random start
+therefore emits forecasts around 1.8 against a target standard deviation of 0.015, about
+120x too large, and 100 epochs are spent travelling back. Measured out of sample on
+walk-forward fold 1:
+
+| Initialisation | MAE vs persistence | Direction accuracy | Largest contribution |
+|---|---|---|---|
+| Paper, `1/sqrt(L)` | 4.00× | 0.344 | 1.39 |
+| Fan-in corrected, `1/sqrt(2CL)` | 1.96× | 0.328 | 0.43 |
+| **Zeros** | **1.94×** | **0.557** | **0.058** |
+
+The last column matters as much as the first. With the paper's initialisation the
+attribution is still exact and completely unreadable: a forecast of 0.01 explained by
+contributions of +1.39 and −1.20 that cancel. Zero-initialised weights leave contributions
+on the same scale as the forecast, which is what GB-30 must render and a supervisor must
+believe. The objective is convex, so initialisation cannot change the optimum — only the
+path — and starting at zero means the model **starts as the persistence baseline** and every
+weight it moves is something it learned.
+
+*Torch fits, numpy predicts.* The decomposition has no parameters, so it is applied once
+before training rather than inside a forward pass. Inference is then pure numpy with no
+global torch state to be perturbed by, which makes contract property 2 — and properties 5
+and 6, which depend on it — true by construction rather than by discipline.
+
+*The registry moved into the package.* `ALL_FORECASTERS` lives in `glassbox/model/__init__.py`
+and the contract test iterates it. A test a model can edit is a test that model has judged
+itself with; now GB-41 adds a line to the registry and changes nothing in the file that
+judges it. It holds factories rather than classes because constructors legitimately differ,
+and forcing a construction signature into the frozen protocol would be a contract change
+bought for tidiness.
+
+**On the audit's centred-moving-average claim: it is correct, and I checked the code rather
+than taking it.** The padding repeats each window's own first and last bar, so `trend[l]`
+averages lags `l-12 .. l+12` **within the window** — every one of which is at or before the
+window's own timestamp, while the forecast is of bars after it. The causality rule
+constrains what a window may contain relative to its target; it does not require lag `l` to
+be computed from lags `<= l`, and no forecaster here could work if it did. What *would* be
+a violation is a decomposition reaching across the batch, and contract property 6 catches
+exactly that: it perturbs later windows and requires earlier predictions bit-identical.
+`test_the_decomposition_reads_only_its_own_window` asserts it directly as well. Two things
+worth knowing that the audit does not say: the trend is a property of the **window**, not of
+the series, so two overlapping windows disagree about the trend at the same timestamp; and
+edge replication pulls `trend[L-1]` toward the last observation, making the most recent
+trend value the least informative one.
+
+**Parameter count, and a correction the report will need.** DLinear holds
+`2 components × 5 channels × (4 × 120) = 4,800` weights and no bias. Spec §6.1 describes
+FITS as "~10k parameters", which is the paper's figure for its own configuration, not ours:
+at `L = 120` and `cutoff_period_days = 5`, `COF = 24` and the output is
+`ceil(124/120 × 24) = 25` bins, so the complex layer holds `24 × 25 = 600` complex weights,
+**1,200 real parameters**. DLinear is therefore **4× larger than FITS**, not smaller — the
+opposite of what "~10k" suggests. GB-41 must report the actual count and GB-57 must not
+repeat the paper's figure.
+
+**Consequence.** On fold 1, DLinear's MAE is 1.94× persistence with direction accuracy
+0.557. Worse on MAE is expected and is not tuned away: 4,800 parameters against 501
+training windows is heavily over-parameterised, and §7.3 bans MSE-style metrics as headline
+numbers precisely because a flatter forecast wins them. Direction accuracy — the quantity
+the signal layer consumes — is above chance. One fold on one symbol proves nothing either
+way; GB-51's paired Wilcoxon across folds is what decides, and tuning against this fold now
+would be fitting to the test set.
+
+---
+
 ## 2026-08-16 — GB-18 addenda: one share conversion, one exit flag, one return convention
 
 **Decision.** The notional-to-shares conversion lives in **one** function,
