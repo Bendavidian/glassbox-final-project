@@ -40,10 +40,15 @@ python -m venv .venv
 ### 2. Activate it — do not skip this
 
 **Every command in this README assumes an activated virtual environment.** Running
-`python` without activating it uses the system interpreter, which does not have the
-project installed, and every command below then fails with `ModuleNotFoundError: No
-module named 'glassbox'`. That error means "you forgot to activate", not "the install is
-broken".
+`python` without activating it uses the system interpreter, which has none of this
+project's dependencies, and you get `ModuleNotFoundError` — for `pytest`, `pandas`,
+`yfinance`, whichever the command needed first. That error means "you forgot to activate",
+not "the install is broken".
+
+Note that `import glassbox` on its own may still succeed from the repository root even
+without activation, because Python puts the working directory on the path and finds the
+`glassbox/` folder directly. That is a coincidence of where you are standing, not a
+working install — the first dependency the code reaches for will fail.
 
 ```powershell
 # Windows — PowerShell
@@ -265,8 +270,9 @@ order).
 
 | Symptom | Cause |
 |---|---|
-| `ModuleNotFoundError: No module named 'glassbox'` | The virtual environment is not activated. See step 2. |
-| `ModuleNotFoundError` for `pandas`, `yfinance`, … | Same cause, or `pip install` was run against a different interpreter. Re-check `python -c "import sys; print(sys.executable)"`. |
+| `ModuleNotFoundError: No module named 'pytest'` / `'pandas'` / `'yfinance'` | The virtual environment is not activated, or `pip install` ran against a different interpreter. Check with `python -c "import sys; print(sys.executable)"` — the path must be inside `.venv`. See step 2. |
+| `ModuleNotFoundError: No module named 'glassbox'` | Same cause, seen from outside the repository root. From inside it, `glassbox` imports whether or not you activated — see the note in step 2. |
+| `OSError [Errno 2]` during `pip install -r requirements.lock`, naming a very long path under `lxml` | Windows long-path support is off and the clone sits too deep. Clone nearer the drive root (`C:\glassbox`) or enable long paths. Verified: the same install succeeds from a short path. |
 | `unauthorized` from the Alpaca smoke script | `.env` still holds placeholders, or the keys are from a live account rather than a paper one. |
 | The smoke script exits 2 without output | `ALPACA_BASE_URL` is not the paper endpoint. This is a refusal, not a bug. |
 | `pytest` collects 0 tests | You are not in the repository root. |
