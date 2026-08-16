@@ -48,6 +48,7 @@ import pandas as pd
 
 from glassbox.config.loader import Config
 from glassbox.contracts.schemas import Attribution, FitProvenance, WindowBatch
+from glassbox.model.history import EpochLoss
 
 CHECKPOINT_VERSION = 1
 
@@ -133,6 +134,13 @@ class DLinearForecaster:
         self.fitted: FitProvenance | None = None
         self._cfg = cfg
 
+        # How the last fit went. Not model state and not in the checkpoint - a model
+        # rebuilt by `load` reports an empty history, which is the truth: it did not
+        # train. GB-15 writes these to a sidecar file for the report.
+        self.history: tuple[EpochLoss, ...] = ()
+        self.best_epoch: int | None = None
+        self.stopped_early = False
+
         shape = (len(self.channels), self.horizon, self.input_len)
         self._trend = np.zeros(shape, dtype="float64")
         self._remainder = np.zeros(shape, dtype="float64")
@@ -182,7 +190,10 @@ class DLinearForecaster:
 
         Normalisation statistics are not stored here: ``features.builder`` applies them
         before the batch is assembled, and duplicating them in the model would create two
-        places for them to disagree.
+        places for them to disagree. GB-15's checkpoint stores them alongside the weights.
+
+        Sets ``history``, ``best_epoch`` and ``stopped_early`` as a side effect. They
+        describe the run, not the model, and are not written into the checkpoint.
         """
         import torch
 
@@ -201,8 +212,10 @@ class DLinearForecaster:
 
         validation = None if val is None else self._tensors(val, torch)
         best_loss, best_state, waited = math.inf, None, 0
+        curve: list[EpochLoss] = []
+        self.best_epoch, self.stopped_early = None, False
 
-        for _ in range(plan.epochs):
+        for epoch in range(1, plan.epochs + 1):
             order = torch.randperm(targets.shape[0], generator=generator)
             for start in range(0, len(order), plan.batch_size):
                 rows = order[start : start + plan.batch_size]
@@ -214,25 +227,39 @@ class DLinearForecaster:
                 loss.backward()
                 optimiser.step()
 
-            if validation is None:
-                continue
+            # Both losses at the epoch's end, over the whole split. Averaging the
+            # mini-batch losses instead would measure weights that no longer exist and
+            # would not be comparable to the validation number beside it.
             with torch.no_grad():
-                score = float(
-                    torch.nn.functional.mse_loss(
-                        self._forward(torch, weights, validation[0]), validation[1]
+                score = (
+                    None
+                    if validation is None
+                    else self._loss(torch, weights, validation)
+                )
+                curve.append(
+                    EpochLoss(
+                        epoch=epoch,
+                        train_loss=self._loss(torch, weights, (inputs, targets)),
+                        val_loss=score,
                     )
                 )
+
+            if score is None:
+                continue
             if score < best_loss:
                 best_loss, waited = score, 0
+                self.best_epoch = epoch
                 best_state = [tensor.detach().clone() for tensor in weights]
             else:
                 waited += 1
                 if waited >= plan.patience:
+                    self.stopped_early = True
                     break
 
         final = best_state if best_state is not None else weights
         self._trend = final[0].detach().numpy().astype("float64")
         self._remainder = final[1].detach().numpy().astype("float64")
+        self.history = tuple(curve)
         self.fitted = FitProvenance.from_batch(batch, self.input_len, self.horizon)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
@@ -324,6 +351,15 @@ class DLinearForecaster:
         trend, remainder = inputs
         return torch.einsum("chl,blc->bh", trend_w, trend) + torch.einsum(
             "chl,blc->bh", remainder_w, remainder
+        )
+
+    def _loss(self, torch, weights, split) -> float:
+        """Mean squared error of ``weights`` over a whole ``(inputs, targets)`` split."""
+        split_inputs, split_targets = split
+        return float(
+            torch.nn.functional.mse_loss(
+                self._forward(torch, weights, split_inputs), split_targets
+            )
         )
 
     def _initial_weights(self, torch, generator):

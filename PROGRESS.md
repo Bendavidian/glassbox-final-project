@@ -8,10 +8,11 @@ Append one line per completed task. Newest at the bottom of each sprint.
 ## Current state
 
 **Sprint:** 1 — Foundations · **complete, 14 Aug 2026** (12/12, day 6 of 14)
-**Sprint 2:** in progress — GB-17, GB-18, GB-13 complete 16 Aug; GB-18 halt/accounting fix 17 Aug
+**Sprint 2:** in progress — GB-17, GB-18, GB-13 complete 16 Aug; GB-18 halt/accounting fix and GB-15 complete 17 Aug
 **Next task:** GB-19, metrics — completes the harness chain
 **Last gate passed:** none — GATE 1 target revised to ~22 Aug, commitment 11 Sep
-**Blockers:** none
+**Blockers:** none. One ruling awaited (GB-15: per-symbol or universe-wide training); it
+does not block GB-19, and GB-49's grid is where it lands.
 
 ---
 
@@ -135,7 +136,7 @@ depends on nothing in the model layer.
 | GB-18 fix | 17 Aug 2026 | Ben | **Complete.** Review found the engine popping a position from its book *before* checking whether the symbol had a price that day. Measured on the committed engine: **−10,001.00 on a 100,000 account, 10.0%, with an empty trade log** — in both an exit-on-a-halted-day case and a symbol-history-ends-early case, the second of which fires whenever one symbol's listing is shorter than the universe's. Fifth pricing rule added: **a missing bar is a halt, not an exit** — exits carry forward to the symbol's next traded open, entries expire, halted positions mark at their own last printed close, and a symbol ending early liquidates at that close. Marking at `last_mark` also removed a look-ahead: sizing an order filling at bar `t`'s open previously consulted bar `t`'s **close**. New standing invariant `_assert_accounted` runs on **every** backtest: flat book ⇒ final equity == initial cash + Σ `net_pnl`. 7 tests, 6 of which fail against the previous engine. Suite at 402. |
 | GB-19 | | Ben | |
 | GB-13 | 16 Aug 2026 | Ben | **Complete.** `model/ltsf.py` — `DLinearForecaster`, centred moving-average trend plus remainder, one linear map per component **per channel** so GB-30's attribution is a regrouping rather than a reconstruction. No intercept, so `Σ per_channel == forecast` holds by construction. **Zero initialisation**, chosen by measurement: the reference's `1/sqrt(L)` assumes a fan-in of 120 where this summed architecture has 1200, and costs 4.00× persistence MAE and 0.344 direction against 1.94× and 0.557 for zeros. Torch fits, numpy predicts, so inference determinism is structural. Registry moved to `glassbox.model.ALL_FORECASTERS`; the contract test now needs no edit for GB-41. 4,800 parameters. 23 tests + 8 contract; suite at 395. |
-| GB-15 | | Ben | |
+| GB-15 | 17 Aug 2026 | Ben | **Complete.** `model/train.py` + `model/history.py` — one training run around one `fit` call, per §4.3. The hard requirement is structural, not careful: windows are built **once** with the training statistics and split by timestamp afterwards, so there is no second `build_windows` call to hand a second `ChannelStats`. A checkpoint is a **directory** — `model.json`, `checkpoint.json`, `history.csv` — and loading refuses any config-hash difference. `held_out` is recorded so GB-25's audit is self-contained, and a test proves the weights are bit-identical with and without it. **Measured on all 80 arms (5 symbols × 16 folds):** best-epoch selection improved test MAE in **80/80** (2.757× → 2.004× persistence, 27.3%), while `patience` produced an **identical model in 79/80** — early stopping is a regulariser and a compute budget, and only the first matters. Full batch beat mini on MAE in 57/80 but its decisive argument was measurably false (weights differ across seeds by rel 4.8e-15, so it is not seed-free), so mini-batch stands. **Direction accuracy across 80 arms is 0.4971 — at chance**, which corrects GB-13's single-fold 0.557. 27 tests; suite at 430. Open for ruling: per-symbol vs universe-wide training. |
 | GB-16 | | Ben | |
 | GB-20 | | Ben | |
 | GB-21 | | Noy | |

@@ -7,6 +7,102 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-17 — GB-15: the checkpoint is a directory, and early stopping is two mechanisms
+
+**Decision.** Five rulings, three of them measured.
+
+1. **The training loop stays inside `fit`; `train.py` is what surrounds one call to it.**
+   Spec §4.3 puts the loop there — `fit(batch, val)` is the contract and early stopping is
+   named in it. `train.py` decides what the model may see, records what it saw, and writes
+   both down. GB-41 adds FITS without touching it.
+2. **A checkpoint is a directory of three artefacts**, not a file: `model.json` (weights +
+   `FitProvenance`), `checkpoint.json` (config hash, `ChannelStats`, the ranges shown to
+   the model, how training ended), `history.csv` (per-epoch losses). They answer three
+   different questions and one of them is not a checkpoint at all — the loss curve is a
+   report artefact, and keeping it out leaves every byte of the checkpoint reproducible.
+3. **Windows are built once with the training statistics and split by timestamp
+   afterwards.** There is no second `build_windows` call that could be handed a second
+   `ChannelStats`, so validation cannot be normalised by its own mean and variance even by
+   accident. This is the structural version of the hard requirement, not the careful one.
+4. **The config-hash check on load refuses on any difference**, including an unrelated key.
+   Hashing only the fields believed to matter needs a list of which fields those are, and
+   that list is wrong the first time someone adds a field and forgets it. A false refusal
+   costs a retrain; a false acceptance puts a model trained under other rules into a
+   results table. **Known cost, stated now:** GB-20 calibrates `signal.min_trend` and
+   `max_trend`; if those are written back into `settings.yaml`, every checkpoint trained
+   before that write is refused. That is correct behaviour and a scheduling fact.
+5. **Mini-batch at the configured `batch_size: 64`**, not full batch — see below.
+
+**Reasoning — what early stopping actually does, measured on all 80 arms** (5 symbols ×
+16 folds, real cached data). Two mechanisms are habitually spoken of as one, and they are
+separable:
+
+| Mechanism | Effect on test MAE vs persistence |
+|---|---|
+| Final-epoch weights, no selection | 2.757× (median 2.616×) |
+| **Best-epoch selection on validation** | **2.004× (median 1.938×)** — better in **80/80** arms, 27.3% mean improvement |
+| Adding `patience: 10` on top | 1.999× — **identical model in 79/80 arms** |
+
+So on a convex objective early stopping is not guarding against divergence, and the part
+that matters is **best-epoch selection**, not `patience`. `patience` is a compute budget:
+it saved a mean of 76.5 of the 100 configured epochs and changed the chosen epoch once in
+80 runs.
+
+What selection regularises against is the **null space**. With `input_len 120` there are
+501 training windows per fold, so `501 × 4 = 2004` equations against 4,800 parameters —
+**0.42× — an underdetermined system.** The training optimum is not a point but an affine
+subspace of dimension ≥ 2,796 on which training loss is identical and validation loss is
+not. Descending from zero traverses high-curvature directions first, so an early iterate is
+a low-norm solution and a late one has fitted noise; stopping the path early is
+approximately ridge regularisation. Approximately, not exactly: Adam preconditions the
+gradient, so the classical equivalence for plain gradient descent is a guide here, not a
+proof. Measured: training loss falls 0.00712 → 0.00141 over 100 epochs while validation
+loss falls to 0.00145 at epoch 17 and then **rises to 0.00337**.
+
+**Reasoning — full batch versus mini batch, measured on the same 80 arms.**
+
+| | test MAE vs persistence | direction | epochs |
+|---|---|---|---|
+| mini-batch (64) | mean 1.999× · median 1.938× | 0.4971 | 23.5 |
+| full batch (501) | mean 1.950× · median 1.785× | 0.5113 | 36.1 |
+| full better in | **57/80** | 40/80 | — |
+
+Full batch has a real MAE advantage. It is chosen against anyway, for three reasons.
+
+*The decisive argument for it is measurably false.* Full batch was supposed to remove the
+seed from the picture entirely, making determinism structural rather than a property to
+test. It does not: `randperm` still runs, and summing 501 terms in a different order gives
+a different last bit. Measured across three seeds the weights differ by a **relative 4.8e-15**
+— deterministic to fifteen figures, but not bit-identical, so the seed test is still
+needed and nothing is bought.
+
+*The advantage is in a metric neither arm is winning.* Both configurations sit near 2×
+persistence MAE and at 0.50 direction. Choosing between them on an 8% improvement in a
+ratio where both are twice as bad as the baseline is optimising a number that is not the
+point.
+
+*Expressing "full batch" as a size is fragile.* `batch_size` names a mini-batch size; to
+mean "all of them" it would have to hold a number larger than any fold's window count, and
+it would silently revert to mini-batch the day a fold grew past it.
+
+**Revisit at the universe ruling.** Per symbol the problem is underdetermined at 0.42×;
+across five symbols it is **overdetermined at 2.09×**, which changes the regularisation
+argument that this decision rests on. Re-measure then rather than inheriting this.
+
+**Consequence.** `glassbox/model/history.py` is a new module — added to spec §3.4 and to
+`tests/test_scaffold.py`, both of which refused it until it was declared. `EpochLoss` lives
+there because `ltsf.py` produces it and `train.py` writes it, and `train.py` already imports
+`ltsf` through the package `__init__`; putting the type in either would make the pair
+circular, and putting it in `contracts/schemas.py` would change a frozen contract to hold a
+reporting artefact. `DLinearForecaster` gains `history`, `best_epoch` and `stopped_early`,
+which describe the run rather than the model and are deliberately absent from `model.json`.
+`select_windows` is public because GB-19 and GB-49 need the same operation.
+
+**Open, and not decided here: per-symbol or universe-wide training.** See the GB-15 row in
+spec §9. It requires a contract decision and is Ben's ruling.
+
+---
+
 ## 2026-08-17 — GB-18 fix: a missing bar is a halt, not an exit; and the accounting invariant
 
 **Decision.** Five changes to `backtest/engine.py`, all consequences of one defect found in

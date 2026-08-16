@@ -25,6 +25,10 @@ SPEC_MODULES = (
     "model/ltsf.py",
     "model/fits.py",
     "model/train.py",
+    # GB-15: the per-epoch loss record. A module of its own because `ltsf.py` produces it
+    # and `train.py` writes it, and `train.py` already imports `ltsf` through the package
+    # `__init__` — putting the type in either would make the pair circular.
+    "model/history.py",
     "model/predict.py",
     "explain/channel.py",
     "explain/spectral.py",
