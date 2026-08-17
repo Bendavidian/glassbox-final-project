@@ -269,8 +269,14 @@ class WindowBatch:
     y: np.ndarray          # (B, H)    float32 — target log-return path
     channels: tuple[str, ...]   # length C, ordered, matches X's last axis
     timestamps: pd.DatetimeIndex  # length B, the 't' of each window
-    symbol: str
+    symbols: tuple[str, ...]      # length B, the symbol EACH WINDOW came from
     source: str            # provenance: the data source these windows were built from
+
+    @property
+    def unique_symbols(self) -> tuple[str, ...]: ...   # sorted, deduplicated
+
+    @classmethod
+    def concat(cls, batches) -> "WindowBatch": ...     # pool; validates before stacking
 
 @dataclass(frozen=True)
 class ChannelStats:
@@ -337,6 +343,29 @@ class DecisionRecord:
     narrative: str
     config_hash: str       # ties the record to the exact config that made it
 ```
+
+**Note on `WindowBatch.symbols` (contract change, 2026-08-17).** It was `symbol: str`.
+Every forecaster now trains **across the universe** — see §7.4 and the GB-15 row in §9 —
+and a pooled batch genuinely has one symbol per window. The rejected alternatives: taking
+a *sequence* of batches into the `Forecaster` protocol pushes pooling into every consumer,
+and keeping a single string forces the pooled case to be encoded somewhere outside the
+contract, which is the implicitness that promoting `ChannelStats` out of `build_windows`
+removed. `FitProvenance.symbols` was already plural, so it absorbed the change unaltered.
+
+`WindowBatch.concat(batches)` is the **only** place pooling happens. It refuses batches
+that disagree on channel tuple (including order), window geometry, or `source` — pooling
+across vendors is the same defect as splicing within one series (GB-8). A pooled batch's
+`timestamps` are **not monotonic**: each symbol contributes the same date range. That is
+why `FitProvenance.from_batch` takes `timestamps.min()` and `.max()` rather than the first
+and last, and a test asserts the two differ.
+
+**Normalisation is per symbol, never pooled (ruling, 2026-08-17).** Per-symbol scaling is
+what *makes* pooling legitimate: it removes symbol-specific scale so the shared weights
+learn the structure common across symbols. A pooled scaler would leave NVDA's inputs
+systematically larger than MSFT's, and shared weights cannot express a symbol-specific
+response — the model would be asked to fit a difference it has no parameters for. A
+checkpoint therefore stores `{symbol: ChannelStats}`, and inference applies each window's
+own symbol's statistics.
 
 **Note on `Attribution(kw_only=True)`.** A dataclass field carrying a default may not
 precede fields without one, so making `per_lag` optional in place requires either

@@ -30,7 +30,7 @@ def make_batch(**overrides: Any) -> WindowBatch:
         "y": np.zeros((BATCH, HORIZON), dtype=np.float32),
         "channels": ("close_logret", "rsi14", "vol_z"),
         "timestamps": pd.date_range("2026-01-01", periods=BATCH, tz="UTC"),
-        "symbol": "AAPL",
+        "symbols": ("AAPL",) * BATCH,
         "source": "yfinance",
     }
     fields.update(overrides)
@@ -71,7 +71,7 @@ def test_valid_window_batch_constructs() -> None:
     batch = make_batch()
     assert batch.X.shape == (BATCH, LAGS, CHANNELS)
     assert batch.channels == ("close_logret", "rsi14", "vol_z")
-    assert batch.symbol == "AAPL"
+    assert batch.symbols == ("AAPL",) * BATCH
 
 
 def test_valid_forecast_constructs() -> None:
@@ -131,7 +131,7 @@ def test_decision_record_holds_the_full_decision() -> None:
 @pytest.mark.parametrize(
     ("instance", "attribute"),
     [
-        (make_batch(), "symbol"),
+        (make_batch(), "symbols"),
         (
             Forecast(
                 path=np.zeros(HORIZON, dtype=np.float32),
@@ -199,6 +199,134 @@ def test_channel_names_must_align_with_x() -> None:
         make_batch(channels=("close_logret", "rsi14"))
 
 
+def test_symbols_must_align_with_windows() -> None:
+    """One entry per window, not one per batch — the 2026-08-17 contract change."""
+    with pytest.raises(ValueError, match=r"WindowBatch\.symbols must be one symbol"):
+        make_batch(symbols=("AAPL",))
+
+
+# ── Pooling across the universe ──────────────────────────────────────────────
+#
+# Every forecaster trains across the universe, so a batch spanning five symbols is the
+# ordinary case rather than the exotic one. `concat` is the only place that assembly
+# happens, and every refusal below is a bug it exists to make loud.
+
+
+def test_a_batch_carries_one_symbol_per_window() -> None:
+    batch = make_batch(symbols=("AAPL", "AAPL", "MSFT", "MSFT"))
+
+    assert len(batch.symbols) == batch.X.shape[0]
+    assert batch.unique_symbols == ("AAPL", "MSFT")
+
+
+def test_unique_symbols_is_sorted_and_deduplicated() -> None:
+    """Derived, never stored, so it cannot fall out of step with ``symbols``."""
+    batch = make_batch(symbols=("NVDA", "AAPL", "NVDA", "MSFT"))
+
+    assert batch.unique_symbols == ("AAPL", "MSFT", "NVDA")
+
+
+def test_concat_pools_windows_and_keeps_each_windows_symbol() -> None:
+    first = make_batch(symbols=("AAPL",) * BATCH)
+    second = make_batch(
+        symbols=("MSFT",) * BATCH,
+        timestamps=pd.date_range("2026-02-01", periods=BATCH, tz="UTC"),
+    )
+
+    pooled = WindowBatch.concat([first, second])
+
+    assert pooled.X.shape == (2 * BATCH, LAGS, CHANNELS)
+    assert pooled.symbols == ("AAPL",) * BATCH + ("MSFT",) * BATCH
+    assert pooled.unique_symbols == ("AAPL", "MSFT")
+    assert len(pooled.timestamps) == 2 * BATCH
+
+
+def test_a_pooled_batch_has_non_monotonic_timestamps() -> None:
+    """Stated rather than left to be discovered.
+
+    Each symbol contributes the same date range, so a pooled batch revisits every date
+    once per symbol. Anything reading ``timestamps[0]`` or ``timestamps[-1]`` as the
+    batch's extent is wrong — which is why ``FitProvenance`` takes min and max.
+    """
+    first = make_batch(symbols=("AAPL",) * BATCH)
+    second = make_batch(symbols=("MSFT",) * BATCH)
+
+    pooled = WindowBatch.concat([first, second])
+
+    assert not pooled.timestamps.is_monotonic_increasing
+    assert pooled.timestamps.min() == first.timestamps[0]
+    assert pooled.timestamps.max() == first.timestamps[-1]
+
+
+def test_concat_refuses_batches_with_different_channels() -> None:
+    """The silent one: shared weights applied to a different meaning at the same index."""
+    first = make_batch()
+    second = make_batch(channels=("close_logret", "vol_z", "rsi14"))
+
+    with pytest.raises(ValueError, match="every batch to carry the channels"):
+        WindowBatch.concat([first, second])
+
+
+def test_concat_refuses_batches_with_different_window_shapes() -> None:
+    first = make_batch()
+    second = make_batch(X=np.zeros((BATCH, LAGS + 1, CHANNELS), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="windows of shape"):
+        WindowBatch.concat([first, second])
+
+
+def test_concat_refuses_batches_with_different_horizons() -> None:
+    first = make_batch()
+    second = make_batch(y=np.zeros((BATCH, HORIZON + 1), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="a horizon of"):
+        WindowBatch.concat([first, second])
+
+
+def test_concat_refuses_batches_from_different_sources() -> None:
+    """GB-8 measured a 4-9% volume difference between vendors; pooling across them is the
+    same defect as splicing within one series."""
+    first = make_batch()
+    second = make_batch(source="alpaca")
+
+    with pytest.raises(ValueError, match="a window must be assembled from one source"):
+        WindowBatch.concat([first, second])
+
+
+def test_concat_refuses_an_empty_sequence() -> None:
+    with pytest.raises(ValueError, match="empty sequence of batches"):
+        WindowBatch.concat([])
+
+
+def test_concat_of_one_batch_is_that_batch() -> None:
+    only = make_batch()
+
+    pooled = WindowBatch.concat([only])
+
+    np.testing.assert_array_equal(pooled.X, only.X)
+    assert pooled.symbols == only.symbols
+    assert pooled.source == only.source
+
+
+def test_provenance_of_a_pooled_batch_spans_every_symbol() -> None:
+    """The audit's question is "what did this model see?", and the answer is all of it."""
+    first = make_batch(symbols=("AAPL",) * BATCH)
+    second = make_batch(
+        symbols=("MSFT",) * BATCH,
+        timestamps=pd.date_range("2025-06-01", periods=BATCH, tz="UTC"),
+    )
+    pooled = WindowBatch.concat([first, second])
+
+    provenance = FitProvenance.from_batch(pooled, LAGS, HORIZON)
+
+    assert provenance.symbols == ("AAPL", "MSFT")
+    assert provenance.n_windows == 2 * BATCH
+    # min/max, not first/last: the last window is MSFT's, which ends earlier here.
+    assert provenance.fitted_start == second.timestamps[0]
+    assert provenance.fitted_end == first.timestamps[-1]
+    assert provenance.fitted_end != pooled.timestamps[-1]
+
+
 def test_forecast_path_must_be_one_dimensional() -> None:
     with pytest.raises(ValueError, match=r"Forecast\.path must be a 1-dimensional"):
         Forecast(
@@ -231,7 +359,7 @@ def test_fit_provenance_is_derived_from_the_batch() -> None:
     provenance = FitProvenance.from_batch(batch, LAGS, HORIZON)
 
     assert provenance.channels == batch.channels
-    assert provenance.symbols == (batch.symbol,)
+    assert provenance.symbols == batch.unique_symbols
     assert provenance.source == batch.source
     assert provenance.fitted_start == batch.timestamps[0]
     assert provenance.fitted_end == batch.timestamps[-1]
@@ -258,6 +386,7 @@ def test_fit_provenance_rejects_a_batch_with_no_windows() -> None:
         X=np.zeros((0, LAGS, CHANNELS), dtype=np.float32),
         y=np.zeros((0, HORIZON), dtype=np.float32),
         timestamps=pd.DatetimeIndex([], tz="UTC"),
+        symbols=(),
     )
     with pytest.raises(ValueError, match="at least one window"):
         FitProvenance.from_batch(empty, LAGS, HORIZON)

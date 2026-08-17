@@ -91,7 +91,7 @@ def batch(cfg: Config) -> WindowBatch:
         y=rng.standard_normal((WINDOWS, HORIZON)).astype("float32"),
         channels=channels,
         timestamps=timestamps,
-        symbol="AAPL",
+        symbols=("AAPL",) * WINDOWS,
         source="yfinance",
     )
 
@@ -216,7 +216,7 @@ def check_fit_records_provenance(
 
     assert isinstance(fitted, FitProvenance)
     assert fitted.channels == batch.channels
-    assert fitted.symbols == (batch.symbol,)
+    assert fitted.symbols == batch.unique_symbols
     assert fitted.source == batch.source
     assert fitted.fitted_start == batch.timestamps[0]
     assert fitted.fitted_end == batch.timestamps[-1]

@@ -192,7 +192,7 @@ def test_batch_shapes_and_dtypes(cfg: Config) -> None:
     assert batch.X.dtype == np.float32
     assert batch.y.dtype == np.float32
     assert batch.channels == cfg.channels.active_channels
-    assert batch.symbol == "AAPL"
+    assert batch.symbols == ("AAPL",) * len(batch.timestamps)
     assert len(batch.timestamps) == expected_windows
 
 

@@ -46,7 +46,7 @@ def batch(cfg: Config) -> WindowBatch:
         y=(rng.standard_normal((WINDOWS, HORIZON)) * 0.02).astype("float32"),
         channels=channels,
         timestamps=pd.date_range("2020-01-01", periods=WINDOWS, freq="B", tz="UTC"),
-        symbol="AAPL",
+        symbols=("AAPL",) * WINDOWS,
         source="yfinance",
     )
 
@@ -292,7 +292,7 @@ def test_a_validation_split_restores_the_best_weights(
         y=batch.y[:split],
         channels=batch.channels,
         timestamps=batch.timestamps[:split],
-        symbol=batch.symbol,
+        symbols=batch.symbols[:split],
         source=batch.source,
     )
     val = WindowBatch(
@@ -300,7 +300,7 @@ def test_a_validation_split_restores_the_best_weights(
         y=batch.y[split:],
         channels=batch.channels,
         timestamps=batch.timestamps[split:],
-        symbol=batch.symbol,
+        symbols=batch.symbols[split:],
         source=batch.source,
     )
 

@@ -14,6 +14,7 @@ Implemented in GB-3.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,14 +42,106 @@ def _fail(field_path: str, requirement: str, value: Any) -> None:
 
 @dataclass(frozen=True)
 class WindowBatch:
-    """Output of builder.build_windows(). The universal model input."""
+    """Output of builder.build_windows(). The universal model input.
+
+    ``symbols`` is **one entry per window**, not one per batch. A single-symbol batch
+    carries ``("AAPL",) * B``; a pooled batch carries the symbol each window came from.
+
+    The plural is a contract change made on 2026-08-17, when the study ruled that every
+    forecaster trains across the universe. A pooled batch genuinely has one symbol per
+    window, and the alternatives were worse: taking a *sequence* of batches into the
+    protocol pushes pooling into every consumer, and keeping a single string forces the
+    pooled case to be encoded somewhere outside the contract — the implicitness that
+    promoting :class:`ChannelStats` out of ``build_windows`` removed.
+    ``FitProvenance.symbols`` already anticipated the plural case; this makes
+    ``WindowBatch`` express it too.
+    """
 
     X: np.ndarray  # (B, L, C) float32 — B windows, L lags, C channels
     y: np.ndarray  # (B, H)    float32 — target log-return path
     channels: tuple[str, ...]  # length C, ordered, matches X's last axis
     timestamps: pd.DatetimeIndex  # length B, the 't' of each window
-    symbol: str
+    symbols: tuple[str, ...]  # length B, the symbol each window came from
     source: str  # the data source these windows were built from, e.g. "yfinance"
+
+    @property
+    def unique_symbols(self) -> tuple[str, ...]:
+        """The distinct symbols in this batch, sorted.
+
+        A derived accessor rather than a stored field, so it cannot fall out of step with
+        ``symbols``. Three callers wanted ``tuple(sorted(set(...)))`` and three copies of
+        it is how two of them end up sorting differently.
+        """
+        return tuple(sorted(set(self.symbols)))
+
+    @classmethod
+    def concat(cls, batches: Sequence[WindowBatch]) -> WindowBatch:
+        """Pool several batches into one, refusing any that do not belong together.
+
+        Universe-wide training (2026-08-17) needs one batch spanning every symbol, and
+        this is the only place that assembly happens. It validates rather than trusts:
+
+        * **Channel tuples must match exactly, order included.** Pooling batches with
+          different channel sets is a bug that produces a silently wrong model — the
+          shared weights would be applied to a different meaning at the same index, and
+          every downstream number would look ordinary.
+        * **Window geometry must match.** Different ``input_len`` or ``horizon`` cannot be
+          stacked at all, and the failure should name the mismatch rather than surface as
+          a numpy broadcasting error.
+        * **Sources must match.** GB-8 measured a 4-9% volume level difference between
+          vendors; pooling across them is the same defect as splicing within one series.
+
+        The result's ``timestamps`` are **not** monotonic: they are the concatenation of
+        several symbols' ranges, so the same date appears once per symbol. That is correct
+        for a pooled batch and is why ``FitProvenance.from_batch`` takes the minimum and
+        maximum rather than the first and last.
+
+        Raises:
+            ValueError: ``batches`` is empty, or the batches disagree on channels,
+                geometry or source.
+        """
+        batches = list(batches)
+        if not batches:
+            raise ValueError("cannot concatenate an empty sequence of batches")
+
+        first = batches[0]
+        for other in batches[1:]:
+            if other.channels != first.channels:
+                _fail(
+                    "WindowBatch.concat",
+                    f"every batch to carry the channels {list(first.channels)}",
+                    list(other.channels),
+                )
+            if other.X.shape[1:] != first.X.shape[1:]:
+                _fail(
+                    "WindowBatch.concat",
+                    f"every batch to have windows of shape {first.X.shape[1:]}",
+                    other.X.shape[1:],
+                )
+            if other.y.shape[1] != first.y.shape[1]:
+                _fail(
+                    "WindowBatch.concat",
+                    f"every batch to have a horizon of {first.y.shape[1]}",
+                    other.y.shape[1],
+                )
+            if other.source != first.source:
+                _fail(
+                    "WindowBatch.concat",
+                    f"every batch to come from {first.source!r}; a window must be "
+                    "assembled from one source",
+                    other.source,
+                )
+
+        return cls(
+            X=np.concatenate([batch.X for batch in batches], axis=0),
+            y=np.concatenate([batch.y for batch in batches], axis=0),
+            channels=first.channels,
+            timestamps=pd.DatetimeIndex(
+                np.concatenate([batch.timestamps.to_numpy() for batch in batches])
+            ),
+            symbols=tuple(symbol for batch in batches for symbol in batch.symbols),
+            source=first.source,
+        )
 
     def __post_init__(self) -> None:
         if self.X.ndim != 3:
@@ -76,6 +169,12 @@ class WindowBatch:
                 "WindowBatch.channels",
                 f"one name per channel in X ({self.X.shape[2]})",
                 len(self.channels),
+            )
+        if len(self.symbols) != self.X.shape[0]:
+            _fail(
+                "WindowBatch.symbols",
+                f"one symbol per window ({self.X.shape[0]})",
+                len(self.symbols),
             )
 
 
@@ -142,10 +241,10 @@ class FitProvenance:
     that put ``fitted_start`` / ``fitted_end`` on :class:`ChannelStats`, applied one layer
     up.
 
-    ``symbols`` is a tuple although a ``WindowBatch`` carries one symbol, because spec 6.4
-    trains one model across the universe (``individual_weights: false``). GB-44 will fit
-    from a batch assembled over five symbols, and a tuple absorbs that without a contract
-    change.
+    ``symbols`` is a tuple because every forecaster trains across the universe (ruling of
+    2026-08-17, and spec 6.4's ``individual_weights: false`` for FITS). It was a tuple
+    before ``WindowBatch`` carried more than one symbol, which is what let that change
+    happen without touching this class.
 
     Normalisation statistics are deliberately **not** duplicated here. Their fitted range
     already lives on :class:`ChannelStats`, which the builder produces and the checkpoint
@@ -171,15 +270,21 @@ class FitProvenance:
         A classmethod rather than a helper in each model, so Persistence, DLinear and
         FITS cannot record subtly different things and leave the audit comparing
         apples to pears.
+
+        **Minimum and maximum, not first and last.** A pooled batch's timestamps are the
+        concatenation of several symbols' ranges and are therefore not monotonic, so
+        ``timestamps[-1]`` is the last symbol's end rather than the batch's. GB-25 compares
+        this range against a fold's test range, and a range that understated its own extent
+        would let a leak pass.
         """
         if len(batch.timestamps) == 0:
             _fail("FitProvenance", "a batch with at least one window", 0)
         return cls(
             channels=batch.channels,
-            symbols=(batch.symbol,),
+            symbols=batch.unique_symbols,
             source=batch.source,
-            fitted_start=batch.timestamps[0],
-            fitted_end=batch.timestamps[-1],
+            fitted_start=batch.timestamps.min(),
+            fitted_end=batch.timestamps.max(),
             n_windows=len(batch.timestamps),
             input_len=input_len,
             horizon=horizon,

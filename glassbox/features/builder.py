@@ -242,7 +242,9 @@ def build_windows(
         y=y,
         channels=channels,
         timestamps=frame.index[positions],
-        symbol=symbol,
+        # One frame is one symbol, so every window in it carries the same name. The batch
+        # becomes genuinely plural only when `WindowBatch.concat` pools several.
+        symbols=(symbol,) * len(positions),
         source=str(source),
     )
 

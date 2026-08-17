@@ -369,7 +369,7 @@ def select_windows(
         y=batch.y[rows],
         channels=batch.channels,
         timestamps=batch.timestamps[rows],
-        symbol=batch.symbol,
+        symbols=tuple(batch.symbols[row] for row in rows),
         source=batch.source,
     )
 

@@ -7,6 +7,70 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-17 — CONTRACT CHANGE: `WindowBatch.symbol` becomes `symbols`; universe-wide training; per-symbol scaler
+
+**Decision.** Three rulings by Ben, one of which changes a frozen contract.
+
+1. **Every forecaster trains across the universe**, not per symbol.
+2. **`WindowBatch.symbol: str` becomes `symbols: tuple[str, ...]` of length B**, one entry
+   per window. A single-symbol batch carries `("AAPL",) * B`. `WindowBatch.concat(batches)`
+   is added as the only place pooling happens.
+3. **Normalisation statistics are fitted per symbol, never pooled.**
+
+**Reasoning — (1).** GB-15 measured the sample counts: per symbol a fold gives 501 windows,
+so `501 × 4 = 2004` equations against DLinear's 4,800 parameters — **0.42×,
+underdetermined**; across five symbols it is **2.09×, overdetermined**. Ben's addition, and
+it is the decisive half: **FITS at 1,200 parameters is already overdetermined per symbol at
+1.67×.** Training DLinear per symbol while FITS is trained universe-wide would handicap
+DLinear in a way FITS is not handicapped, and GB-49's grid would measure that handicap and
+report it as architecture. This is therefore a **correctness requirement for the
+comparison**, not a performance preference — which is a stronger claim than the one GB-15
+made, and the right one.
+
+**Reasoning — (2).** A pooled batch genuinely has one symbol per window, so the plural is
+the honest shape. The alternatives are worse. Taking a *sequence* of batches into the
+`Forecaster` protocol pushes pooling into every consumer, so three models would each
+implement it and two would eventually disagree. Keeping a single string forces the pooled
+case to be encoded outside the contract — a naming convention, a parallel array, a
+comment — which is exactly the implicitness removed when `ChannelStats` was promoted out of
+`build_windows`. `FitProvenance.symbols` was already a tuple, so it absorbed the change
+without an edit.
+
+`concat` validates rather than trusts, because each thing it refuses is silent if allowed:
+
+| Refused | Why it would not be noticed |
+|---|---|
+| Different channel tuples | Shared weights applied to a different meaning at the same index; every number stays plausible |
+| Different window geometry | Surfaces as a numpy broadcast error far from the cause |
+| Different `source` | GB-8 measured a 4-9% vendor volume difference; pooling across vendors is the same defect as splicing within one series |
+
+One consequence worth stating: a pooled batch's `timestamps` are **not monotonic** — each
+symbol contributes the same date range. `FitProvenance.from_batch` therefore takes
+`timestamps.min()` and `.max()` rather than the first and last. Under the old derivation a
+pooled batch would have reported the *last symbol's* end as the batch's end, understating
+its own extent — and GB-25 compares that range against the test range, so a range that
+understates itself lets a leak pass.
+
+**Reasoning — (3), Ben's.** Per-symbol normalisation is what *makes* pooling legitimate: it
+removes symbol-specific scale so the shared weights learn the structure common across
+symbols. A pooled scaler leaves NVDA's inputs systematically larger than MSFT's, and shared
+weights cannot express a symbol-specific response — the model would be asked to fit a
+difference it has no parameters for. `fit_stats` already takes one frame, so this needs no
+new machinery; the checkpoint stores `{symbol: ChannelStats}` and inference applies each
+window's own.
+
+**Consequence.** Spec §4.2 updated. `build_windows` emits `(symbol,) * B`.
+`select_windows` slices `symbols` alongside `X`. Thirteen tests added for the new surface,
+covering each refusal. Committed on its own, before GB-16, because burying a contract
+change inside a feature is how the next reader misses it.
+
+**Open for GB-41.** FITS applies RIN, a per-window instance normalisation, on top of the
+per-symbol scaler. Two normalisation stages in sequence is not automatically wrong, but
+whether the scaler still earns its place under FITS is a question to measure rather than
+assume. Added to GB-41's report items.
+
+---
+
 ## 2026-08-17 — GB-15: the checkpoint is a directory, and early stopping is two mechanisms
 
 **Decision.** Five rulings, three of them measured.
