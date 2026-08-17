@@ -23,11 +23,16 @@ memory, both of which shape this module.**
    - **No OCO linkage.** If the stop fills, the target is still live; the caller must
      cancel it. :func:`protect` returns both IDs so it can.
    - **Day only.** ``{"code":42210000,"message":"fractional orders must be DAY orders"}``,
-     so protection **expires at every close** and must be re-armed each session. A position
-     held overnight is unprotected until the next arming.
-   - The backtest models a stop that is always present. **The live system's stop is not**,
-     and GB-57 must state the difference rather than let the backtest's drawdowns stand for
-     the live system's.
+     so protection **expires at every close and is re-established each session**.
+   - **The residual divergence is smaller than "unprotected overnight", which is what an
+     earlier version of this docstring claimed and is wrong.** The stop is a *fixed price*
+     set at entry. A gap through it overnight leaves the re-armed stop immediately
+     marketable at the open, so it fires at roughly the open - which is exactly GB-18's
+     ``stop_gap`` rule. An intraday touch is covered because the stop is armed during the
+     session. What genuinely diverges is (a) the seconds between the open and the arming,
+     and (b) a cycle in which arming **fails and nothing notices** - the second being far
+     the more dangerous. GB-26 carries the five-point policy that closes both; GB-57 states
+     the residual in those terms and not as "the live system has no stop overnight".
 
 2. **The minimum order size is a notional, not a share count.** See
    ``engine.risk.MIN_ORDER_NOTIONAL``; GB-18's ``MIN_SHARES = 0.001`` was the right idea in

@@ -37,6 +37,10 @@ SPEC_MODULES = (
     "engine/rank.py",
     "engine/risk.py",
     "engine/executor.py",
+    # GB-23: reconcile-from-truth. Its own module rather than part of `executor.py`
+    # because submission and reconciliation fail differently and are read separately —
+    # one is "did the order go", the other is "is what we believe still true".
+    "engine/reconcile.py",
     "backtest/engine.py",
     "backtest/walkforward.py",
     "backtest/metrics.py",

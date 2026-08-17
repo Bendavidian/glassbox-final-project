@@ -133,6 +133,83 @@ different studies. Spec §9's GB-20 row carries the ruling.
 
 ---
 
+## 2026-08-18 — GB-23: an unexplained position is quarantined, not adopted and not ignored
+
+**Decision.** `engine/reconcile.py` resolves every divergence **in favour of the broker**
+and logs it. The three cases:
+
+1. **A broker position with no local record is quarantined.** It is recorded in
+   `Book.unmanaged` and counted by `Book.committed`, but never given protective levels and
+   never traded.
+2. **A local position the broker does not have is dropped.**
+3. **A quantity mismatch takes the broker's number** and keeps the local provenance.
+
+**Reasoning.** Ben's prior on case 1 was that it must not be adopted, and the reasoning
+holds up when the alternatives are written out. Adopting it means managing a position with
+**no entry price, no stop, no target and no decision behind it** — the system could neither
+protect it (protection is derived from an entry price it does not have) nor explain it
+(GB-32's replay would have nothing to replay). A system whose whole claim is that every
+position traces to a forecast cannot quietly acquire one that does not. Ignoring it is
+equally wrong for the reason he gave: it **consumes buying power the sizer believes is
+free**, so ignoring it lets the sizer over-commit the account. Quarantine is the only
+option honest about both — visible, counted, untouched. Refusing to run was considered and
+rejected: a paper account can acquire a stray position for reasons that have nothing to do
+with this system, and a live loop that refuses to start on account of one is a loop that
+does not run.
+
+Case 2 is not primarily an error path: **a filled stop looks exactly like it**, which is why
+it resolves silently-but-logged rather than raising.
+
+**Consequence, and the limit of the scope.** Reconciliation corrects **existence and
+quantity**. It cannot correct **provenance**, because the broker has none to offer — a book
+that lies about *why* it holds something will keep that lie through any number of cycles.
+Demonstrated live during the acceptance run: a hand-desynchronised book claiming a managed
+AAPL holding kept its (fabricated) decision ID while its quantity was corrected to the
+broker's. The defence against that is that only the executor writes provenance, and it
+writes it from the decision that caused the order.
+
+`MISSING_PROTECTION` is **detection only**. GB-26 rule 3 acts on it. A reconciler that
+started submitting and cancelling would be the order-lifecycle state machine
+`SOLO_BUILD_PLAN.md` §2 cut, and the one module in the live path that only ever reads is
+worth keeping that way.
+
+---
+
+## 2026-08-18 — GB-26 protection policy: five rules, ruled before the loop is wired
+
+**Decision.** Ben's ruling, recorded now and **implemented in GB-26**, not here. It closes
+the gap the GB-22 parity finding opened.
+
+1. **Arm protection in the same cycle that observes the fill.** After submitting an entry,
+   **poll** for the fill rather than waiting for the next 60-second tick. The open is the
+   most volatile minute of the session and it is the wrong minute to be idle.
+2. **Re-arm every open position's stop and limit at the start of every session, before
+   anything else in the cycle.** Entries come after protection.
+3. **Every cycle verifies that every open position has both legs live at the broker.** A
+   position without protection is a **risk event, not a warning**: log loudly, arm
+   immediately, and **if arming fails twice in succession, flatten the position at market**.
+   An unprotected position is worse than a closed one.
+4. **When one leg fills, cancel the other in the same cycle** — there is no OCO linkage to
+   do it. **Verify** the cancellation rather than assuming the fill implies it.
+5. **GB-57 states the residual honestly:** the backtest's stop is continuously present, the
+   live stop is **re-established each session**, and the exposure is the interval between
+   the open and arming plus any arming failure. It must **not** be overstated as "live is
+   unprotected overnight" — that is not what happens.
+
+**Reasoning.** The stop is a fixed price, so the overnight case that looked like a hole is
+not one: a gap through the level leaves the re-armed stop marketable at the open and it
+fires there, which is what GB-18's ``stop_gap`` rule already models. The real exposure is
+the arming interval and, far more dangerously, a **silent arming failure** — bounded and
+visible versus unbounded and invisible. Rules 1 and 2 shrink the first; rule 3 converts the
+second from silent into loud, with a flatten as the terminal answer because an unprotected
+position is worse than a closed one.
+
+**Consequence.** GB-26's "Done when" carries all five. GB-23 supplies the input rule 3
+needs: reconciliation reports which holdings have no live protective orders, as a detection
+without an action.
+
+---
+
 ## 2026-08-17 — GB-22: `MIN_SHARES` was the right idea in the wrong unit
 
 **Decision.** `engine.risk.MIN_SHARES = 0.001` becomes **`MIN_ORDER_NOTIONAL = 1.00`**, and
@@ -196,11 +273,18 @@ the report must carry rather than implementation details:
 
 1. **No OCO linkage.** If the stop fills, the target is still live. The caller must cancel
    it, and there is a window in which both could fill.
-2. **Day orders only.** Protection **expires at every close** and must be re-armed each
-   session. A position held overnight is unprotected until the next arming.
-3. **The backtest models a stop that is always present.** The live system's is not. Live
-   drawdowns can therefore exceed backtested ones, and GB-57 must say so rather than letting
-   the backtest's max-drawdown column stand for the live system's.
+2. **Day orders only.** Protection **expires at every close** and is re-established each
+   session.
+3. **The residual divergence is narrower than it first appears**, and the first version of
+   this entry overstated it as "unprotected overnight". Ben's correction, which is right:
+   the stop is a **fixed price** set at entry, so an overnight gap below it leaves the
+   re-armed stop **immediately marketable at the open** and it fires at roughly the open —
+   which is precisely what GB-18's ``stop_gap`` rule models. An intraday touch is covered
+   because the stop is armed through the session. The backtest is not modelling protection
+   the live system lacks; it is modelling protection the live system **re-establishes each
+   morning**. What actually diverges is **(a)** the seconds between the open and the arming
+   and **(b)** a cycle in which arming fails and nothing notices — and (b) is far the more
+   dangerous, because (a) is bounded and visible while (b) is silent.
 
 The alternative — rounding to whole shares so a bracket becomes legal — was rejected: GB-18
 chose fractional sizing precisely because flooring discretises a percentage-of-equity rule
