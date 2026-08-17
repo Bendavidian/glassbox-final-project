@@ -133,6 +133,57 @@ different studies. Spec §9's GB-20 row carries the ruling.
 
 ---
 
+## 2026-08-17 — GB-25 finding: the return decomposes into exposure, timing and friction
+
+**Decision.** Recorded, not acted on, at Ben's instruction. No change to the model, the
+band, the sizer or the config follows from it. It is the decomposition GB-57 needs so that
+"+0.45% per fold" cannot be read as evidence the system found something.
+
+**Reasoning.** A strategy with **no timing skill at all** earns roughly its average exposure
+times the market's return. Measuring that counterfactual splits the result into three parts
+that a single number hides. Per fold, over 16 folds, reconstructing exposure bar by bar from
+the trade log and each symbol's own closes:
+
+| | per fold |
+|---|---|
+| average gross exposure (time-weighted) | **16.00%** of equity (peak 51%) |
+| buy-and-hold return | +7.37% |
+| **earned by being in the market** (0.16 × 7.37%) | **+92.6 bps** |
+| **given back to timing** | **−37.0 bps** |
+| **paid in costs** | **−10.7 bps** |
+| **= actual** | **+44.8 bps** |
+
+So the strategy does lag its own beta: the exposure it held would have earned nearly twice
+what it made. Two ways of putting the same thing, both measured:
+
+- The exposure that would explain +44.8 bps with **zero** timing skill is **6.1%**, against a
+  measured 16.0%.
+- Regressing fold return on market return gives **β = 0.141** (se 0.028, t = 5.1, R² 0.65) —
+  statistically indistinguishable from the 0.160 average exposure, so the exposure explains
+  the returns — with an intercept of **−0.59% per fold** (se 0.44, t = −1.4). The alpha is
+  negative and **not** distinguishable from zero.
+
+**Neither is the timing residual itself.** Mean −37.0 bps, sd 198 bps, sem 49.5,
+**t = −0.75**, positive in 7 folds of 16. There is no measurable timing skill in either
+direction, which is the honest finding.
+
+One structure worth reporting beside it: the timing residual is **negatively correlated with
+the market return**, r = −0.47 (t = −1.98, n = 16). The strategy gives back most in the
+strongest up quarters — fold 4, market +28.5%, residual −3.45% — and gains most in the worst
+down quarter — fold 11, market −21.8%, residual +4.80%. That is the signature of a model
+that under-calls up, and it is the same down-bias the GB-20 diagnostic measured from the
+forecasts alone. Two independent routes to the same property.
+
+**Consequence.** GB-57 reports the three-way split rather than the headline. The sentence it
+licenses is precise: *the strategy earned 93 bps a fold from being in the market, gave back
+37 to timing and 11 to costs, and the timing term is not distinguishable from zero.*
+
+**Caveat, stated because it bounds the claim:** the counterfactual assumes the exposure was
+to the equal-weight basket, while the strategy holds whichever symbols it picked. Fold 12
+contributes a 0% exposure and a 0.0 return, correctly, since it stood aside.
+
+---
+
 ## 2026-08-17 — Three references, because persistence is a degenerate baseline for trading
 
 **Decision.** Spec §7.3's reporting rule is amended, ruled by Ben. Forecast metrics (MAE,
