@@ -11,7 +11,8 @@ Append one line per completed task. Newest at the bottom of each sprint.
 **Sprint 2:** **complete** — GB-17, GB-18, GB-13 on 16 Aug; GB-18 fix, GB-15, the
 `WindowBatch.symbols` contract change, GB-16, GB-19, GB-20, GB-24, GB-21 and GB-25 on
 17 Aug
-**Next task:** Sprint 3, GB-22 executor — GATE 1 is green, so Sprint 3 may begin
+**Next task:** GB-26, the live loop — it inherits GB-22's open question on when protection
+is armed
 **Last gate passed:** **GATE 1, 17 Aug 2026**, 25 days before its commitment date
 **Blockers:** none. Standing note for GB-57, now measured on both axes: the strategy beats
 **neither** reference it should be read against. Direction 0.5071 against an always-long bar
@@ -152,7 +153,9 @@ depends on nothing in the model layer.
 
 ## Sprint 3 — Live End-to-End · 12–25 Sep 2026 → GATE 2
 
-_not started_
+| Task | Date | Owner | What was built |
+|---|---|---|---|
+| GB-22 | 17 Aug 2026 | Ben | **Complete.** `engine/executor.py` — the Alpaca SDK behind a five-call `Broker` protocol (`submit_market_order`, `submit_stop_order`, `submit_limit_order`, `cancel_order`, `get_orders`, `get_positions`, `get_account`), so `tests/fake_broker.py` is a **complete** substitute and the suite never needs credentials, a network or a market session. `execute` converts through `engine.risk.shares_for` — GB-18's single conversion — logs every request and response against the **decision ID**, and honours `live.mode`: `auto` submits, `co_pilot` returns a pending recommendation and sends nothing (GB-37 approves it). **Two verifications against the live paper API, neither taken from memory, both of which changed the code.** (1) `MIN_SHARES = 0.001` was the right idea in the wrong unit: Alpaca enforces a **$1.00 minimum notional** (`cost basis must be >= minimal amount of order 1`), so the constant is now `MIN_ORDER_NOTIONAL`; it also **silently truncates a quantity to nine decimals**, so the conversion floors to the same precision. (2) **Alpaca refuses a bracket on a fractional quantity** (`fractional orders must be simple orders`, and the same bracket on one whole share is accepted), so the backtester's attached stop and target **cannot be expressed as one live order**; a held fractional position can be protected by a **standalone stop plus a standalone limit**, which is what `protect` does, at the cost of no OCO linkage, day-only expiry needing a re-arm each session, and a live stop that is not always present where the backtest's is. The GB-21 property test caught a real numerical flaw while this landed — `floor(x * 1e9) / 1e9` is not the floor once the scaled value leaves float64's exact integer range — now `Decimal`. 18 tests; suite at 605. |
 
 ## Sprint 4 — FITS, Study, Report · 26 Sep – 10 Oct 2026 → GATE 3
 
@@ -190,7 +193,7 @@ _not started_
 
 **Nothing is red.** Four limitations are recorded rather than hidden, none of them gating:
 
-1. **Validation is used twice** — for early stopping and for threshold calibration. This does not leak into test, but it means the *validation* Sharpe (up to 5.0) is a selected maximum and is not reportable. Already true of every walk-forward study that tunes anything; GB-57 must say so.
+1. **Validation is used twice** — for early stopping and for threshold calibration. This does not leak into test, but it means the *validation* Sharpe (up to 5.0) is a selected maximum and is not reportable. Already true of every walk-forward study that tunes anything; GB-57 must say so. **And it must say which way the bias runs, because that is what makes it a caveat rather than a reason to discount the numbers:** thresholds are calibrated on forecasts already slightly overfit to validation, so on test they are **miscalibrated rather than inflated**. The double use **degrades** test performance; it does not flatter it. Any test figure reported here is therefore a **lower bound** with respect to this particular flaw.
 2. **The strategy does not beat either reference.** Direction 0.5071 against an always-long bar of 0.5625; return +0.45% per fold against buy-and-hold's +7.37%. GATE 1 asks whether the slice is real, not whether it is profitable — but the numbers are the numbers.
 3. **The risk layer is correct, enforced and currently inert** (see GB-21).
 4. **The smoke command retrains per run** rather than loading GB-15's checkpoints. Not a gate item; it costs 39s over 16 folds, so there is no pressure to change it.
@@ -200,6 +203,17 @@ _not started_
 ## Open questions
 
 _Claude Code: write blocking questions here rather than guessing._
+
+- **GB-22 → GB-26: when is protection armed, and what covers the gap?** Alpaca refuses a
+  bracket on a fractional quantity, so a stop and a target are two standalone **day** orders
+  that can only be armed once the entry has **filled**. An order decided after the close
+  fills at the next open, so the position is unprotected from the open until the cycle that
+  sees the fill arms it, and every position is unprotected overnight because day orders
+  expire at the close. Three candidate policies, none of them free: (a) arm at the next
+  poll, accepting a gap of one cycle; (b) poll until filled before the loop proceeds,
+  blocking the cycle; (c) round to whole shares so a real bracket becomes legal, which
+  reintroduces the price-level discretisation GB-18 chose fractional sizing to avoid. This
+  needs a ruling before GB-26 wires the loop.
 
 _The 14 Aug CI failure is resolved — see DECISIONS.md, "Python floor raised to 3.12";
 green on 176fe01._

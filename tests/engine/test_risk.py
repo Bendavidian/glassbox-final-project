@@ -156,9 +156,15 @@ def test_the_two_entry_points_agree_on_the_first_order(account) -> None:
 
     if batched:
         # The batched form went through the share conversion, so it is at most the raw
-        # notional and short of it by less than one minimum-sized share.
+        # notional and short of it by less than the broker's quantity resolution — one unit
+        # of the ninth decimal place, priced. Above ~1e7 shares a float cannot represent
+        # nine decimals at all, so the allowance is the LARGER of the broker's resolution
+        # and the float's; Hypothesis reaches that regime with a $0.01 price and a $21M
+        # account, which no real universe contains but the property must still hold in.
+        resolution = batched[0].price / 10.0**risk.QUANTITY_DECIMALS
+        slack = max(resolution, abs(single) * 1e-12) + 1e-9
         assert within(batched[0].notional, single)
-        assert single - batched[0].notional < risk.MIN_SHARES * batched[0].price
+        assert single - batched[0].notional < slack
     else:
         assert risk.shares_for(single, price_map[symbol]) == 0.0
 

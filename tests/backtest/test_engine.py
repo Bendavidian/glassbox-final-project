@@ -580,10 +580,19 @@ def test_the_engine_converts_notional_through_the_shared_function(cfg: Config) -
     assert trade.size == pytest.approx(risk.shares_for(NOTIONAL, fill), abs=1e-12)
 
 
-def test_shares_are_fractional_not_floored() -> None:
-    """Flooring would discretise a percentage-of-equity rule by price level."""
-    assert risk.shares_for(1000.0, 300.0) == pytest.approx(1000.0 / 300.0, abs=1e-12)
-    assert risk.shares_for(1000.0, 300.0) != math.floor(1000.0 / 300.0)
+def test_shares_are_fractional_not_floored_to_whole_shares() -> None:
+    """Flooring to whole shares would discretise a percentage-of-equity rule by price level.
+
+    It IS floored to nine decimals, which is what Alpaca stores — measured in GB-22, where
+    0.123456789012 came back recorded as 0.123456789. That is a broker fact rather than a
+    modelling choice, and keeping it inside the one conversion is what stops the backtest
+    from holding a quantity the live account could not.
+    """
+    shares = risk.shares_for(1000.0, 300.0)
+
+    assert shares == pytest.approx(1000.0 / 300.0, abs=1e-9)
+    assert shares != math.floor(1000.0 / 300.0)
+    assert shares == pytest.approx(3.333333333, abs=1e-12)  # nine decimals, floored
 
 
 def test_a_notional_below_the_brokers_minimum_places_no_order(cfg: Config) -> None:

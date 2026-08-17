@@ -40,19 +40,46 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import ROUND_DOWN, Decimal
 
 from glassbox.config.loader import Config
 from glassbox.contracts.schemas import Signal
 from glassbox.engine.signal import ENTER_LONG
 
-# Alpaca's minimum fractional order quantity. A broker property, not a tuning knob —
-# the same reasoning that keeps the RSI period out of the config file. An order below it
-# would be rejected by the broker, so the backtest must not pretend it filled.
-MIN_SHARES = 0.001
+# Alpaca's minimum order size, **verified against the live paper API in GB-22** and not
+# taken from memory. It is a minimum NOTIONAL, not a minimum share count:
+#
+#   0.001 shares of AAPL (~$0.31)  -> {"code":40310000,"message":"cost basis must be >=
+#                                      minimal amount of order 1"}
+#   $0.50 notional                 -> {"code":42210000,"message":"notional amount must be
+#                                      >= 1.00"}
+#   $1.00 notional                 -> accepted
+#   0.003 shares of a $305 stock   -> rejected ($0.92 of cost basis)
+#   0.003278689 shares of the same -> accepted ($1.0004)
+#
+# GB-18 wrote this as `MIN_SHARES = 0.001` and flagged it for verification. The unit was
+# wrong, and the difference is behavioural rather than cosmetic: a share-count floor
+# rejects $0.40 of a $500 stock while permitting $0.40 of a $50 one, and permits $0.31 of
+# AAPL, which the broker refuses. A notional floor is the rule the broker actually applies.
+#
+# A broker property, not a tuning knob — the same reasoning that keeps the RSI period out
+# of the config file.
+MIN_ORDER_NOTIONAL = 1.00
+
+# Alpaca stores a quantity to nine decimal places and **silently truncates** beyond that:
+# submitting 0.123456789012 shares comes back recorded as 0.123456789 (GB-22, measured).
+# The conversion floors to the same precision so the backtest cannot believe it holds a
+# quantity the broker would never have filled. Flooring rather than rounding, because
+# rounding up can cost more cash than the sizer was shown to have.
+QUANTITY_DECIMALS = 9
 
 
 def shares_for(notional: float, price: float) -> float:
     """Convert a cash notional into a share count at ``price``.
+
+    **The single place this conversion happens.** The backtester and the live executor both
+    call it, so a fill in one cannot describe a different quantity from a fill in the other
+    — see the module docstring and the parity test in ``tests/engine/test_executor.py``.
 
     **Fractional shares, not whole ones.** Alpaca supports fractional trading, the study
     sizes positions as a percentage of equity, and flooring to whole shares would
@@ -60,9 +87,14 @@ def shares_for(notional: float, price: float) -> float:
     a uniform risk rule into one that depends on price level. A backtest that flooded
     would also be systematically under-invested against the live account.
 
-    When the notional buys less than :data:`MIN_SHARES`, the result is ``0.0`` and the
-    caller does not trade: the broker would reject the order, so filling it in a backtest
-    would be inventing a trade that could not happen.
+    **Below :data:`MIN_ORDER_NOTIONAL` the result is ``0.0``** and the caller does not
+    trade: the broker rejects the order, so filling it in a backtest would be inventing a
+    trade that could not happen. The test is on the notional, not on the share count,
+    because that is the rule Alpaca applies — verified against the live API, not assumed.
+
+    The share count is floored to :data:`QUANTITY_DECIMALS`, which is what the broker
+    stores. A tighter number would make the backtest hold a quantity the live account
+    could not.
 
     Raises:
         ValueError: ``price`` is not positive, or either argument is not finite.
@@ -73,11 +105,21 @@ def shares_for(notional: float, price: float) -> float:
         )
     if price <= 0.0:
         raise ValueError(f"price must be positive, got {price!r}")
-    if notional <= 0.0:
+    if notional < MIN_ORDER_NOTIONAL:
         return 0.0
 
-    shares = notional / price
-    return shares if shares >= MIN_SHARES else 0.0
+    # Decimal, not `math.floor(x * 1e9) / 1e9`. The scaling trick is exact only while the
+    # scaled value stays inside float64's contiguous integer range (2**53): Hypothesis
+    # found a $0.01 price and a $46M account, where 4.6e9 shares scale to 4.6e18 and the
+    # floor lands on a number that is not the floor. Decimal quantisation is exact at every
+    # magnitude, and this runs once per order, so its cost is irrelevant.
+    quantised = (Decimal(notional) / Decimal(price)).quantize(
+        Decimal(1).scaleb(-QUANTITY_DECIMALS), rounding=ROUND_DOWN
+    )
+    shares = float(quantised)
+    # The floor can drop the order a hair under the minimum on an expensive stock; a
+    # quantity that buys less than the minimum is still no trade.
+    return shares if shares * price >= MIN_ORDER_NOTIONAL else 0.0
 
 
 @dataclass(frozen=True)
@@ -214,7 +256,8 @@ def _require_price(price: float, symbol: str) -> None:
 
 
 __all__ = [
-    "MIN_SHARES",
+    "MIN_ORDER_NOTIONAL",
+    "QUANTITY_DECIMALS",
     "Order",
     "position_sizer",
     "room_for",

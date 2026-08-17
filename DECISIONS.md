@@ -133,6 +133,88 @@ different studies. Spec §9's GB-20 row carries the ruling.
 
 ---
 
+## 2026-08-17 — GB-22: `MIN_SHARES` was the right idea in the wrong unit
+
+**Decision.** `engine.risk.MIN_SHARES = 0.001` becomes **`MIN_ORDER_NOTIONAL = 1.00`**, and
+`shares_for` tests the **notional** rather than the share count. A second constant,
+`QUANTITY_DECIMALS = 9`, floors the share count to the precision the broker stores.
+
+**Reasoning.** GB-18 wrote the constant as "Alpaca's minimum fractional order quantity" and
+flagged it for verification at GB-22. Verified against the **live paper API**, verbatim:
+
+| submitted | response |
+|---|---|
+| `qty=0.001` AAPL (~$0.31) | `{"code":40310000,"message":"cost basis must be >= minimal amount of order 1"}` |
+| `notional=0.50` | `{"code":42210000,"message":"notional amount must be >= 1.00"}` |
+| `notional=1.00` | accepted |
+| `qty=0.003` of a $305 stock ($0.92) | rejected |
+| `qty=0.003278689` of the same ($1.0004) | accepted |
+| `qty=0.123456789012` | accepted, **recorded as `0.123456789`** |
+
+Ben's reading was right and the difference is behavioural rather than cosmetic. A
+share-count floor **permits $0.31 of AAPL**, which the broker refuses, and **refuses 0.0005
+shares of a $5,000 stock** ($2.50), which it accepts. The rule was in the wrong unit, so it
+was wrong at both ends — and it errs by *permitting* orders that will be rejected live,
+which is the direction that would have surfaced as an unexplained live/backtest divergence
+rather than as a test failure.
+
+The precision finding was not asked for and matters as much: Alpaca **silently truncates**
+a quantity to nine decimals. A backtest carrying more precision than that believes in a fill
+that could not have happened, so the floor lives inside the one shared conversion and both
+systems inherit it.
+
+**Consequence.** `shares_for` uses `Decimal` quantisation rather than
+`floor(x * 1e9) / 1e9`: Hypothesis found a $0.01 price and a $46M account where the scaled
+value leaves float64's exact integer range and the "floor" lands on the wrong number. The
+property test that caught it is GB-21's, which is the argument for having written it.
+
+---
+
+## 2026-08-17 — GB-22 parity gap: Alpaca refuses a bracket on a fractional quantity
+
+**Decision.** Recorded as a **live/backtest parity gap**, and worked around with two
+standalone day orders rather than by changing the backtester or abandoning fractional
+sizing. The gap itself is reported, not closed.
+
+**Reasoning.** Ben asked whether the live path can express what the backtest assumes. It
+cannot, and the API says so directly:
+
+| submitted | response |
+|---|---|
+| BRACKET on `qty=0.5` | `{"code":42210000,"message":"fractional orders must be simple orders"}` |
+| OCO on `qty=0.5` | same |
+| OTO on `qty=0.5` | same |
+| **BRACKET on `qty=1`** | **accepted, with both legs** |
+| `qty=0.5` with `time_in_force=GTC` | `{"code":42210000,"message":"fractional orders must be DAY orders"}` |
+| **STOP sell `qty=0.01` against a held fractional position** | **accepted** |
+| **LIMIT sell `qty=0.01` against the same** | **accepted** |
+
+So the refusal is about the order **class**, not about protective orders as such. A
+fractional position can be protected — by a stop and a limit submitted **separately**, which
+is what `executor.protect` does. Three consequences follow, and all three are limitations
+the report must carry rather than implementation details:
+
+1. **No OCO linkage.** If the stop fills, the target is still live. The caller must cancel
+   it, and there is a window in which both could fill.
+2. **Day orders only.** Protection **expires at every close** and must be re-armed each
+   session. A position held overnight is unprotected until the next arming.
+3. **The backtest models a stop that is always present.** The live system's is not. Live
+   drawdowns can therefore exceed backtested ones, and GB-57 must say so rather than letting
+   the backtest's max-drawdown column stand for the live system's.
+
+The alternative — rounding to whole shares so a bracket becomes legal — was rejected: GB-18
+chose fractional sizing precisely because flooring discretises a percentage-of-equity rule
+by price level, and it would replace a stated limitation with a silent distortion of every
+position size in the study.
+
+**Consequence.** `executor.protect` arms protection only on the **filled** quantity, because
+arming against a position that does not exist is a short sale and
+`{"message":"fractional orders cannot be sold short"}` refuses it. An order submitted after
+the close therefore fills at the next open **unprotected until the next cycle**, which is
+GB-26's problem and is written into GB-22's row as an open question rather than solved here.
+
+---
+
 ## 2026-08-17 — GB-25 finding: the return decomposes into exposure, timing and friction
 
 **Decision.** Recorded, not acted on, at Ben's instruction. No change to the model, the
@@ -894,10 +976,11 @@ derive the same count from the same inputs.
 discretise a percentage-of-equity rule differently for a $500 stock than for a $50 one,
 turning a uniform risk rule into one that depends on price level, and would leave the
 backtest systematically under-invested against the live account. Where a notional buys less
-than `MIN_SHARES` (0.001, Alpaca's minimum fractional quantity) the answer is **no trade**:
-the broker would reject the order, so filling it in a backtest invents a trade that cannot
-happen. `MIN_SHARES` is a module constant rather than config for the GB-8 reason — it is a
-property of the venue, not a knob to tune.
+than the broker's minimum the answer is **no trade**: the broker would reject the order, so
+filling it in a backtest invents a trade that cannot happen. It is a module constant rather
+than config for the GB-8 reason — it is a property of the venue, not a knob to tune.
+**Superseded on 2026-08-17:** GB-22 verified the constant against the live API and found the
+unit wrong — it is a minimum NOTIONAL of $1.00, not `MIN_SHARES = 0.001`. See that entry.
 
 *`strategy_exit`, so GB-19 filters on a field.* Five `end_of_data` liquidations appeared in
 the real-universe sweep. The rule is pinned now rather than invented later: they **are**
