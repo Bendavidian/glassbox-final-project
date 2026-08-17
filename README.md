@@ -199,7 +199,7 @@ stats = builder.fit_stats(frame.iloc[:split], cfg)       # fit on TRAINING rows 
 batch = builder.build_windows(frame, cfg, "AAPL", stats=stats)
 ```
 
-`builder.min_history_bars(cfg)` is the fewest bars a caller must supply — 352 for the
+`builder.min_history_bars(cfg)` is the fewest bars a caller must supply — 445 for the
 default channel set, not 120. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for why.
 
 ---

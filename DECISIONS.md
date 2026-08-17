@@ -133,6 +133,55 @@ different studies. Spec §9's GB-20 row carries the ruling.
 
 ---
 
+## 2026-08-18 — GB-27: the parity floor was marginal by construction; 352 becomes 445
+
+**Decision.** `PARITY_WARMUP["rsi14"]` becomes **325**, so `min_history_bars` returns
+**445** for `C0_base`. Derived, not swept:
+
+```
+(13/14)^k < 1e-10  ->  k = ceil(ln(1e-10) / ln(13/14)) = 311
+warm-up = 14 (the seed window) + 311 = 325
+floor   = input_len 120 + 325 = 445
+```
+
+**Reasoning.** GB-9's derivation bounded **the seed's weight** below 1e-7 —
+`(13/14)^218 < 1e-7`, giving 232 and a floor of 352. Ben's correction: what must fall
+below float32 resolution is `weight × seed_difference`, and the seed difference is **not
+bounded by 1**. It is the gap between the true early average gain/loss and whatever a
+truncated history produces — a difference of average gains, in price units. Near RSI 50 a
+float32 ulp is 5.95e-06 and the measured residual was **3.815e-06**, the same order of
+magnitude. **352 was marginal by construction**, which is precisely why it held in some
+pairs and not others rather than in none or in all.
+
+**Measured, five symbols × twenty-five timestamps, 125 comparisons:**
+
+| tail | byte-identical | failing |
+|---|---|---|
+| **352** (1e-7, the old floor) | **32 / 125** | every symbol |
+| 400 | 116 / 125 | AMZN, MSFT |
+| **414** (1e-9) | **120 / 125** | AMZN |
+| 420 | 125 / 125 | — |
+| **445** (1e-10, the new floor) | **125 / 125** | — |
+
+The 1e-9 case earns its own standing test: 414 is **not** universally byte-identical, so
+the extra margin in 445 is measured rather than assumed. Byte-identity is empirically
+reached at 420 in this sweep; the floor is 445 because **a number that a sweep happens to
+pass is exactly how 352 arrived**. The target is the thing to argue with, and it is stated
+in the constant's comment so the next person changes 1e-10 rather than 445.
+
+**Why a tolerance was rejected.** The alternative was to define parity as bit-identical for
+the FIR channels and ≤1 ulp for the recursive one. "Within one ulp" is the kind of *close
+enough* that lets a genuine one-bar offset hide, and a tolerance is a place bugs live.
+Byte-identity is a property nobody can argue with.
+
+**Consequence.** The live loop requests 445 bars rather than 352 — one extra page. GB-9's
+row, §7.2, `ARCHITECTURE.md`, `README.md` and the GB-9 DECISIONS entry are corrected **in
+place, as corrections**, stating what was actually verified (one symbol, one timestamp) and
+what the sweep found. The parity test now **sweeps by construction**: a single-point parity
+test is what produced the error, and a test that could produce it again is not fixed.
+
+---
+
 ## 2026-08-18 — GB-23: an unexplained position is quarantined, not adopted and not ignored
 
 **Decision.** `engine/reconcile.py` resolves every divergence **in favour of the broker**
@@ -1503,6 +1552,17 @@ emit warm-up — leaves a permanent train/live gap of about 0.06 RSI points that
 would never see, because the parity test compares builder outputs on one frame rather
 than on histories of different length. 352 is where the seed's residue falls below
 float32 resolution and the gap becomes exactly zero.
+
+> **SUPERSEDED 2026-08-18 by GB-27 — and the way it was wrong is the instructive part.**
+> The table above is real, and it is **one symbol at one timestamp**. Swept over five
+> symbols and twenty-five timestamps, 352 bars produced byte-identical windows in **32 of
+> 125 pairs**; AAPL at that timestamp was one of the 32. The derivation bounded the seed's
+> **weight** below 1e-7, which is only sufficient if the seed **difference** is at most 1,
+> and it is not — it is a difference of average gains in price units. Near RSI 50 a float32
+> ulp is 5.95e-06 and the measured residual was 3.815e-06, the same order of magnitude:
+> **352 was marginal by construction.** The floor is now **445**, from a 1e-10 target
+> (`(13/14)^311`), and the standing assertion sweeps rather than samples. See the GB-27
+> entry.
 
 *`close` is a log return.* Spec §4.1 fixes the model input series as log returns and §7.3
 bans price levels as a headline quantity, so the channel named `close` is the modelled

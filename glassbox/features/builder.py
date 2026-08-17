@@ -54,19 +54,41 @@ CHANNEL_BUILDERS = {
 TARGET_CHANNEL = "close_logret"
 
 # How much history each channel needs behind a window before its value at a given
-# timestamp is the same number training would have computed there.
+# timestamp is **byte-identical** to the number training computed there.
 #
-# For a windowed indicator that is its window length. For a recursive one it is the point
-# at which the seed's weight falls below float32 resolution — Wilder's RSI decays at
-# (1 - 1/14) per bar, so (13/14)^218 < 1e-7 gives 14 + 218 = 232. Note this is a stricter
-# quantity than indicators.RSI_WARMUP (77), which is only the point where the seed stops
-# visibly distorting the value.
+# For a windowed (FIR) indicator that is its window length, and it is exact: the value
+# depends on that many bars and on nothing before them. For a **recursive** (IIR) one it is
+# a decay argument, and GB-27 proved the first version of that argument wrong.
+#
+# **What the bound must be on.** The seed's contribution to the value at bar t is
+# `weight(k) x seed_difference`, where `weight(k) = (13/14)^k` for Wilder's RSI and
+# `seed_difference` is the gap between the true early average gain/loss and whatever a
+# truncated history produced. The original derivation bounded **the weight alone** below
+# 1e-7 — `(13/14)^218 < 1e-7`, giving 14 + 218 = 232 and a floor of 352 — which is only
+# correct if the seed difference is at most 1. It is not bounded by 1: it is a difference
+# of average gains, in price units. Near RSI 50 a float32 ulp is 5.95e-06 and GB-27
+# measured a residual of 3.815e-06, the same order of magnitude. **352 was marginal by
+# construction**, which is why the sweep found byte-identity in 32 of 125 symbol-timestamp
+# pairs rather than in none or in all.
+#
+# **The target is now 1e-10**, three orders of magnitude tighter than the original 1e-7,
+# which covers a seed difference of up to ~1000x the value's own ulp:
+#
+#     (13/14)^k < 1e-10  ->  k = ceil(ln(1e-10) / ln(13/14)) = 311
+#     warm-up = 14 (the seed window) + 311 = 325
+#     min_history_bars = input_len 120 + 325 = 445
+#
+# **If this is ever changed, change the TARGET and re-derive.** A number tuned until a
+# sweep passes is how 352 got here; 1e-10 is a stated margin that can be argued with.
+#
+# Note this is a stricter quantity than indicators.RSI_WARMUP (77), which is only the
+# point where the seed stops *visibly* distorting the value.
 #
 # GB-47 must add wav_a1..wav_a3 at 64 (the wavelet rolling window). min_history_bars then
 # updates itself with no edit anywhere else.
 PARITY_WARMUP = {
     "close_logret": 1,
-    "rsi14": 232,
+    "rsi14": 325,
     "vol_z": indicators.VOL_Z_WINDOW,
     "mom10": indicators.MOMENTUM_LOOKBACK,
     "ma_dist20": indicators.MA_DIST_WINDOW,

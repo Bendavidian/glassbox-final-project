@@ -146,8 +146,16 @@ def test_batch_records_the_source_it_was_built_from(cfg: Config) -> None:
 
 
 def test_min_history_bars_for_c0() -> None:
-    """120 + 232: the input window plus RSI's parity warm-up, the largest in C0."""
-    assert builder.min_history_bars(load_config()) == 352
+    """120 + 325: the input window plus RSI's parity warm-up, the largest in C0.
+
+    **Corrected in GB-27 from 352.** The original warm-up of 232 bounded the seed's
+    *weight* below 1e-7, which is only sufficient if the seed *difference* is at most 1 —
+    and it is a difference of average gains in price units, not a fraction. Swept over five
+    symbols and twenty-five timestamps, the 352-bar floor produced byte-identical windows
+    in **32 of 125 pairs**. The target is now 1e-10, giving `(13/14)^311`, and the sweep in
+    ``test_train_live_parity.py`` is the standing proof.
+    """
+    assert builder.min_history_bars(load_config()) == 445
 
 
 def test_min_history_bars_tracks_the_active_channel_set(cfg: Config) -> None:

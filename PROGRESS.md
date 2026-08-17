@@ -12,7 +12,7 @@ Append one line per completed task. Newest at the bottom of each sprint.
 `WindowBatch.symbols` contract change, GB-16, GB-19, GB-20, GB-24, GB-21 and GB-25 on
 17 Aug
 **Next task:** GB-26, the live loop — it carries the five-rule protection policy ruled
-18 Aug and consumes GB-23's `MISSING_PROTECTION` detection
+18 Aug, consumes GB-23's `MISSING_PROTECTION` detection, and must request **445** bars
 **Last gate passed:** **GATE 1, 17 Aug 2026**, 25 days before its commitment date
 **Blockers:** none. Standing note for GB-57, now measured on both axes: the strategy beats
 **neither** reference it should be read against. Direction 0.5071 against an always-long bar
@@ -40,7 +40,7 @@ expectations.
 | GB-6 | 14 Aug 2026 | Ben | **Complete.** Credentials load only via `alpaca_credentials()`; `require_paper_endpoint()` refuses any non-paper endpoint (verified, exit 2); `.env.example` committed, `.env` ignored; git history scan clean. `scripts/smoke_alpaca.py` prints the paper account: ACTIVE, equity 100000, buying power 400000. Scripts guard their imports and name the venv command. |
 | GB-7 | 14 Aug 2026 | Ben | **Complete.** `data/live.py` fetches Alpaca daily bars through `historical.normalise_bars`, the single schema definition, so live and historical are indistinguishable by construction. Pins `feed=SIP` and `adjustment=ALL` (default RAW is off by 4× across a split); no caching. Measured vs yfinance over 163 bars: prices agree to <0.3 bps, volume differs 34–111 bps. 10 schema tests on a recorded response fixture; suite at 155. |
 | GB-8 | 14 Aug 2026 | Ben | **Complete.** `features/indicators.py` — `rsi14` (Wilder, explicit recursion), `vol_z`, `mom10`, `ma_dist20`; all pure, trailing-only, warm-up left NaN. RSI holds 77 rows, not 14, until its seed's weight decays below 1%. vol_z verified source-safe over 2668 bars. 53 tests against an independent pure-Python reference; suite at 208. |
-| GB-9 | 14 Aug 2026 | Ben | **Complete.** `features/builder.py` — the keystone. `build_feature_frame` (provenance-gated, warm-up trimmed), `fit_stats` (external, records its fitted range), `build_windows` (one slicing path; `as_of` filters the same positions the batch path uses). Contract additions: `ChannelStats` and `WindowBatch.source` in spec §4.2. `min_history_bars` = 352 for C0, derived from per-channel warm-ups and verified byte-identical against full history. 30 tests; suite at 240. |
+| GB-9 | 14 Aug 2026 | Ben | **Complete.** `features/builder.py` — the keystone. `build_feature_frame` (provenance-gated, warm-up trimmed), `fit_stats` (external, records its fitted range), `build_windows` (one slicing path; `as_of` filters the same positions the batch path uses). Contract additions: `ChannelStats` and `WindowBatch.source` in spec §4.2. `min_history_bars` = 352 for C0, derived from per-channel warm-ups and verified byte-identical against full history. 30 tests; suite at 240. **Corrected 18 Aug by GB-27:** that verification was one symbol at one timestamp and holds in 32 of 125 symbol-timestamp pairs; the floor is now **445**, derived at a 1e-10 decay target. |
 | GB-10 | 14 Aug 2026 | Ben | **Complete.** `tests/causality.py` — reusable `assert_causal` (per-timestamp) and `assert_fit_isolated` (fitting), each running two perturbation modes at 25/50/75% splits. All four indicators, `build_feature_frame` and `build_windows` pass on real AAPL bars; a centred rolling mean, tomorrow's close and a whole-frame fitter are all rejected. `scale` alone is blind to a leaked *direction* and `shuffle` alone to a leaked *mean*, both measured. 16 tests; suite at 256. |
 | GB-11 | 14 Aug 2026 | Ben | **Complete.** `model/persistence.py` — `PersistenceForecaster`, the zero-return baseline every result is reported against; JSON checkpoint, versioned. `tests/model/test_forecaster_contract.py` — spec §4.4's six properties plus a seventh, parameterised over a registry so GB-13/GB-41 plug in by appending one line (verified: 27 tests → 35). Seven deliberately broken forecasters prove every property can fail, and a confinement test proves each break is narrow. Contract additions: `FitProvenance` (§4.2) and `Forecaster.fitted` (§4.3). 43 tests; suite at 299. |
 | GB-12 | 14 Aug 2026 | Ben | **Complete.** `README.md` — clone to running with no prior context: prerequisites, venv activation spelled out per shell, install from `requirements.lock`, credential setup, the runnable snippets, the test suites that carry the correctness argument, the repository map, and a troubleshooting table. `ARCHITECTURE.md` — layer stack, responsibilities, frozen contracts, the keystone, causality, explainability, validation; cross-references the spec rather than duplicating it. `readme` re-enabled in `pyproject.toml`. |
@@ -157,6 +157,7 @@ depends on nothing in the model layer.
 |---|---|---|---|
 | GB-22 | 17 Aug 2026 | Ben | **Complete.** `engine/executor.py` — the Alpaca SDK behind a five-call `Broker` protocol (`submit_market_order`, `submit_stop_order`, `submit_limit_order`, `cancel_order`, `get_orders`, `get_positions`, `get_account`), so `tests/fake_broker.py` is a **complete** substitute and the suite never needs credentials, a network or a market session. `execute` converts through `engine.risk.shares_for` — GB-18's single conversion — logs every request and response against the **decision ID**, and honours `live.mode`: `auto` submits, `co_pilot` returns a pending recommendation and sends nothing (GB-37 approves it). **Two verifications against the live paper API, neither taken from memory, both of which changed the code.** (1) `MIN_SHARES = 0.001` was the right idea in the wrong unit: Alpaca enforces a **$1.00 minimum notional** (`cost basis must be >= minimal amount of order 1`), so the constant is now `MIN_ORDER_NOTIONAL`; it also **silently truncates a quantity to nine decimals**, so the conversion floors to the same precision. (2) **Alpaca refuses a bracket on a fractional quantity** (`fractional orders must be simple orders`, and the same bracket on one whole share is accepted), so the backtester's attached stop and target **cannot be expressed as one live order**; a held fractional position can be protected by a **standalone stop plus a standalone limit**, which is what `protect` does, at the cost of no OCO linkage, day-only expiry needing a re-arm each session, and a live stop that is not always present where the backtest's is. The GB-21 property test caught a real numerical flaw while this landed — `floor(x * 1e9) / 1e9` is not the floor once the scaled value leaves float64's exact integer range — now `Decimal`. 18 tests; suite at 605. |
 | GB-23 | 18 Aug 2026 | Ben | **Complete.** `engine/reconcile.py` (new, spec §3.4) — **reconcile-from-truth, not an order-lifecycle state machine**, per `SOLO_BUILD_PLAN.md` §2's cut. Positions and open orders are fetched every cycle, compared against a persisted `Book`, and **every divergence resolves in favour of the broker** and is logged at WARNING. **Three rulings.** An unexplained broker position is **quarantined** — recorded and counted against buying power, never given protective levels, never traded: adopting it would manage a position with no entry price, stop or decision behind it, and ignoring it would let the sizer over-commit the account. A local position the broker does not have is **dropped**, which is also exactly what a filled stop looks like. A quantity mismatch **takes the broker's number** and keeps the local provenance, which is how a partial fill is absorbed. A fourth check, `MISSING_PROTECTION`, is **detection only** — the input GB-26 rule 3 acts on; a reconciler that submitted or cancelled would be the state machine this task was scoped away from. **Acceptance, against the real paper account:** a cycle killed mid-flight with `os._exit(9)` left the book on disk untouched; a hand-desynchronised book claiming 1.0 MSFT and 0.5 AAPL was corrected in one cycle to the broker's actual `{AAPL: 0.01}` with all three divergence kinds reported, and the corrected book reconciled clean on the next pass. **Limit of the scope, found during that run:** reconciliation corrects existence and quantity but **cannot correct provenance** — the broker has none to offer, so a book that lies about *why* it holds something keeps the lie. 21 tests; suite at 626. |
+| GB-27 | 18 Aug 2026 | Ben | **Complete — and it did its job by failing.** `tests/features/test_train_live_parity.py` builds the model input window twice — the training path over full history, and the live path from a bar **tail** re-normalised through `normalise_bars` with Alpaca provenance — and asserts `np.array_equal`, no tolerance. **The first version passed on AAPL at one timestamp. Swept over five symbols and twenty-five timestamps it failed 93 of 125**, and the cause was the declared floor, not the test: GB-9's warm-up bounded the RSI seed's *weight* below 1e-7, which is sufficient only if the seed *difference* is at most 1, and it is a difference of average gains in price units. Near RSI 50 the residual (3.815e-06) is the same order as a float32 ulp (5.95e-06) — **352 was marginal by construction**. **Floor corrected to 445**, derived from a 1e-10 target: `(13/14)^311`, warm-up 325. Measured: 352 → 32/125, 414 (the 1e-9 target) → 120/125, **445 → 125/125**. The 1e-9 case is a standing test, so the margin is measured rather than assumed. The test now **sweeps by construction** — a single-point parity test is what produced the error. It also pins the teeth: a one-bar offset breaks parity, a bar *after* the window cannot change it (GB-10 causality — an earlier assertion had this backwards), too little history **raises** rather than differing quietly, a spliced two-source frame is refused, and the per-window `symbols` tuple survives pooling into a five-symbol batch. Corrections landed in place, as corrections, in spec §7.2 and the GB-9/GB-27 rows, `ARCHITECTURE.md`, `README.md` and the GB-9 DECISIONS entry. 16 tests; suite at 643. |
 
 ## Sprint 4 — FITS, Study, Report · 26 Sep – 10 Oct 2026 → GATE 3
 
@@ -198,6 +199,48 @@ _not started_
 2. **The strategy does not beat either reference.** Direction 0.5071 against an always-long bar of 0.5625; return +0.45% per fold against buy-and-hold's +7.37%. GATE 1 asks whether the slice is real, not whether it is profitable — but the numbers are the numbers.
 3. **The risk layer is correct, enforced and currently inert** (see GB-21).
 4. **The smoke command retrains per run** rather than loading GB-15's checkpoints. Not a gate item; it costs 39s over 16 folds, so there is no pressure to change it.
+
+---
+
+## Single-point claims audit (GB-27, 18 Aug 2026)
+
+**Why this list exists.** The 352-bar parity floor entered the spec marked *verified* on
+the strength of one symbol at one timestamp, and a sweep found it held in 32 of 125
+symbol-timestamp pairs. Every other numerical claim marked verified or measured was checked
+for the same failure mode. **Nothing below has been re-verified** — this is the list, as
+asked, so that the ones most likely to be wrong in the same way are known before GB-57
+cites them.
+
+### Established on a single symbol, fold, timestamp or machine
+
+| Claim | Sample | Risk | Consequence if wrong |
+|---|---|---|---|
+| `min_history_bars` = 352, "verified byte-identical" (GB-9) | AAPL, 1 timestamp | **realised** | Corrected 18 Aug to 445. This is the exemplar. |
+| **Initialisation study** — MAE 4.00× vs 1.94×, direction 0.344 vs 0.557, largest contribution 1.39 vs 0.058 (GB-13) | **walk-forward fold 1, one symbol** | **high** | GB-57 reports the *comparison between initialisations* as a methodological finding. The levels are already flagged as single-fold (GB-15's 80-arm rerun gave 0.4971 against the 0.557), but the **ranking** rests on one fold of one symbol and has never been swept. |
+| `RSI_WARMUP` = 77, "computed rather than chosen" (GB-8) | derivation, no sweep | **medium** | **Same derivation flaw as 352**: it bounds the seed's *weight* below 1%, not weight × seed difference. Its consequence is contained — it decides only when RSI stops emitting NaN, and parity is now governed by the separate 325-bar warm-up — but the reasoning is the one just shown to be insufficient. |
+| Only `Adjustment.ALL` matches yfinance; RAW is off by a split factor (GB-7) | **AAPL, one 4:1 split, 2020-08-31** | low | Structural (a split factor), not statistical — but "only ALL matches" is verified on one corporate action of one symbol. A dividend-heavy symbol was never checked. |
+| SIP returns 2669 bars to 2016, IEX 1521 to 2020 (GB-7) | one account, one query | low | An account/subscription property, not a market one. |
+| Price agreement <1 bp, volume 34–111 bps (GB-7) | 5 symbols, **one 163-bar window** | low–medium | Multi-symbol but a single recent window; a stressed period was never sampled. |
+| Alpaca's fractional rules — $1 notional floor, `fractional orders must be simple orders`, 9-decimal truncation (GB-22) | **AAPL only** | low–medium | Venue rules *should* be symbol-independent, but `fractionable` is a per-asset flag, so all four rejections were observed on one asset. |
+| Predict throughput — 305 windows in 24.6 ms, 0.88 ms per window (GB-16) | one machine, one run | negligible | Performance only; nothing depends on it. |
+| Smoke wall time — 8.4 s for one fold, 39.3 s for 16 (GB-24) | one machine | negligible | Performance only. |
+| Causality: `scale` passes a leaked direction, `shuffle` catches it (GB-10) | one synthetic series; the real-data check was AAPL | low | The synthetic series is adversarial by construction (sign changes often), arguably stronger than one real symbol — but it is still one series. |
+
+### Established on a sweep, and sound as stated
+
+`13,309` entry resolutions across five symbols for GB-18's four pricing rules, with the
+gap rule re-measured through the finished engine (15.6% → 14.16%); GB-15's early-stopping
+result on **80/80 arms**; the batch-size decision on 80 arms then 16 folds, and GB-20's
+re-check on 16 folds; GB-19/GB-20's direction bar and down-bias diagnostic on 16 folds ×
+5 symbols; GB-21's sizer before/after on 16 folds; GB-25's exposure decomposition on 16
+folds; GB-5's data-quality report on 5 symbols × 2668 bars; GB-27's own floor on 125
+symbol-timestamp pairs.
+
+**The pattern worth naming:** every claim in the sound list came from a task that had a
+harness to sweep with. Every claim in the risky list came from a task that did not, and the
+measurement was taken by hand on whatever was in front of it. The fix is not more
+discipline — it is that a claim entering the spec should name its sample size in the same
+sentence as its number.
 
 ---
 

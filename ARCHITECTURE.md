@@ -154,10 +154,11 @@ runs on both. Verified on real data — the `as_of` output is byte-identical
   naming the channel and the task that will add it. A study arm labelled `C2` that had
   quietly assembled `C0` would be reported as a wavelet result.
 
-### `min_history_bars`, and the 352-bar floor
+### `min_history_bars`, and the 445-bar floor
 
-A live caller must supply `min_history_bars(cfg)` bars — **352** for the default channel
-set, not the window length of 120. The gap is warm-up: a recursive indicator's value at a
+A live caller must supply `min_history_bars(cfg)` bars — **445** for the default channel
+set, not the window length of 120. (**It read 352 until GB-27**; the correction and why it
+matters are below the table.) The gap is warm-up: a recursive indicator's value at a
 timestamp depends on how much history preceded it, so a window built from a short tail
 differs from the window training computed at the same timestamp. The difference is small,
 permanent, and invisible.
@@ -169,11 +170,20 @@ Measured against the full 2668-bar AAPL history:
 | 197 | no | 4.261e-03 |
 | 250 | no | 7.713e-05 |
 | 300 | no | 5.960e-07 |
-| **352** | **yes** | **0.000e+00** |
+| **352** | **yes, for this symbol and timestamp** | **0.000e+00** |
 
 197 — the window length plus the point where RSI stops *visibly* distorting — leaves a
-permanent train/live gap of roughly 0.06 RSI points. 352 is where Wilder's seed decays
-below float32 resolution.
+permanent train/live gap of roughly 0.06 RSI points.
+
+**That table is one symbol at one timestamp, and GB-27 showed it certified a floor that
+does not hold.** Swept over five symbols and twenty-five timestamps, 352 bars gave
+byte-identical windows in **32 of 125 pairs**. The derivation bounded the seed's *weight*
+below 1e-7, which is only enough if the seed *difference* is at most 1 — it is a difference
+of average gains in price units, and near RSI 50 the measured residual (3.815e-06) is the
+same order as a float32 ulp (5.95e-06). The target is now **1e-10**, giving
+`(13/14)^311 = 311` bars of decay, a warm-up of 325 and a floor of **445**, which sweeps
+125 of 125. The intermediate 1e-9 target (414 bars) reaches 120 of 125 — measured, so the
+extra margin is justified rather than assumed.
 
 The number is **derived, not written down**: each channel declares its own warm-up, and
 `min_history_bars` is `input_len + max(declared)`. `GB-47`'s wavelets declare 64 and the
