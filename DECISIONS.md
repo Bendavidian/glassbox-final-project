@@ -7,6 +7,75 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-17 — GB-19: persistence has no direction accuracy, and 0.5 is not the chance level
+
+**Decision.** Three rulings in `backtest/metrics.py`.
+
+**1. Sharpe is computed from the equity curve's daily returns, not from per-trade returns.**
+They are different numbers and the report must say which. Daily returns are what an
+investor experiences: they include the cost of sitting flat, which per-trade Sharpe ignores
+entirely, so a strategy in the market ten days a year cannot be made to look like one in it
+every day. Per-trade Sharpe also has as many observations as trades — a dozen or so per
+fold — and is trivially inflated by taking fewer, larger positions. Annualisation is well
+defined for a daily series and ill defined for trades with different holding periods. The
+property that settles it: **two arms with the same equity curve must get the same Sharpe**
+whatever their trade counts, or the study is comparing trade frequency. Tested directly.
+
+**2. Below five strategy trades, Sharpe is NaN.** A 3-month test fold is ~61 bars; a
+strategy taking fewer than five round trips has held a position on a minority of days, so
+its return standard deviation is dominated by the few days it was exposed and the ratio is
+large or small for reasons unrelated to the strategy. This project already treats
+`Sharpe > 2.0` as a leak alarm, and a metric that can manufacture that from two trades makes
+the alarm useless. **Five is a judgement, not a derivation, and is stated as one** — what
+makes it safe is that the alternative is not "a slightly noisy number" but one with no
+sampling argument at all, and that `summarise` prints the trade count beside the Sharpe so
+a blank cell explains itself. Administrative exits do not count toward the minimum.
+
+**3. Direction accuracy is undefined for a forecast of exactly zero — so persistence has
+none, and it cannot be the baseline for that column.**
+
+`sign(0)` is 0, which agrees with nothing. Counting a zero forecast as wrong would score a
+model that declines to predict at **0.0** rather than at chance; counting it as right by
+convention would invent an opinion it never expressed. So zero-forecast windows are excluded
+from the denominator, and when none remain the result is NaN.
+
+Persistence forecasts zero every time. **Measured on all 16 folds: its direction accuracy is
+NaN in 16/16.** That is the correct answer, not a gap to be filled. Persistence is the right
+baseline for MAE, RMSE, return and Sharpe, all of which it genuinely competes on. It is not
+a directional model, and substituting 0.5 for it would put a number in the table that the
+baseline never produced.
+
+**What the reference should be instead, and why this is not a technicality.** The honest bar
+is the majority-class rate — the accuracy of always calling the direction that happened more
+often — measured from the same realised returns rather than assumed. Measured across the 16
+folds:
+
+| | value |
+|---|---|
+| H-day cumulative return positive | mean 0.5625 (0.4203 – 0.6842) |
+| **Measured chance level** `max(up, 1−up)` | **mean 0.5865** (0.5049 – 0.6866) |
+| DLinear direction accuracy | mean 0.4751 (0.3825 – 0.5379) |
+| DLinear beats the **measured** chance level | **1 / 16 folds** |
+| DLinear beats a naive 0.5 | 6 / 16 folds |
+
+**Reporting against 0.5 would have flattered the model by 8.65 points and turned "beats
+chance in 1 fold of 16" into "beats chance in 6".** That is precisely the misreading §7.3
+exists to prevent, arriving through the baseline rather than through the metric. The
+`summarise` table therefore carries a `direction_reference` column recording the number
+actually used, so a reader is never left to assume it was 0.5.
+
+**Consequence.** §7.2 and §7.3 record that the direction column is referenced to the
+measured base rate while every other column is a persistence delta. `ArmResult` is the unit
+every metric takes, so a metric and its baseline are computed by the same code path.
+Annualisation uses each fold's own bar count and calendar span, never a constant 252 —
+folds are calendar months and their bar counts differ. 36 tests.
+
+**Read alongside GB-15's finding.** Direction accuracy of 0.4751 was already known to be at
+chance; it is now known to be *below* the measurable chance level in 15 folds of 16. The
+model is not yet good, and the report must say so in those terms.
+
+---
+
 ## 2026-08-17 — FINDING: a pooled batch is not monotonic, so `FitProvenance` understated its own range
 
 **The finding.** `FitProvenance.from_batch` derived the training range as
