@@ -245,12 +245,21 @@ def test_sharpe_is_undefined_for_a_curve_that_never_moved() -> None:
 #     8          +0.03          +0.02       yes      yes
 #
 # 6 correct of 9 called = 0.6666666666666666
-# realised: 6 up, 3 down -> up rate 0.6666..., base rate max(0.666..., 0.333...) = 0.666...
+# realised: 6 up, 3 down -> up rate 6/9, so always-long scores 6/9 on this fold.
+#
+# A second set for the ruling that fixed the reference: a fold whose test period FELL.
+# 3 up of 9, so always-long scores 3/9. The majority class here is DOWN, and a reference
+# that took it would report 6/9 - a bar no long-only strategy could have reached, chosen
+# with knowledge of how the test period turned out.
 
 FORECAST_SUMS = [0.02, -0.01, 0.01, -0.03, 0.02, 0.01, -0.02, -0.01, 0.03]
 REALISED_SUMS = [0.03, -0.02, -0.04, 0.01, 0.01, 0.02, -0.01, 0.03, 0.02]
 DIRECTION_ACCURACY = 6 / 9
-BASE_RATE = 6 / 9
+ALWAYS_LONG = 6 / 9
+
+FALLING_SUMS = [-0.03, -0.02, -0.04, 0.01, -0.01, -0.02, -0.01, 0.03, 0.02]
+FALLING_ALWAYS_LONG = 3 / 9
+FALLING_MAJORITY_CLASS = 6 / 9
 
 
 def paths(sums: list[float], horizon: int = 4) -> np.ndarray:
@@ -332,17 +341,55 @@ def test_a_delta_against_persistence_direction_is_undefined_too() -> None:
     assert math.isnan(metrics.direction_accuracy(forecasting_arm(), persistence))
 
 
-def test_the_base_rate_is_the_measured_majority_direction() -> None:
+def test_the_reference_is_the_measured_up_rate() -> None:
     """Equity drifts up, so 0.5 is the wrong bar. This one is measured, not assumed."""
-    assert metrics.directional_base_rate(forecasting_arm()) == pytest.approx(
-        BASE_RATE, abs=1e-12
+    assert metrics.always_long_accuracy(forecasting_arm()) == pytest.approx(
+        ALWAYS_LONG, abs=1e-12
     )
 
 
-def test_the_base_rate_ignores_the_forecast_entirely() -> None:
+def test_the_reference_is_always_long_and_never_the_majority_class() -> None:
+    """The bar must be achievable, and only always-long is.
+
+    On a fold whose test period fell, the majority class is DOWN. Taking it would set the
+    bar at 6/9 for a long-only system that could not have shorted, and would have chosen
+    the class using the very returns being scored. Always-long is fixed from the training
+    split - up, in every equity period this project has - and only its RATE is measured
+    here, so it stays achievable: 3/9.
+    """
+    fallen = arm(
+        name="fallen",
+        trades=ENOUGH_TRADES,
+        predicted=paths(FORECAST_SUMS),
+        actual=paths(FALLING_SUMS),
+    )
+
+    reference = metrics.always_long_accuracy(fallen)
+
+    assert reference == pytest.approx(FALLING_ALWAYS_LONG, abs=1e-12)
+    assert reference < 0.5  # the bar moves below a coin flip, and that is correct
+    assert reference != pytest.approx(FALLING_MAJORITY_CLASS, abs=1e-12)
+
+
+def test_a_realised_zero_counts_against_always_long() -> None:
+    """It called up and the market did not go up. Unlike a zero FORECAST, a call was made."""
+    flat_outcomes = list(REALISED_SUMS)
+    flat_outcomes[0] = 0.0  # was up
+
+    fold = arm(
+        name="one-flat",
+        trades=ENOUGH_TRADES,
+        predicted=paths(FORECAST_SUMS),
+        actual=paths(flat_outcomes),
+    )
+
+    assert metrics.always_long_accuracy(fold) == pytest.approx(5 / 9, abs=1e-12)
+
+
+def test_the_reference_ignores_the_forecast_entirely() -> None:
     """It is a property of the test period, so every arm on one fold shares it."""
-    first = metrics.directional_base_rate(forecasting_arm())
-    second = metrics.directional_base_rate(forecasting_arm(forecast=[0.0] * 9))
+    first = metrics.always_long_accuracy(forecasting_arm())
+    second = metrics.always_long_accuracy(forecasting_arm(forecast=[0.0] * 9))
 
     assert first == pytest.approx(second, abs=1e-12)
 
@@ -495,9 +542,9 @@ def test_the_direction_column_is_referenced_to_chance_not_to_persistence() -> No
     table = metrics.summarise([model], persistence)
     row = table.iloc[0]
 
-    assert row["direction_reference"] == pytest.approx(BASE_RATE, abs=1e-12)
+    assert row["direction_reference"] == pytest.approx(ALWAYS_LONG, abs=1e-12)
     assert row["direction_accuracy_delta"] == pytest.approx(
-        DIRECTION_ACCURACY - BASE_RATE, abs=1e-12
+        DIRECTION_ACCURACY - ALWAYS_LONG, abs=1e-12
     )
     assert not math.isnan(row["direction_accuracy_delta"])
 

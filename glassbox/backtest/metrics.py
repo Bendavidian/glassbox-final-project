@@ -24,6 +24,10 @@ See the constant for the reasoning.
 baseline forecasts zero every time. See :func:`direction_accuracy` - this is the ruling
 with the largest consequence for the report, because it means **persistence cannot be the
 baseline for the direction column** even though it is the baseline for everything else.
+The reference used instead is :func:`always_long_accuracy`: the one constant strategy a
+long-only system could actually have run, scoring the fold's own realised up rate. Not
+0.5, which understates it, and not the per-fold majority class, which overstates it by
+choosing the class with test-period knowledge.
 
 Administrative exits - ``Trade.strategy_exit is False``, i.e. ``end_of_data`` - are
 **included** in the equity curve and total return, because the curve must be complete and
@@ -132,29 +136,42 @@ def direction_accuracy(arm: ArmResult, baseline: ArmResult | None = None) -> flo
     Substituting 0.5 would be inventing a number the baseline never produced, and the
     delta against it would be a comparison with a model that does not exist.
 
-    The honest reference is :func:`directional_base_rate`, which is measured from the same
-    realised returns rather than assumed. :func:`summarise` reports the direction column
-    against it and says so; every other column is a persistence delta as §7.3 requires.
+    The honest reference is :func:`always_long_accuracy` - the one constant strategy this
+    project could actually have run - measured on the same realised returns rather than
+    assumed. :func:`summarise` reports the direction column against it and records the
+    number used; every other column is a persistence delta as §7.3 requires.
     """
     return _delta(_direction_of(arm), baseline, _direction_of)
 
 
-def directional_base_rate(arm: ArmResult) -> float:
-    """Accuracy of always calling the majority direction. The chance level, measured.
+def always_long_accuracy(arm: ArmResult) -> float:
+    """Accuracy of calling **up** on every window: the fold's realised up rate.
 
-    Equity drifts up, so "always up" beats a coin flip and 0.5 is the wrong bar for a
-    directional claim. This returns ``max(up_rate, 1 - up_rate)`` over the realised H-day
-    cumulative returns: the best a model with no information but the sign distribution
-    could do. A direction accuracy below it is not a model, whatever it is above 0.5.
+    The reference the direction column is read against, and the only constant strategy
+    that is **achievable**. It calls up every time, so it is right exactly as often as the
+    H-day cumulative return is positive, and its score is therefore the test split's own up
+    rate - reported per fold, so a reader can watch the bar move rather than assume 0.5.
+
+    **The class choice comes from the training split; only the rate is measured on test.**
+    Equities drift up, the up rate exceeds 0.5 in every training split this project has,
+    and spec 2.1 is long-only - so "always up" is fixed before the test period is seen, and
+    "always short" is not in the action space to begin with.
+
+    That distinction is the whole point, and the earlier version of this function got it
+    wrong: it returned ``max(up_rate, 1 - up_rate)`` per fold, which flips to "always
+    short" on folds whose test period fell. Averaged over the 16 folds that read 0.5865
+    against an up rate of 0.5625 - a bar 2.4 points above what any strategy could have
+    reached, because no strategy knows in advance whether the coming quarter is up or down.
+    It erred **against** the model, and it was still a bar set with test-period knowledge,
+    which does not pass in this project in either direction.
+
+    A window whose realised return is exactly zero counts against it: an up call was made
+    and the market did not go up. NaN when there is nothing to measure.
     """
     if arm.actual is None or len(arm.actual) == 0:
         return math.nan
-    realised = np.sign(_require_finite(arm.actual, "actual").sum(axis=1))
-    called = realised != 0
-    if not called.any():
-        return math.nan
-    up_rate = float((realised[called] > 0).mean())
-    return max(up_rate, 1.0 - up_rate)
+    realised = _require_finite(arm.actual, "actual").sum(axis=1)
+    return float((realised > 0).mean())
 
 
 # ── trading metrics ──────────────────────────────────────────────────────────
@@ -226,8 +243,8 @@ METRICS: tuple[tuple[str, Callable[..., float], bool], ...] = (
     ("average_trade", average_trade, True),
 )
 
-# The direction column's reference is the measured majority-class rate, not persistence.
-# See `direction_accuracy`.
+# The direction column's reference is always-long, measured, not persistence.
+# See `direction_accuracy` and `always_long_accuracy`.
 CHANCE_REFERENCED = frozenset({"direction_accuracy"})
 
 
@@ -243,9 +260,11 @@ def summarise(results: Sequence[ArmResult], baseline: ArmResult) -> pd.DataFrame
     Returns:
         A frame with ``arm``, the window and trade counts, and for each metric a ``<name>``
         column and a ``<name>_delta`` column. ``direction_accuracy_delta`` is measured
-        against :func:`directional_base_rate` rather than against the baseline arm, and
+        against :func:`always_long_accuracy` rather than against the baseline arm, and
         ``direction_reference`` records the number used - persistence forecasts zero and so
-        has no direction to compare against.
+        has no direction to compare against. That reference **is** the fold's realised up
+        rate, by definition, so the column doubles as the per-fold up rate and the bar is
+        visible moving from fold to fold rather than fixed at an assumed 0.5.
 
     The trade counts are columns rather than a footnote because they are what makes a NaN
     Sharpe readable: a blank cell beside ``n_strategy_trades = 2`` explains itself.
@@ -258,7 +277,7 @@ def summarise(results: Sequence[ArmResult], baseline: ArmResult) -> pd.DataFrame
             "n_trades": len(arm.trades),
             "n_strategy_trades": len(arm.strategy_trades),
         }
-        chance = directional_base_rate(arm)
+        chance = always_long_accuracy(arm)
         row["direction_reference"] = chance
         for name, metric, _ in METRICS:
             value = metric(arm)
@@ -444,10 +463,10 @@ __all__ = [
     "METRICS",
     "MIN_TRADES_FOR_SHARPE",
     "ArmResult",
+    "always_long_accuracy",
     "average_trade",
     "daily_returns",
     "direction_accuracy",
-    "directional_base_rate",
     "drawdown_curve",
     "hit_rate",
     "mae",
