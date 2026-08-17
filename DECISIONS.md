@@ -7,6 +7,64 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-17 — GB-16: the checkpoint decides everything, and full batch now wins 16/16
+
+**Decision.** Four rulings in `model/predict.py`, plus one measurement that reopens a
+choice made three commits ago.
+
+1. **Per-symbol statistics come from the checkpoint, never from the caller.** The caller
+   names a *symbol*; it cannot hand in a scaler. Passing statistics in would let a caller
+   normalise AAPL's window with NVDA's numbers, and nothing downstream could tell.
+2. **A symbol the checkpoint has no statistics for is refused**, naming it and listing what
+   exists. Both fallbacks are wrong. Using another symbol's scaler, or none, presents the
+   shared weights a distribution they were never fitted on, and the result is a
+   plausible-looking forecast rather than an error. Fitting a scaler at prediction time is
+   worse: the only data available to fit it on includes the period being predicted.
+   Refusing keeps "what did the model see?" the same question at inference time that it is
+   in GB-25's audit.
+3. **A different channel set is refused, and so is a reordered one.** The weights are
+   indexed by position, so a swap applies each weight matrix to a different series and no
+   shape check would catch it.
+4. **The hash can be re-checked at the point of use**, not only at load. GB-26's loop runs
+   for a session and can outlive the configuration it started with.
+
+**Measured.** The two inference paths are **bit-identical** across every test window — 305
+pooled windows batched in 24.6 ms, 0.88 ms per single window. That is not luck: both call
+`build_windows`, one with `as_of` set, and GB-9 made that a filter over the same list of
+end positions rather than a second implementation. The test asserts every window, not a
+sample.
+
+**Reopened: full batch versus mini batch, re-measured under pooling as Ben asked.**
+
+| 16 pooled folds | test MAE vs persistence | direction | best epoch |
+|---|---|---|---|
+| mini-batch (64) | mean 2.217× · median 2.058× | 0.5071 | 2.9 |
+| mini-batch, `patience` disabled | mean 2.158× · median 2.054× | 0.4924 | 29.1 |
+| **full batch (2505)** | **mean 1.345× · median 1.288×** | 0.4751 | 44.4 |
+
+**Full batch is better in 16/16 folds**, and against unpatienced mini in 16/16 too — so the
+gap is not `patience` truncating mini. Under per-symbol training the same comparison was
+57/80 and worth 8%; pooled it is unanimous and worth **37% of the median ratio**.
+
+The mechanism is the one the earlier decision predicted would change. Per symbol the
+problem was underdetermined at 0.42× equations per parameter, and mini-batch gradient noise
+was a second regulariser acting on a real null space. Pooled it is **overdetermined at
+2.09×** — there is no null space left to regularise, so the noise is only noise, and the
+exact gradient wins. Mini's best epoch swinging from 2.9 to 29.1 depending on whether
+`patience` is on, with no change in the outcome, is that noise visible in the curve.
+
+**Not changed here, because it needs a ruling.** Switching means expressing "full batch"
+through `model.batch_size`, and that field names a mini-batch *size*: it would have to hold
+a number larger than any fold's window count, which is a lie about the field and reverts
+silently the day a fold outgrows it. The options are a §5 value change with that caveat
+accepted, or a new §5 field. Both are Ben's.
+
+**Still worse than the baseline.** Full batch at 1.288× median MAE and 0.4751 direction is
+better than mini and still not better than persistence. The improvement is real and the
+model is not yet good; §7.3 requires both halves to be said together.
+
+---
+
 ## 2026-08-17 — CONTRACT CHANGE: `WindowBatch.symbol` becomes `symbols`; universe-wide training; per-symbol scaler
 
 **Decision.** Three rulings by Ben, one of which changes a frozen contract.

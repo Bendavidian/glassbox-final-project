@@ -8,11 +8,14 @@ Append one line per completed task. Newest at the bottom of each sprint.
 ## Current state
 
 **Sprint:** 1 — Foundations · **complete, 14 Aug 2026** (12/12, day 6 of 14)
-**Sprint 2:** in progress — GB-17, GB-18, GB-13 complete 16 Aug; GB-18 halt/accounting fix and GB-15 complete 17 Aug
+**Sprint 2:** in progress — GB-17, GB-18, GB-13 complete 16 Aug; GB-18 fix, GB-15, the
+`WindowBatch.symbols` contract change and GB-16 complete 17 Aug
 **Next task:** GB-19, metrics — completes the harness chain
 **Last gate passed:** none — GATE 1 target revised to ~22 Aug, commitment 11 Sep
-**Blockers:** none. One ruling awaited (GB-15: per-symbol or universe-wide training); it
-does not block GB-19, and GB-49's grid is where it lands.
+**Blockers:** none. One ruling awaited: **full batch now beats mini in 16/16 pooled folds**
+(median 1.288× vs 2.058× persistence MAE), reversing the choice made under per-symbol
+training. Switching needs a §5 decision on how "full batch" is expressed. It does not block
+GB-19.
 
 ---
 
@@ -137,7 +140,9 @@ depends on nothing in the model layer.
 | GB-19 | | Ben | |
 | GB-13 | 16 Aug 2026 | Ben | **Complete.** `model/ltsf.py` — `DLinearForecaster`, centred moving-average trend plus remainder, one linear map per component **per channel** so GB-30's attribution is a regrouping rather than a reconstruction. No intercept, so `Σ per_channel == forecast` holds by construction. **Zero initialisation**, chosen by measurement: the reference's `1/sqrt(L)` assumes a fan-in of 120 where this summed architecture has 1200, and costs 4.00× persistence MAE and 0.344 direction against 1.94× and 0.557 for zeros. Torch fits, numpy predicts, so inference determinism is structural. Registry moved to `glassbox.model.ALL_FORECASTERS`; the contract test now needs no edit for GB-41. 4,800 parameters. 23 tests + 8 contract; suite at 395. |
 | GB-15 | 17 Aug 2026 | Ben | **Complete.** `model/train.py` + `model/history.py` — one training run around one `fit` call, per §4.3. The hard requirement is structural, not careful: windows are built **once** with the training statistics and split by timestamp afterwards, so there is no second `build_windows` call to hand a second `ChannelStats`. A checkpoint is a **directory** — `model.json`, `checkpoint.json`, `history.csv` — and loading refuses any config-hash difference. `held_out` is recorded so GB-25's audit is self-contained, and a test proves the weights are bit-identical with and without it. **Measured on all 80 arms (5 symbols × 16 folds):** best-epoch selection improved test MAE in **80/80** (2.757× → 2.004× persistence, 27.3%), while `patience` produced an **identical model in 79/80** — early stopping is a regulariser and a compute budget, and only the first matters. Full batch beat mini on MAE in 57/80 but its decisive argument was measurably false (weights differ across seeds by rel 4.8e-15, so it is not seed-free), so mini-batch stands. **Direction accuracy across 80 arms is 0.4971 — at chance**, which corrects GB-13's single-fold 0.557. 27 tests; suite at 430. Open for ruling: per-symbol vs universe-wide training. |
-| GB-16 | | Ben | |
+| GB-3 rev | 17 Aug 2026 | Ben | **Contract change.** `WindowBatch.symbol: str` → `symbols: tuple[str, ...]`, one entry per window, plus `WindowBatch.concat` as the only place pooling happens — it refuses batches disagreeing on channel tuple (order included), window geometry or `source`. `FitProvenance.from_batch` now takes `timestamps.min()/.max()`: a pooled batch's timestamps are not monotonic, and the old derivation would have reported the last symbol's end as the batch's, understating the range GB-25 audits. Committed on its own before GB-16. 13 tests. |
+| GB-15 rev | 17 Aug 2026 | Ben | **Universe-wide training, per-symbol scaler**, per Ben's ruling. `train` takes `{symbol: frame}` and iterates it **sorted** — the pooled batch's row order decides the mini-batch partition, so determinism must not depend on dictionary insertion order. Checkpoint holds `{symbol: ChannelStats}`. A symbol whose scaler cannot be fitted, or which contributes no window, names itself. 9 tests. |
+| GB-16 | 17 Aug 2026 | Ben | **Complete.** `model/predict.py` — batched and single-window inference, **bit-identical** on every test window (both call `build_windows`; GB-9 made `as_of` a filter over the same end positions, not a second path). The checkpoint decides everything; the live config is passed in only for the hash comparison, re-checkable at the point of use via `require_current_config` because GB-26's loop can outlive its config. Per-symbol statistics come **from the checkpoint, never the caller** — the caller names a symbol, so it cannot score AAPL with NVDA's scaler. An untrained symbol is **refused**, naming what exists: both fallbacks return a plausible forecast instead of an error, and fitting a scaler now would use data from the period being predicted. A reordered channel set is refused as firmly as a different one. Measured: 305 pooled windows in 24.6 ms; 0.88 ms per single window. 16 tests; suite at 466. |
 | GB-20 | | Ben | |
 | GB-21 | | Noy | |
 | GB-24 | | Ben | |

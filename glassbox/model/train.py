@@ -40,10 +40,18 @@ that list is wrong the first time someone adds a field and forgets it. A false r
 costs a retrain; a false acceptance puts a model trained under other rules into a results
 table.
 
-**One symbol per run**, per :class:`WindowBatch`, whose ``symbol`` is a single string.
-Whether the study should instead fit one model across the universe is a live question -
-see ``DECISIONS.md`` and spec 9's GB-15 row - and it is not settled here because settling
-it requires a contract change.
+**One model across the universe**, ruled on 2026-08-17. Per symbol a fold gives 501
+windows against DLinear's 4,800 parameters - 0.42x, underdetermined - where pooling five
+symbols gives 2.09x. The decisive argument is comparability rather than fit: FITS at 1,200
+parameters is *already* overdetermined per symbol at 1.67x, so training DLinear per symbol
+while FITS trains pooled would handicap one arm and the study would report that handicap as
+architecture.
+
+**Normalisation stays per symbol**, and that is what makes pooling legitimate: it removes
+symbol-specific scale so the shared weights learn the structure common across symbols. A
+pooled scaler would leave NVDA's inputs systematically larger than MSFT's, and shared
+weights have no parameter with which to express a symbol-specific response. So a checkpoint
+holds ``{symbol: ChannelStats}``, and GB-16 applies each window's own symbol's statistics.
 
 Implemented in GB-15.
 """
@@ -52,6 +60,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -85,7 +94,7 @@ class TrainingRun:
     """
 
     model: Any  # a fitted Forecaster
-    stats: ChannelStats
+    stats: dict[str, ChannelStats]  # one scaler per symbol, never pooled
     history: tuple[EpochLoss, ...]
     epochs_run: int
     best_epoch: int | None
@@ -107,7 +116,7 @@ class LoadedCheckpoint:
     """
 
     model: Any
-    stats: ChannelStats
+    stats: dict[str, ChannelStats]
     manifest: dict
     history: tuple[EpochLoss, ...]
 
@@ -142,22 +151,21 @@ def training_stats(
 
 
 def train(
-    frame: pd.DataFrame,
+    frames: Mapping[str, pd.DataFrame],
     cfg: Config,
-    symbol: str,
     train_index: pd.DatetimeIndex,
     val_index: pd.DatetimeIndex | None = None,
     held_out: pd.DatetimeIndex | None = None,
     checkpoint_dir: str | Path | None = None,
 ) -> TrainingRun:
-    """Fit the active forecaster on one fold and, optionally, checkpoint it.
+    """Fit the active forecaster across the universe on one fold, and optionally save it.
 
     Args:
-        frame: The feature frame for ``symbol``. The **whole** frame, not a slice: a window
-            ending on the first training timestamp reads ``input_len`` bars of history
-            behind it, which lie before the fold and are legitimately in the past.
+        frames: ``{symbol: feature frame}``. Each is the **whole** frame, not a slice: a
+            window ending on the first training timestamp reads ``input_len`` bars of
+            history behind it, which lie before the fold and are legitimately in the past.
+            A single-symbol mapping is a valid special case.
         cfg: Resolved configuration. ``model.active`` selects the forecaster.
-        symbol: Carried into the batch and the checkpoint.
         train_index: Timestamps a training window may end on.
         val_index: Timestamps a validation window may end on. ``None`` trains for the full
             ``cfg.model.epochs`` with no early stopping, because there is nothing to stop
@@ -171,24 +179,53 @@ def train(
             writing, which is what the tests and GB-49's sweeps do.
 
     Returns:
-        A :class:`TrainingRun`.
+        A :class:`TrainingRun` whose ``stats`` holds one :class:`ChannelStats` per symbol.
 
     Raises:
-        ValueError: The splits overlap, a split is empty, or no window ends on any
-            training timestamp.
+        ValueError: ``frames`` is empty, the splits overlap, a split is empty, or a symbol
+            contributes no window to a split.
     """
+    if not frames:
+        raise ValueError("cannot train on an empty universe")
     _require_disjoint(("train", train_index), ("val", val_index), ("test", held_out))
 
-    stats = training_stats(frame, train_index, cfg)
+    # Sorted, not insertion-ordered: the pooled batch's row order decides the mini-batch
+    # partition, so a caller passing the same symbols in a different order would otherwise
+    # get different weights from the same data. Determinism must not depend on how a
+    # dictionary was built.
+    symbols = sorted(frames)
 
-    # Built once, with the training statistics, then split by timestamp. There is no
-    # second call that could be handed a second ChannelStats.
-    everything = build_windows(frame, cfg, symbol, stats=stats)
-    train_batch = select_windows(everything, train_index, "training")
+    stats = {}
+    for symbol in symbols:
+        try:
+            stats[symbol] = training_stats(frames[symbol], train_index, cfg)
+        except ValueError as error:
+            # Which symbol failed is the first thing the caller needs, and a pooled run
+            # otherwise reports "close_logret is constant" with no way to tell whose.
+            raise ValueError(f"{symbol}: {error}") from error
+
+    # Built once per symbol, with that symbol's training statistics, then split by
+    # timestamp. There is no second call that could be handed a second ChannelStats, and
+    # `concat` refuses to pool batches that do not belong together.
+    everything = {
+        symbol: build_windows(frames[symbol], cfg, symbol, stats=stats[symbol])
+        for symbol in symbols
+    }
+    train_batch = WindowBatch.concat(
+        [
+            select_windows(everything[symbol], train_index, f"{symbol} training")
+            for symbol in symbols
+        ]
+    )
     val_batch = (
         None
         if val_index is None
-        else select_windows(everything, val_index, "validation")
+        else WindowBatch.concat(
+            [
+                select_windows(everything[symbol], val_index, f"{symbol} validation")
+                for symbol in symbols
+            ]
+        )
     )
 
     model = ALL_FORECASTERS[cfg.model.active](cfg, cfg.channels.active_channels)
@@ -212,7 +249,7 @@ def train(
     if checkpoint_dir is None:
         return run
 
-    written = save_checkpoint(checkpoint_dir, run, cfg, symbol, val_index, held_out)
+    written = save_checkpoint(checkpoint_dir, run, cfg, val_index, held_out)
     return replace(run, checkpoint=written)
 
 
@@ -220,7 +257,6 @@ def save_checkpoint(
     directory: str | Path,
     run: TrainingRun,
     cfg: Config,
-    symbol: str,
     val_index: pd.DatetimeIndex | None = None,
     held_out: pd.DatetimeIndex | None = None,
 ) -> Path:
@@ -247,17 +283,22 @@ def save_checkpoint(
             "input_len": run.model.input_len,
             "horizon": run.model.horizon,
         },
-        # The scaler, whole. `fitted_start`/`fitted_end` are the leakage question.
+        # One scaler per symbol, whole. `fitted_start`/`fitted_end` are the leakage
+        # question, and GB-16 needs the mean and std to normalise a live window the same
+        # way training did.
         "stats": {
-            "channels": list(run.stats.channels),
-            "mean": list(run.stats.mean),
-            "std": list(run.stats.std),
-            "fitted_start": run.stats.fitted_start.isoformat(),
-            "fitted_end": run.stats.fitted_end.isoformat(),
-            "n_rows": run.stats.n_rows,
+            symbol: {
+                "channels": list(stats.channels),
+                "mean": list(stats.mean),
+                "std": list(stats.std),
+                "fitted_start": stats.fitted_start.isoformat(),
+                "fitted_end": stats.fitted_end.isoformat(),
+                "n_rows": stats.n_rows,
+            }
+            for symbol, stats in sorted(run.stats.items())
         },
         "training": {
-            "symbol": symbol,
+            "symbols": sorted(run.stats),
             "n_train_windows": run.n_train_windows,
             "n_val_windows": run.n_val_windows,
             # Validation is *seen* data: early stopping selects on it. Recorded as
@@ -326,15 +367,17 @@ def load_checkpoint(directory: str | Path, cfg: Config) -> LoadedCheckpoint:
     blueprint = ALL_FORECASTERS[name](cfg, channels)
     model = type(blueprint).load(str(target / manifest["model"]["file"]))
 
-    stored_stats = manifest["stats"]
-    stats = ChannelStats(
-        channels=tuple(stored_stats["channels"]),
-        mean=tuple(stored_stats["mean"]),
-        std=tuple(stored_stats["std"]),
-        fitted_start=pd.Timestamp(stored_stats["fitted_start"]),
-        fitted_end=pd.Timestamp(stored_stats["fitted_end"]),
-        n_rows=stored_stats["n_rows"],
-    )
+    stats = {
+        symbol: ChannelStats(
+            channels=tuple(stored["channels"]),
+            mean=tuple(stored["mean"]),
+            std=tuple(stored["std"]),
+            fitted_start=pd.Timestamp(stored["fitted_start"]),
+            fitted_end=pd.Timestamp(stored["fitted_end"]),
+            n_rows=stored["n_rows"],
+        )
+        for symbol, stored in manifest["stats"].items()
+    }
 
     history_path = target / manifest.get("history_file", HISTORY_FILE)
     history = read_history(history_path) if history_path.is_file() else ()

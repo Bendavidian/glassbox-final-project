@@ -22,6 +22,7 @@ import pandas as pd
 import pytest
 
 from glassbox.config.loader import Config, config_hash, load_config
+from glassbox.contracts.schemas import WindowBatch
 from glassbox.features.builder import build_feature_frame, build_windows
 from glassbox.model import train as trainer
 from glassbox.model.history import EpochLoss, read_history, write_history
@@ -99,8 +100,21 @@ def run(
 ) -> trainer.TrainingRun:
     train_index, val_index, test_index = splits
     return trainer.train(
-        frame, cfg, SYMBOL, train_index, val_index, held_out=test_index
+        {SYMBOL: frame}, cfg, train_index, val_index, held_out=test_index
     )
+
+
+# A second symbol on the same calendar but a different price path, so a pooled run has
+# something to pool and the two scalers have something to differ about.
+OTHER = "OTHER"
+
+
+@pytest.fixture
+def universe(cfg: Config) -> dict[str, pd.DataFrame]:
+    return {
+        SYMBOL: build_feature_frame(synthetic_bars(seed=7), cfg),
+        OTHER: build_feature_frame(synthetic_bars(seed=11), cfg),
+    }
 
 
 # ── the hard requirement: statistics from the training split alone ───────────
@@ -149,10 +163,10 @@ def test_the_fitted_range_is_exactly_the_training_range(
     """GB-25 audits by comparing these to the fold. An identity, not an approximation."""
     train_index, val_index, test_index = splits
 
-    assert run.stats.fitted_start == train_index[0]
-    assert run.stats.fitted_end == train_index[-1]
-    assert run.stats.fitted_end < val_index[0]
-    assert run.stats.fitted_end < test_index[0]
+    assert run.stats[SYMBOL].fitted_start == train_index[0]
+    assert run.stats[SYMBOL].fitted_end == train_index[-1]
+    assert run.stats[SYMBOL].fitted_end < val_index[0]
+    assert run.stats[SYMBOL].fitted_end < test_index[0]
 
 
 def test_validation_is_normalised_by_the_training_statistics(
@@ -177,6 +191,160 @@ def test_validation_is_normalised_by_the_training_statistics(
     assert not np.allclose(selected.X, with_val_stats.X[keep])
 
 
+# ── the universe, pooled; the scaler, not ────────────────────────────────────
+#
+# Ruled on 2026-08-17. Per symbol a fold gives 0.42x equations per parameter for DLinear
+# and 1.67x for FITS, so training DLinear per symbol while FITS trains pooled would
+# handicap one arm and the study would report that handicap as architecture.
+
+
+def test_a_pooled_run_fits_one_model_on_every_symbols_windows(
+    universe: dict[str, pd.DataFrame],
+    cfg: Config,
+    splits: tuple[pd.DatetimeIndex, ...],
+) -> None:
+    train_index, val_index, _ = splits
+    alone = trainer.train({SYMBOL: universe[SYMBOL]}, cfg, train_index, val_index)
+
+    pooled = trainer.train(universe, cfg, train_index, val_index)
+
+    assert pooled.n_train_windows == 2 * alone.n_train_windows
+    assert pooled.model.fitted.symbols == (SYMBOL, OTHER) or (
+        pooled.model.fitted.symbols == (OTHER, SYMBOL)
+    )
+    assert set(pooled.stats) == {SYMBOL, OTHER}
+
+
+def test_each_symbol_gets_its_own_scaler(
+    universe: dict[str, pd.DataFrame],
+    cfg: Config,
+    splits: tuple[pd.DatetimeIndex, ...],
+) -> None:
+    """Per-symbol scaling is what MAKES pooling legitimate.
+
+    A pooled scaler would leave one symbol's inputs systematically larger than another's,
+    and shared weights have no parameter with which to express a symbol-specific response
+    — the model would be asked to fit a difference it cannot represent.
+    """
+    train_index, val_index, _ = splits
+
+    run = trainer.train(universe, cfg, train_index, val_index)
+
+    assert run.stats[SYMBOL] != run.stats[OTHER]
+    for symbol, frame in universe.items():
+        rows = frame.loc[train_index[0] : train_index[-1]]
+        for position, channel in enumerate(cfg.channels.active_channels):
+            column = rows[channel].astype("float64")
+            assert run.stats[symbol].mean[position] == pytest.approx(
+                float(column.mean()), rel=1e-12
+            )
+
+
+def test_pooling_normalises_each_symbol_by_its_own_statistics(
+    universe: dict[str, pd.DataFrame],
+    cfg: Config,
+    splits: tuple[pd.DatetimeIndex, ...],
+) -> None:
+    """Asserted at the data: a pooled batch's rows equal the per-symbol builds, stacked.
+
+    The failure this rules out is one shared scaler applied to every symbol, which is
+    invisible in every metric and would quietly ask the shared weights to absorb a scale
+    difference they have no parameters for.
+    """
+    train_index, val_index, _ = splits
+    run = trainer.train(universe, cfg, train_index, val_index)
+
+    expected = WindowBatch.concat(
+        [
+            trainer.select_windows(
+                build_windows(universe[symbol], cfg, symbol, stats=run.stats[symbol]),
+                train_index,
+            )
+            for symbol in sorted(universe)
+        ]
+    )
+
+    assert run.n_train_windows == len(expected.timestamps)
+    assert expected.symbols.count(SYMBOL) == expected.symbols.count(OTHER)
+
+
+def test_symbol_order_does_not_change_the_weights(
+    universe: dict[str, pd.DataFrame],
+    cfg: Config,
+    splits: tuple[pd.DatetimeIndex, ...],
+) -> None:
+    """Determinism must not depend on how the caller's dictionary was built.
+
+    The pooled batch's row order decides the mini-batch partition, so iterating insertion
+    order would make the same data give different weights depending on which symbol was
+    inserted first. `train` sorts.
+    """
+    train_index, val_index, _ = splits
+    reversed_order = {symbol: universe[symbol] for symbol in reversed(list(universe))}
+
+    first = trainer.train(universe, cfg, train_index, val_index)
+    second = trainer.train(reversed_order, cfg, train_index, val_index)
+
+    np.testing.assert_array_equal(
+        first.model.weights_for("close_logret")["trend"],
+        second.model.weights_for("close_logret")["trend"],
+    )
+    assert list(reversed_order) != list(universe)
+
+
+def test_the_checkpoint_carries_one_scaler_per_symbol(
+    universe: dict[str, pd.DataFrame],
+    cfg: Config,
+    splits: tuple[pd.DatetimeIndex, ...],
+    tmp_path: Path,
+) -> None:
+    """GB-16 needs each symbol's mean and std to normalise a live window as training did."""
+    train_index, val_index, test_index = splits
+    run = trainer.train(
+        universe, cfg, train_index, val_index, test_index, tmp_path / "fold1"
+    )
+
+    reloaded = trainer.load_checkpoint(tmp_path / "fold1", cfg)
+    manifest = json.loads((tmp_path / "fold1" / "checkpoint.json").read_text())
+
+    assert reloaded.stats == run.stats
+    assert sorted(manifest["stats"]) == [OTHER, SYMBOL]
+    assert manifest["training"]["symbols"] == [OTHER, SYMBOL]
+
+
+def test_an_empty_universe_is_refused(cfg: Config, frame: pd.DataFrame) -> None:
+    with pytest.raises(ValueError, match="empty universe"):
+        trainer.train({}, cfg, frame.index[:10])
+
+
+def test_a_symbol_contributing_no_window_names_itself(
+    universe: dict[str, pd.DataFrame],
+    cfg: Config,
+    splits: tuple[pd.DatetimeIndex, ...],
+) -> None:
+    """Silently training on four symbols when five were asked for is the wrong failure."""
+    train_index, val_index, _ = splits
+    short = dict(universe)
+    short[OTHER] = universe[OTHER].loc[: train_index[-1]]
+
+    with pytest.raises(ValueError, match=f"{OTHER} validation timestamps"):
+        trainer.train(short, cfg, train_index, val_index)
+
+
+def test_a_symbol_whose_scaler_cannot_be_fitted_names_itself(
+    universe: dict[str, pd.DataFrame],
+    cfg: Config,
+    splits: tuple[pd.DatetimeIndex, ...],
+) -> None:
+    """ "close_logret is constant" is useless in a pooled run without a name attached."""
+    train_index, _, _ = splits
+    short = dict(universe)
+    short[OTHER] = universe[OTHER].loc[: train_index[0]]
+
+    with pytest.raises(ValueError, match=f"^{OTHER}: "):
+        trainer.train(short, cfg, train_index)
+
+
 # ── determinism ──────────────────────────────────────────────────────────────
 
 
@@ -190,8 +358,8 @@ def test_two_runs_with_the_same_seed_produce_identical_weights(
     """
     train_index, val_index, _ = splits
 
-    first = trainer.train(frame, cfg, SYMBOL, train_index, val_index)
-    second = trainer.train(frame, cfg, SYMBOL, train_index, val_index)
+    first = trainer.train({SYMBOL: frame}, cfg, train_index, val_index)
+    second = trainer.train({SYMBOL: frame}, cfg, train_index, val_index)
 
     for channel in cfg.channels.active_channels:
         np.testing.assert_array_equal(
@@ -218,8 +386,8 @@ def test_a_different_seed_produces_different_weights(
     train_index, val_index, _ = splits
     other = replace(cfg, meta=replace(cfg.meta, seed=cfg.meta.seed + 1))
 
-    first = trainer.train(frame, cfg, SYMBOL, train_index, val_index)
-    second = trainer.train(frame, other, SYMBOL, train_index, val_index)
+    first = trainer.train({SYMBOL: frame}, cfg, train_index, val_index)
+    second = trainer.train({SYMBOL: frame}, other, train_index, val_index)
 
     assert not np.array_equal(
         first.model.weights_for("close_logret")["trend"],
@@ -238,9 +406,9 @@ def test_weights_do_not_depend_on_the_held_out_range(
     """
     train_index, val_index, test_index = splits
 
-    blind = trainer.train(frame, cfg, SYMBOL, train_index, val_index)
+    blind = trainer.train({SYMBOL: frame}, cfg, train_index, val_index)
     told = trainer.train(
-        frame, cfg, SYMBOL, train_index, val_index, held_out=test_index
+        {SYMBOL: frame}, cfg, train_index, val_index, held_out=test_index
     )
 
     np.testing.assert_array_equal(
@@ -261,9 +429,9 @@ def test_a_checkpoint_round_trip_reproduces_predictions_exactly(
     """Not "close": identical. A reloaded model that predicts differently is a new model."""
     train_index, val_index, test_index = splits
     run = trainer.train(
-        frame, cfg, SYMBOL, train_index, val_index, test_index, tmp_path / "fold1"
+        {SYMBOL: frame}, cfg, train_index, val_index, test_index, tmp_path / "fold1"
     )
-    windows = build_windows(frame, cfg, SYMBOL, stats=run.stats)
+    windows = build_windows(frame, cfg, SYMBOL, stats=run.stats[SYMBOL])
 
     reloaded = trainer.load_checkpoint(tmp_path / "fold1", cfg)
 
@@ -281,14 +449,14 @@ def test_the_checkpoint_carries_the_statistics_it_trained_with(
     """The audit reads statistics from the file, never from a live pipeline."""
     train_index, val_index, test_index = splits
     run = trainer.train(
-        frame, cfg, SYMBOL, train_index, val_index, test_index, tmp_path / "fold1"
+        {SYMBOL: frame}, cfg, train_index, val_index, test_index, tmp_path / "fold1"
     )
 
     reloaded = trainer.load_checkpoint(tmp_path / "fold1", cfg)
 
     assert reloaded.stats == run.stats
-    assert reloaded.stats.fitted_start == train_index[0]
-    assert reloaded.stats.fitted_end == train_index[-1]
+    assert reloaded.stats[SYMBOL].fitted_start == train_index[0]
+    assert reloaded.stats[SYMBOL].fitted_end == train_index[-1]
 
 
 def test_the_checkpoint_answers_the_leakage_question_on_its_own(
@@ -305,14 +473,14 @@ def test_the_checkpoint_answers_the_leakage_question_on_its_own(
     """
     train_index, val_index, test_index = splits
     trainer.train(
-        frame, cfg, SYMBOL, train_index, val_index, test_index, tmp_path / "fold1"
+        {SYMBOL: frame}, cfg, train_index, val_index, test_index, tmp_path / "fold1"
     )
 
     manifest = json.loads((tmp_path / "fold1" / "checkpoint.json").read_text())
     model_state = json.loads((tmp_path / "fold1" / "model.json").read_text())
     held_out_start = pd.Timestamp(manifest["training"]["held_out_start"])
 
-    scaler_end = pd.Timestamp(manifest["stats"]["fitted_end"])
+    scaler_end = pd.Timestamp(manifest["stats"][SYMBOL]["fitted_end"])
     weights_end = pd.Timestamp(model_state["fitted"]["fitted_end"])
 
     assert scaler_end < held_out_start
@@ -332,7 +500,9 @@ def test_a_checkpoint_from_a_different_config_is_refused(
     of "fields that matter" is wrong the first time someone adds a field and forgets it.
     """
     train_index, val_index, _ = splits
-    trainer.train(frame, cfg, SYMBOL, train_index, val_index, None, tmp_path / "fold1")
+    trainer.train(
+        {SYMBOL: frame}, cfg, train_index, val_index, None, tmp_path / "fold1"
+    )
     drifted = replace(cfg, risk=replace(cfg.risk, stop_loss_pct=0.04))
 
     assert config_hash(drifted) != config_hash(cfg)
@@ -348,7 +518,9 @@ def test_a_checkpoint_from_this_config_loads(
 ) -> None:
     """The other half of the previous test: the guard is not simply always refusing."""
     train_index, val_index, _ = splits
-    trainer.train(frame, cfg, SYMBOL, train_index, val_index, None, tmp_path / "fold1")
+    trainer.train(
+        {SYMBOL: frame}, cfg, train_index, val_index, None, tmp_path / "fold1"
+    )
 
     loaded = trainer.load_checkpoint(tmp_path / "fold1", cfg)
 
@@ -363,7 +535,9 @@ def test_a_checkpoint_of_another_version_is_refused(
     tmp_path: Path,
 ) -> None:
     train_index, val_index, _ = splits
-    trainer.train(frame, cfg, SYMBOL, train_index, val_index, None, tmp_path / "fold1")
+    trainer.train(
+        {SYMBOL: frame}, cfg, train_index, val_index, None, tmp_path / "fold1"
+    )
     path = tmp_path / "fold1" / "checkpoint.json"
     manifest = json.loads(path.read_text())
     manifest["version"] = trainer.CHECKPOINT_VERSION + 1
@@ -415,7 +589,7 @@ def test_early_stopping_does_not_fire_when_validation_keeps_improving(
     train_index, val_index, _ = splits
     short = replace(cfg, model=replace(cfg.model, epochs=3, patience=PATIENCE))
 
-    run = trainer.train(frame, short, SYMBOL, train_index, val_index)
+    run = trainer.train({SYMBOL: frame}, short, train_index, val_index)
 
     assert run.stopped_early is False
     assert run.epochs_run == 3
@@ -426,7 +600,7 @@ def test_without_a_validation_split_there_is_nothing_to_stop_on(
 ) -> None:
     train_index, _, _ = splits
 
-    run = trainer.train(frame, cfg, SYMBOL, train_index, val_index=None)
+    run = trainer.train({SYMBOL: frame}, cfg, train_index, val_index=None)
 
     assert run.epochs_run == cfg.model.epochs
     assert run.stopped_early is False
@@ -504,7 +678,7 @@ def test_overlapping_train_and_validation_splits_are_refused(
     train_index, _, _ = splits
 
     with pytest.raises(ValueError, match="train and val splits share"):
-        trainer.train(frame, cfg, SYMBOL, train_index, train_index[-20:])
+        trainer.train({SYMBOL: frame}, cfg, train_index, train_index[-20:])
 
 
 def test_a_held_out_range_overlapping_training_is_refused(
@@ -513,12 +687,12 @@ def test_a_held_out_range_overlapping_training_is_refused(
     train_index, val_index, _ = splits
 
     with pytest.raises(ValueError, match="train and test splits share"):
-        trainer.train(frame, cfg, SYMBOL, train_index, val_index, train_index[:5])
+        trainer.train({SYMBOL: frame}, cfg, train_index, val_index, train_index[:5])
 
 
 def test_an_empty_training_split_is_refused(frame: pd.DataFrame, cfg: Config) -> None:
     with pytest.raises(ValueError, match="the train split is empty"):
-        trainer.train(frame, cfg, SYMBOL, frame.index[:0])
+        trainer.train({SYMBOL: frame}, cfg, frame.index[:0])
 
 
 def test_a_split_with_no_windows_says_which_one(
@@ -528,7 +702,7 @@ def test_a_split_with_no_windows_says_which_one(
     train_index, _, _ = splits
 
     with pytest.raises(ValueError, match="no window ends on any of the .* validation"):
-        trainer.train(frame, cfg, SYMBOL, train_index, frame.index[-HORIZON:])
+        trainer.train({SYMBOL: frame}, cfg, train_index, frame.index[-HORIZON:])
 
 
 # ── the loss curve ───────────────────────────────────────────────────────────
@@ -542,7 +716,7 @@ def test_the_loss_curve_is_written_with_one_row_per_epoch(
 ) -> None:
     train_index, val_index, _ = splits
     run = trainer.train(
-        frame, cfg, SYMBOL, train_index, val_index, None, tmp_path / "fold1"
+        {SYMBOL: frame}, cfg, train_index, val_index, None, tmp_path / "fold1"
     )
 
     curve = read_history(tmp_path / "fold1" / "history.csv")
@@ -581,6 +755,6 @@ def test_training_loss_falls_over_the_run(
     """
     train_index, val_index, _ = splits
 
-    run = trainer.train(frame, cfg, SYMBOL, train_index, val_index)
+    run = trainer.train({SYMBOL: frame}, cfg, train_index, val_index)
 
     assert run.history[-1].train_loss < run.history[0].train_loss
