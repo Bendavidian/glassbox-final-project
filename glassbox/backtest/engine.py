@@ -70,10 +70,14 @@ from glassbox.config.loader import Config
 from glassbox.contracts.schemas import Signal
 from glassbox.engine.risk import shares_for
 
-BPS = 10_000.0
+# The verdict vocabulary belongs to the layer that produces verdicts, and is imported
+# rather than respelled here. GB-18 wrote its own copies; GB-20 removed them, because two
+# spellings of "enter_long" in two modules is the GB-7 failure family - each side keeps its
+# tests and the system quietly stops trading. Re-exported so `engine.ENTER_LONG` still
+# resolves for callers that reach for it through the backtester.
+from glassbox.engine.signal import ENTER_LONG, EXIT
 
-ENTER_LONG = "enter_long"
-EXIT = "exit"
+BPS = 10_000.0
 
 # Exit reasons. The `_gap` variants exist so the report can separate "the stop rule cost
 # this" from "the market gapped and the stop was never available".

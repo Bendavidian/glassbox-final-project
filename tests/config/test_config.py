@@ -104,7 +104,7 @@ def test_default_config_values_match_the_spec() -> None:
     )
     assert set(cfg.channels.names) == {"C0_base", "C2_hybrid"}
     assert cfg.model.active == "dlinear"
-    assert cfg.model.batch_size is None  # full batch, ruled 2026-08-17
+    assert cfg.model.batch_size == 64  # full batch adopted, then reverted — GB-20
     assert cfg.signal.min_trend is None
     assert cfg.signal.max_trend is None
     assert cfg.live.mode == "co_pilot"

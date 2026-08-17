@@ -7,6 +7,186 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-17 — GB-20: the direction reference is always-long, not the per-fold majority class
+
+**Decision.** `metrics.directional_base_rate` — `max(up_rate, 1 − up_rate)`, added hours
+earlier by GB-19 — is replaced by `metrics.always_long_accuracy`, which returns the fold's
+realised **up rate**. The class is fixed from the training split; only the rate is measured
+on test. `direction_reference` stays in the summary table and now carries a number that is
+by definition the fold's up rate, so the bar is visible moving from fold to fold.
+
+**Reasoning.** The two numbers GB-19 reported did not reconcile: a mean up rate of 0.5625
+against a "chance level" of 0.5865. The gap is the whole error — `max(up, 1 − up)` computed
+per fold and then averaged flips to "always short" on the folds whose test period fell, and
+selects that class from the **test** data being scored. No strategy knows in advance whether
+the coming quarter is up or down, and §2.1 is long-only, so "always short" is not in the
+action space at all. The bar was therefore both unachievable and set with test-period
+knowledge. It erred *against* the model — it made every arm look worse — and that does not
+make it admissible: a bar built from information the system could not have had is
+inadmissible in either direction. Always-long is the one constant strategy this project
+could have run, and the up rate exceeds 0.5 in **16 of 16 training splits** (0.506–0.588),
+so the class choice needs no test data.
+
+**Consequence.** The direction bar falls from 0.5865 to 0.5625. DLinear's 0.4751 now beats
+it in **4 folds of 16** rather than 1 — still below the bar overall, by 8.7 points on
+average. Spec §7.2 and the GB-19, GB-20 and GB-57 rows in §9 carry the correction with both
+rejected references named. A test on a synthetic fold whose test period fell pins the
+difference: always-long scores 3/9 there and the majority class would have reported 6/9.
+
+---
+
+## 2026-08-17 — GB-20 diagnostic: the direction shortfall is a down-bias, not an inverted signal
+
+**Decision.** Recorded as a finding, not acted on. No sign-flip hunt, no inversion of the
+forecast, no change to the target alignment or the trend decomposition.
+
+**Reasoning.** DLinear scores 0.4751 against an always-long bar of 0.5625, which invites the
+reading that a consistently wrong classifier carries information. Three measurements over
+all 16 folds say otherwise.
+
+1. **It calls up on 45.7% of windows** (per fold 14.4%–59.0%) against a 56.25% realised up
+   rate, and calls up **less than half the time in 9 of 16 folds**. An information-free
+   model calling up at that same rate scores `q·p + (1−q)·(1−p)` = **0.4893** on average.
+   Most of the 8.7-point shortfall is therefore a **down-bias**, not error: the model
+   forecasts negative too often, and a coin weighted the same way would score much the same.
+2. **Inverting the forecast scores 0.5245**, which beats the always-long bar in 6 folds of
+   16 and misses it by 3.8 points on average. If a sign were flipped somewhere in the target
+   alignment or the trend subtraction, inverting would beat the bar consistently. It does
+   not.
+3. **The residual is −1.42 points below the information-free level**, negative in 10 folds
+   of 16, sd 3.77 points, paired t ≈ **−1.5**. That is not significant, and the folds share
+   training data so they are not even independent draws. The shortfall against the bar is
+   also uniform rather than concentrated: per symbol it runs 0.4505 (AAPL) to 0.4931
+   (GOOGL), a 4.3-point spread with every symbol below 0.5, and the per-fold shortfall has
+   sd 10.5 points around a −8.7-point mean.
+
+**Consequence.** The claim "0.4751 is below the worst achievable by pure noise" does not
+survive measurement: the noise floor is not 0.4875 but 0.4893 at the model's own call rate,
+and 0.4375 at the extreme. GB-57 must report the call rate beside the direction accuracy —
+without it, a reader cannot tell a biased model from an anti-informative one. The open
+question this leaves is *why* a zero-initialised model with no intercept forecasts down more
+often than up on data that rose; that belongs to GB-41's diagnostics, not here.
+
+---
+
+## 2026-08-17 — GB-20: thresholds are calibrated by the backtester, one layer above the engine
+
+**Decision.** `engine/signal.py` holds the decision logic and **no numbers at all**;
+`backtest/calibrate.py` holds `calibrate_thresholds`, which scores a coarse grid by running
+the real backtester on the fold's validation split. Spec §3.4 gains the module.
+
+**Reasoning.** GB-20 asked for `calibrate_thresholds` inside `signal.py`, and the ruling
+that it must run the actual backtester rather than a proxy makes that impossible: `backtest`
+sits above `engine` in the layer contract, and `live_loop` imports `signal`, so the function
+would drag the validation harness into the live path and break both contracts at once.
+Injecting the backtester as a callable would hide the same dependency behind an argument.
+Splitting it puts each half where its dependencies already are — and the live loop then
+carries a band that was chosen offline, which is what it will actually do.
+
+The grid is expressed as **quantiles of the validation split's own forecast distribution**
+rather than as absolute return levels. A band of 0.004 means nothing without knowing what
+that fold's model produced; a grid of absolute levels would need rewriting for every
+horizon, universe and channel set, and a band tuned to DLinear's magnitudes would silently
+disable FITS. A test scales every forecast by ten and gets the same trades.
+
+**Consequence.** Five entry quantiles × three ceilings = 15 backtests per fold, ~0.1s each.
+`Thresholds` is a frozen contract-shaped value passed into `decide`, so the same band feeds
+the backtest and the live loop. The action vocabulary (`enter_long` / `hold` / `exit`) moved
+into `signal.py` and `backtest/engine.py` now imports it rather than keeping its own copy.
+
+---
+
+## 2026-08-17 — GB-20: a fold with no profitable band stands aside rather than trading the least-bad one
+
+**Decision.** When no candidate on the grid earns a **positive** validation Sharpe, the fold
+returns `Thresholds.never()`: no trades, a flat equity curve, `stood_aside=True`, and the
+best candidate's Sharpe kept on the record. A NaN Sharpe — fewer than five validation trades
+— counts as not positive.
+
+**Reasoning.** The alternative is to trade a rule that validation had just said loses money,
+and to report the **maximum of fifteen losing candidates selected on the same data that
+scored them**, which is an overfitting procedure with a positive-looking number at the end.
+Standing aside costs the study nothing it is entitled to: the forecast metrics are
+unaffected, the fold's return is a true zero rather than an estimated loss, and "validation
+rejected every band" is itself a result. The interlock with `MIN_TRADES_FOR_SHARPE` does
+real work here — a band selective enough to trade twice cannot win a fold on a ratio
+computed from two observations.
+
+**Consequence.** Measured on the real universe with DLinear: **3 folds of 16 stood aside
+under full batch, 1 of 16 under mini-batch**. GB-57 must report the count, because a study
+that silently trades nothing on a fifth of its folds and one that trades everywhere are
+different studies. Spec §9's GB-20 row carries the ruling.
+
+---
+
+## 2026-08-17 — GB-20 finding: §7.3's `Sharpe > 2.0` alarm fired, and what the audit found
+
+**Decision.** Recorded, not silenced. §7.3 is left exactly as written — the rule is not
+softened by the code it just caught. What is added is the reading it needs: the alarm is
+about the **headline** figure, and per-fold values need the audit below before they mean
+anything.
+
+**Reasoning.** The batch-size re-check produced per-fold test Sharpes above 2.0 in **8 of
+32 fold-runs** — up to 4.56 — and §7.3 requires a stop and an audit of `builder.py` and the
+fold boundaries. The audit:
+
+- The causality harness passes on the keystone and the indicators, in both perturbation
+  modes; the fold embargo of exactly `H` window-ends is tested against the failing case;
+  and calibration is now held to `assert_fit_isolated`, so the band cannot see the test
+  split either.
+- The distribution is **symmetric**: the same runs produce −3.27, −3.79 and −2.25. A leak
+  produces one-sided inflation, not a spread of large numbers in both directions.
+- Each figure annualises a **3-month** fold of roughly 60 bars carrying 8–28 trades. The
+  sampling error on an annualised ratio from that many observations is of exactly this
+  order, which is the same argument that put `MIN_TRADES_FOR_SHARPE` in `metrics.py`.
+- The aggregate, which is what the rule is aimed at, is **+0.65** across 16 folds.
+
+**Consequence.** No leak found; the per-fold values are read as variance. GB-57 must report
+the fold-level spread rather than a best fold, and any *aggregate* above 2.0 re-triggers the
+rule with none of this reasoning available as an excuse.
+
+---
+
+## 2026-08-17 — GB-20: `model.batch_size` reverts to 64; the MAE-based adoption is overturned
+
+**Decision.** `model.batch_size: 64`. Full batch (`null`) was adopted earlier the same day
+and is reverted. The `null` option and its validation stay in the loader — the setting is
+reverted, not the feature.
+
+**Reasoning.** The adoption rested on a 16/16 improvement in **MAE**, which §7.3 bans as a
+headline metric, so it was recorded as provisional and GB-20 was made to carry a re-check on
+the metrics the study reports. The re-check ran end to end — train, calibrate on validation,
+backtest on test — over all 16 folds under both settings:
+
+| | full batch | mini-batch 64 |
+|---|---|---|
+| mean total return per fold | +0.07% | **+0.44%** |
+| folds with a positive return | 6/16 | **9/16** |
+| mean Sharpe (defined folds) | −0.09 (n=10) | **+0.65 (n=14)** |
+| head-to-head Sharpe | better in 3/16 | **better in 7/16** |
+| mean direction accuracy | 0.4751 | **0.5071** |
+| direction, head to head | better in 3/16 | **better in 13/16** |
+| mean MAE | **0.0206** | 0.0332 |
+| folds standing aside | 3/16 | 1/16 |
+
+Full batch wins MAE in 16 folds of 16 and loses every other comparison. That is exactly the
+pattern §7.3 predicts: converging more completely to the MSE optimum produces a flatter
+forecast, which wins an error metric and forecasts nothing. The one metric that pointed the
+other way was the one the rule says not to steer by.
+
+**Consequence.** The seed is load-bearing again — it decides the mini-batch partition — so
+the tests that GB-2 rewrote when full batch was adopted are rewritten back: the configured
+setting once more implies "a different seed gives different weights", and the full-batch
+property (any seed, bit-identical weights) is kept as a test of that code path with the
+config forced. Direction accuracy at 0.5071 is still **below the always-long bar of
+0.5625**, so this is a choice between two arms that do not beat always calling up, and GB-57
+must say so rather than presenting the winner as a result.
+
+**Caveat kept in front.** 16 folds, per-fold Sharpes ranging from −3.3 to +4.6: the
+comparison is directionally consistent across four metrics but is not a significance claim.
+
+---
+
 ## 2026-08-17 — GB-19: persistence has no direction accuracy, and 0.5 is not the chance level
 
 **Decision.** Three rulings in `backtest/metrics.py`.

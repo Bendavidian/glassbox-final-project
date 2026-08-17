@@ -255,27 +255,41 @@ def test_two_fits_of_the_same_config_give_identical_weights(
 def test_under_full_batch_the_seed_changes_nothing(
     cfg: Config, batch: WindowBatch
 ) -> None:
-    """Since 2026-08-17 the configured setting is ``batch_size: null``, and this is what
-    that costs and buys.
+    """A property of the full-batch code path, which the config no longer selects.
 
-    It costs the old assertion, which was that a different seed gives different weights —
-    true while the seed decided a mini-batch partition, false once there is one batch and
-    zero initialisation, because then nothing in the run is random at all. Rather than
-    weaken it to something vacuous, the teeth move to
-    ``test_mini_batches_still_depend_on_the_seed``: the seed is not decorative, it is
-    simply unused by the configuration in force.
-
-    What it buys is a stronger property than the determinism GB-15 asserts. Same seed,
-    same weights becomes *any* seed, same weights.
+    Full batch was configured on 2026-08-17 and reverted on the same day by GB-20's
+    re-check, so this reads ``batch_size=None`` explicitly rather than from the config. The
+    property is still worth pinning: with one batch and zero initialisation nothing in the
+    run is random, so *any* seed gives bit-identical weights — a stronger statement than
+    the same-seed determinism GB-15 asserts, and the check that a fold was not silently
+    chunked.
     """
-    assert cfg.model.batch_size is None
+    full = replace(cfg, model=replace(cfg.model, batch_size=None))
+    other = replace(full, meta=replace(full.meta, seed=full.meta.seed + 1))
+    first = ALL_FORECASTERS["dlinear"](full, batch.channels)
+    second = ALL_FORECASTERS["dlinear"](other, batch.channels)
+    first.fit(batch)
+    second.fit(batch)
+
+    np.testing.assert_array_equal(first._trend, second._trend)
+
+
+def test_the_configured_setting_puts_the_seed_back_in_charge(
+    cfg: Config, batch: WindowBatch
+) -> None:
+    """And under the setting actually in force, a different seed gives different weights.
+
+    The assertion GB-2 removed when full batch was adopted and GB-20's re-check restored:
+    ``batch_size: 64`` means the seed decides the partition, so it is load-bearing again.
+    """
+    assert cfg.model.batch_size == 64
     other = replace(cfg, meta=replace(cfg.meta, seed=cfg.meta.seed + 1))
     first = ALL_FORECASTERS["dlinear"](cfg, batch.channels)
     second = ALL_FORECASTERS["dlinear"](other, batch.channels)
     first.fit(batch)
     second.fit(batch)
 
-    np.testing.assert_array_equal(first._trend, second._trend)
+    assert not np.array_equal(first._trend, second._trend)
 
 
 def test_prediction_is_deterministic_without_torch(

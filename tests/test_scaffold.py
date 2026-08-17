@@ -40,6 +40,11 @@ SPEC_MODULES = (
     "backtest/engine.py",
     "backtest/walkforward.py",
     "backtest/metrics.py",
+    # GB-20: per-fold threshold calibration. At the harness layer rather than inside
+    # `engine/signal.py` because the ruling is that it scores candidates with the real
+    # backtester, and the engine layer may not import the harness - nor may the live path,
+    # which imports `signal`.
+    "backtest/calibrate.py",
     "experiments/study.py",
     "experiments/report.py",
     "live_loop.py",

@@ -379,19 +379,19 @@ def test_the_seed_is_honoured_where_it_still_has_work_to_do(
 ) -> None:
     """Proof the previous test is asserting something rather than passing vacuously.
 
-    Under the configured ``batch_size: null`` the seed decides nothing — zero
-    initialisation and one batch leave no randomness in the run — so the equality above
-    would also hold for a trainer that ignored the seed entirely. Forcing mini-batches
-    puts the seed back in charge of the partition, and the weights must then differ.
+    A trainer that ignored the seed entirely would also produce identical weights twice.
+    The seed earns its place by deciding the mini-batch partition: change it and the
+    weights must move. This held under ``batch_size: 64``, stopped holding while full batch
+    was configured, and holds again since GB-20's re-check reverted the setting — so it is
+    written against the configured value rather than a forced one.
     """
     train_index, val_index, _ = splits
-    mini = replace(cfg, model=replace(cfg.model, batch_size=32))
-    other = replace(mini, meta=replace(mini.meta, seed=mini.meta.seed + 1))
+    other = replace(cfg, meta=replace(cfg.meta, seed=cfg.meta.seed + 1))
 
-    first = trainer.train({SYMBOL: frame}, mini, train_index, val_index)
+    first = trainer.train({SYMBOL: frame}, cfg, train_index, val_index)
     second = trainer.train({SYMBOL: frame}, other, train_index, val_index)
 
-    assert cfg.model.batch_size is None
+    assert cfg.model.batch_size == 64
     assert not np.array_equal(
         first.model.weights_for("close_logret")["trend"],
         second.model.weights_for("close_logret")["trend"],
