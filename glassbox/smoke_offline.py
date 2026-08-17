@@ -8,11 +8,29 @@ file is a loud failure naming what is absent, because the alternative - `load_hi
 quietly fetching - would turn "the offline path works" into "the offline path works when
 yfinance is up", which is not the claim Gate 1 makes.
 
-**Both arms run the same code.** The baseline is not simulated with a flat line: it is the
-persistence forecaster driven through the same train → calibrate → decide → backtest path
-as the model under test. That is the point of the command. Persistence forecasts zero, so
-no band can fire, so it stands aside on every fold and its curve is flat - but it is flat
-because the pipeline produced nothing to trade, not because this module drew a flat line.
+**Every arm runs the same code.** No curve here is drawn by the reporting layer. The
+persistence baseline is the persistence forecaster driven through the same train →
+calibrate → decide → backtest path as the model under test; it forecasts zero, so no band
+can fire, so it stands aside on every fold and its curve is flat - flat because the
+pipeline produced nothing to trade. **Buy-and-hold goes through the same backtester too**,
+so it pays entry slippage, both fees and the next-open fill rule, and a reader cannot
+argue the comparison was arranged in the strategy's favour.
+
+**Three references, because they answer three different questions** (spec §7.3):
+
+- **MAE and RMSE against persistence.** Forecast skill against the random walk, which is
+  what persistence is a hard baseline for.
+- **Direction accuracy against always-long.** Persistence forecasts zero and expresses no
+  direction at all, so it cannot be the reference for this column.
+- **Return, Sharpe and drawdown against buy-and-hold**, with persistence shown beside it as
+  the do-nothing floor. Persistence never trades, so comparing a trading strategy to it
+  measures only that the strategy traded. Against cash, +0.44% a fold looks like a result;
+  against an equal-weight hold of the same five symbols over 2022-2026 it is a different
+  statement, and the honest table lets a reader see which.
+
+Each column header names its own reference - ``mae_vs_pers``, ``dir_vs_long``,
+``ret_vs_bh``, ``sharpe_vs_bh`` - so three baselines cannot look like three chances to find
+a flattering one.
 
 Two reporting rulings, both visible in the output rather than only here:
 
@@ -28,11 +46,12 @@ Two reporting rulings, both visible in the output rather than only here:
    legend naming it. A direction number without its bar is unreadable: 0.51 is above a coin
    flip and below always-long, and the difference is the whole finding.
 
-Sizing is a fixed fraction of equity from ``risk.max_position_pct``. **GB-21 replaces it**
-- this module holds the interface's simplest satisfying implementation so the smoke command
-can exist before the risk layer, and the engine enforces the cap either way.
+Sizing is ``engine.risk.position_sizer`` (GB-21) - the per-position cap, the gross-exposure
+cap and the cash check, the same arithmetic the live executor will use. Buy-and-hold is the
+one exception and is sized equal-weight, because it is a reference portfolio rather than a
+strategy run under this project's risk rules; the consequence is stated where it is sized.
 
-Implemented in GB-24.
+Implemented in GB-24; the buy-and-hold arm and the real sizer landed with GB-21.
 """
 
 from __future__ import annotations
@@ -55,15 +74,18 @@ from glassbox.backtest.walkforward import Fold, make_folds
 from glassbox.config.loader import Config, load_config
 from glassbox.contracts.schemas import Forecast, Signal, WindowBatch
 from glassbox.data.historical import load_history
-from glassbox.engine.signal import decide_all
+from glassbox.engine import risk
+from glassbox.engine.signal import ENTER_LONG, Thresholds, decide_all
 from glassbox.features.builder import build_feature_frame, build_windows
 from glassbox.model import train as trainer
 
 BASELINE = "persistence"
+BUY_AND_HOLD = "buy_and_hold"
 PRICE_COLUMNS = ["open", "high", "low", "close"]
 
-# Printed for every arm, in this order. `direction_reference` sits immediately after
-# `direction` so the two cannot be read apart - see ruling 2 in the module docstring.
+# Printed for every arm, in this order. `dir_ref` sits immediately after `direction` so the
+# two cannot be read apart - see ruling 2 in the module docstring - and every delta column
+# names the reference it is measured against, because there are three of them.
 FOLD_COLUMNS = (
     "fold",
     "arm",
@@ -71,11 +93,13 @@ FOLD_COLUMNS = (
     "trades",
     "direction",
     "dir_ref",
-    "dir_delta",
+    "dir_vs_long",
     "mae",
-    "mae_delta",
+    "mae_vs_pers",
     "total_return",
+    "ret_vs_bh",
     "sharpe",
+    "sharpe_vs_bh",
     "max_dd",
     "hit_rate",
 )
@@ -94,6 +118,13 @@ class ArmRun:
     result: metrics.ArmResult
     calibration: Calibration
     seconds: float
+    forecasts: bool = True
+    """False for buy-and-hold, which makes a directional call and no magnitude forecast.
+
+    Its MAE cell is then empty rather than filled with the error of a forecast it never
+    made - the same treatment persistence's direction column gets, and for the same reason:
+    a metric an arm does not produce is reported as absent, not as a number.
+    """
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -165,6 +196,9 @@ def run(
                 f"{len(done.result.strategy_trades)} trades"
                 f"{', stood aside' if done.calibration.stood_aside else ''}"
             )
+        held = _run_buy_and_hold(fold, frames, bars, cfg)
+        runs.append(held)
+        log(f"fold {fold.number} {BUY_AND_HOLD}: {held.seconds:.1f}s")
 
     table = fold_table(runs)
     summary = aggregate(runs, seconds=time.perf_counter() - started)
@@ -200,25 +234,38 @@ def load_cached_bars(cfg: Config) -> dict[str, pd.DataFrame]:
 
 
 def fold_table(runs: Sequence[ArmRun]) -> pd.DataFrame:
-    """One row per arm per fold, in fold order, with the direction reference beside it."""
-    baselines = {run.fold: run for run in runs if run.name == BASELINE}
+    """One row per arm per fold, in fold order, every delta naming its own reference.
+
+    Three references, per §7.3: forecast error against persistence, direction against
+    always-long, trading against buy-and-hold. Each lives in a column whose header says so,
+    so a reader meets the reference at the same moment as the number.
+    """
+    persistence = {run.fold: run.result for run in runs if run.name == BASELINE}
+    held = {run.fold: run.result for run in runs if run.name == BUY_AND_HOLD}
     rows = []
     for run in runs:
-        baseline = baselines[run.fold].result
+        baseline = persistence.get(run.fold)
+        market = held.get(run.fold)
+        direction = metrics.direction_accuracy(run.result)
         rows.append(
             {
                 "fold": run.fold,
                 "arm": run.name,
                 "aside": "yes" if run.calibration.stood_aside else "",
                 "trades": len(run.result.strategy_trades),
-                "direction": metrics.direction_accuracy(run.result),
+                "direction": direction,
                 "dir_ref": metrics.always_long_accuracy(run.result),
-                "dir_delta": metrics.direction_accuracy(run.result)
-                - metrics.always_long_accuracy(run.result),
-                "mae": metrics.mae(run.result),
-                "mae_delta": metrics.mae(run.result, baseline),
+                "dir_vs_long": direction - metrics.always_long_accuracy(run.result),
+                "mae": metrics.mae(run.result) if run.forecasts else math.nan,
+                "mae_vs_pers": (
+                    metrics.mae(run.result, baseline)
+                    if run.forecasts and baseline is not None
+                    else math.nan
+                ),
                 "total_return": metrics.total_return(run.result),
+                "ret_vs_bh": _against(metrics.total_return, run.result, market),
                 "sharpe": metrics.sharpe(run.result),
+                "sharpe_vs_bh": _against(metrics.sharpe, run.result, market),
                 "max_dd": metrics.max_drawdown(run.result),
                 "hit_rate": metrics.hit_rate(run.result),
             }
@@ -278,18 +325,29 @@ def aggregate(runs: Sequence[ArmRun], seconds: float) -> str:
     return "\n".join(lines)
 
 
-def size_position(
-    signal: Signal, equity: float, gross_exposure: float, cfg: Config
-) -> float:
-    """A fixed fraction of equity per position. **Placeholder for GB-21.**
+def equal_weight(n_symbols: int):
+    """A sizer that puts ``1/n`` of equity into each position. **Buy-and-hold only.**
 
-    Satisfies ``backtest.engine.PositionSizer`` and reads its fraction from
-    ``risk.max_position_pct``, so there is no constant here to go stale. It does not
-    implement the gross-exposure cap or the ranking that GB-21 owns; the engine's own
-    validation still refuses anything the account cannot pay for.
+    It deliberately ignores ``max_position_pct`` and ``max_gross_exposure``, because
+    buy-and-hold is a **reference portfolio, not a strategy run under this project's risk
+    rules** - a fully invested hold is what the phrase means and what a reader will check
+    against. The consequence must be stated wherever the comparison is: the strategy is
+    capped at ``max_gross_exposure`` of equity while this arm is fully invested, so part of
+    any gap between them is exposure rather than skill.
+
+    It still cannot overdraw: ``equity - gross_exposure`` is exactly the cash the engine
+    holds, and the last of the five entries would otherwise exceed it by the fees the first
+    four paid.
     """
-    del signal, gross_exposure
-    return equity * cfg.risk.max_position_pct
+
+    def sizer(
+        signal: Signal, equity: float, gross_exposure: float, cfg: Config
+    ) -> float:
+        del signal, cfg
+        return max(0.0, min(equity / n_symbols, equity - gross_exposure))
+
+    sizer.__name__ = f"equal_weight_{n_symbols}"
+    return sizer
 
 
 def _run_arm(
@@ -309,7 +367,7 @@ def _run_arm(
     calibration = calibrate_thresholds(
         _forecasts(val_batch, run.model.predict(val_batch.X)),
         _bars_between(bars, fold.val[0], fold.val[-1]),
-        size_position,
+        risk.position_sizer,
         arm_cfg,
     )
 
@@ -318,7 +376,7 @@ def _run_arm(
     result = run_backtest(
         _bars_between(bars, fold.test[0], fold.test[-1]),
         decide_all(_forecasts(test_batch, predicted), calibration.thresholds, arm_cfg),
-        size_position,
+        risk.position_sizer,
         arm_cfg,
     )
 
@@ -335,6 +393,106 @@ def _run_arm(
         calibration=calibration,
         seconds=time.perf_counter() - started,
     )
+
+
+def _run_buy_and_hold(
+    fold: Fold,
+    frames: dict[str, pd.DataFrame],
+    bars: dict[str, pd.DataFrame],
+    cfg: Config,
+) -> ArmRun:
+    """Equal-weight the universe at the first tradeable open, hold to the last close.
+
+    Run, not drawn: one ``enter_long`` per symbol on the fold's first test bar, filled at
+    the **next** bar's open like every other order, and liquidated at the final close as an
+    administrative exit. Entry slippage, both fees and the gap rules all apply, so the arm
+    is measured under the same frictions as the strategy it is a reference for.
+
+    **The stop and the target are removed**, expressed as infinite fractions rather than by
+    special-casing the engine: a 3% stop on a passive holding would make this arm "the
+    project's risk rules applied to a passive entry", which is a different thing from
+    buy-and-hold and would understate the market it is meant to represent.
+
+    Its direction accuracy is the always-long bar **by construction** - it calls up on every
+    window and nothing else - so the two are asserted equal. If they ever disagree, one of
+    :func:`metrics.direction_accuracy` and :func:`metrics.always_long_accuracy` is wrong,
+    and that is worth more than either number.
+    """
+    started = time.perf_counter()
+    passive = replace(
+        cfg, risk=replace(cfg.risk, stop_loss_pct=math.inf, take_profit_pct=math.inf)
+    )
+    symbols = sorted(bars)
+
+    entries = tuple(
+        # No trend view, no threshold consulted: this arm holds the market, it does not
+        # forecast it. Recording that honestly beats inventing a conviction it never had.
+        Signal(
+            symbol=symbol,
+            action=ENTER_LONG,
+            trend_strength=0.0,
+            up_points=0,
+            passed_threshold=False,
+        )
+        for symbol in symbols
+    )
+    result = run_backtest(
+        _bars_between(bars, fold.test[0], fold.test[-1]),
+        {fold.test[0]: entries},
+        equal_weight(len(symbols)),
+        passive,
+    )
+
+    batch = WindowBatch.concat(
+        [
+            trainer.select_windows(
+                build_windows(frames[symbol], cfg, symbol), fold.test
+            )
+            for symbol in symbols
+        ]
+    )
+    always_up = np.ones_like(batch.y)
+    arm = metrics.ArmResult(
+        name=BUY_AND_HOLD,
+        equity=result.equity,
+        trades=result.trades,
+        predicted=always_up,
+        actual=batch.y,
+    )
+    _assert_is_the_bar(arm)
+
+    return ArmRun(
+        fold=fold.number,
+        name=BUY_AND_HOLD,
+        result=arm,
+        calibration=Calibration(
+            thresholds=Thresholds.never(),
+            val_sharpe=math.nan,
+            val_trades=0,
+            stood_aside=False,  # it holds the market; it simply consults no band
+            candidates=(),
+        ),
+        seconds=time.perf_counter() - started,
+        forecasts=False,
+    )
+
+
+def _assert_is_the_bar(arm: metrics.ArmResult) -> None:
+    """Buy-and-hold's realised direction accuracy must equal the always-long reference.
+
+    The same quantity computed twice by two functions written for different purposes. They
+    agree or something is wrong, and a silent disagreement would put a wrong bar under
+    every direction number in the study.
+    """
+    scored = metrics.direction_accuracy(arm)
+    reference = metrics.always_long_accuracy(arm)
+    if not math.isclose(scored, reference, rel_tol=1e-12, abs_tol=1e-12):
+        raise SmokeError(
+            "buy-and-hold scored a direction accuracy of "
+            f"{scored!r} while the always-long reference is {reference!r}. They are the "
+            "same quantity by construction, so one of direction_accuracy and "
+            "always_long_accuracy is computed wrongly."
+        )
 
 
 def _windows(
@@ -397,6 +555,13 @@ def _mean(values: np.ndarray) -> float:
     """
     defined = values[np.isfinite(values)]
     return math.nan if defined.size == 0 else float(defined.mean())
+
+
+def _against(
+    metric, arm: metrics.ArmResult, reference: metrics.ArmResult | None
+) -> float:
+    """A trading metric's delta against buy-and-hold, or NaN when there is none."""
+    return math.nan if reference is None else metric(arm, reference)
 
 
 def _fmt(value: float) -> str:

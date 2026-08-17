@@ -133,6 +133,74 @@ different studies. Spec §9's GB-20 row carries the ruling.
 
 ---
 
+## 2026-08-17 — Three references, because persistence is a degenerate baseline for trading
+
+**Decision.** Spec §7.3's reporting rule is amended, ruled by Ben. Forecast metrics (MAE,
+RMSE) are deltas against **persistence**; direction accuracy is against the **always-long
+bar**; return, Sharpe and max drawdown are against **buy-and-hold**, with persistence shown
+beside them as the do-nothing floor. A **buy-and-hold arm** is added and runs through the
+same backtester as every other arm.
+
+**Reasoning.** Persistence stands aside on 16 folds of 16 — it forecasts zero, so no band
+can fire — which makes its return exactly 0.0000 and its Sharpe undefined. The return and
+Sharpe columns were therefore **deltas against cash**. The strategy's +0.45% per fold reads
+as a result against that, and the folds tile 2022-07 to 2026-07, a period in which an
+equal-weight hold of these five symbols returned far more. A reader who knows the period
+would have seen it immediately and correctly discounted the whole table. It is the same
+failure the direction column had two days earlier — a reference that cannot lose — arriving
+through a different column.
+
+Measured, once the arm existed: **buy-and-hold returns +7.37% per fold against DLinear's
++0.45%**, Sharpe **1.48 against 0.69**, positive in 10 folds of 16 against 9. The strategy
+does not beat the market it trades in, and the table now says so.
+
+**Consequence.** Three references in one table, so each column's header names its own:
+`mae_vs_pers`, `dir_vs_long`, `ret_vs_bh`, `sharpe_vs_bh`. GB-57 must state what each
+answers, or three baselines will read as three attempts to find a flattering one.
+
+Two details of the arm, both stated where they are implemented:
+
+- **It is run, not drawn.** One `enter_long` per symbol on the first test bar, filled at the
+  next open like every other order, liquidated at the final close. Entry slippage, both
+  fees and the gap rules apply, so nobody can argue the comparison was arranged in the
+  strategy's favour.
+- **Its stop and target are removed**, expressed as infinite fractions rather than by
+  special-casing the engine. A 3% stop on a passive holding would make the arm "this
+  project's risk rules applied to a passive entry", which is a different thing and would
+  understate the market it represents.
+- **It is fully invested and the strategy is capped at `max_gross_exposure`.** Part of the
+  gap is exposure rather than skill, and GB-57 must say so.
+
+**The assertion that makes it self-checking:** buy-and-hold calls up on every window, so its
+direction accuracy **is** the always-long bar. The two are computed by different functions
+for different purposes and are asserted equal on every fold. They agree; had they not, one
+of them would have been putting a wrong bar under every direction number in the study.
+
+---
+
+## 2026-08-17 — GB-21: Sharpe gains a second qualifying path, because buy-and-hold has no trades
+
+**Decision.** `metrics.sharpe` returns NaN when an arm has fewer than
+`MIN_TRADES_FOR_SHARPE` strategy trades **and** was exposed on less than
+`MIN_EXPOSED_FRACTION` (0.5) of the fold's bars. Either condition alone now qualifies it.
+The five-trade rule is unchanged; a second path is added beside it.
+
+**Reasoning.** Buy-and-hold has **no strategy trades at all** — it enters once and its exit
+is the data running out, which is administrative by GB-18's definition — so under the
+original rule it could never have a Sharpe, and the reference it was just made for would
+have been NaN in every cell. The trade count was always a proxy: GB-19's own comment says
+the concern is "a curve that is mostly flat because the account was mostly in cash". That
+is a statement about **exposure**, and buy-and-hold is the maximally exposed arm there is.
+So the reason is now checked directly. An arm that qualifies on neither path — persistence,
+or a strategy that traded twice — still gets NaN, and the existing tests for that case pass
+unchanged, because their trades open and close on the same bar.
+
+**Consequence.** `exposed_fraction` is public: GB-57 wants it beside the Sharpe anyway, as
+the number that explains why a fold's ratio is what it is. This amends an approved ruling
+and is flagged as such rather than folded in quietly.
+
+---
+
 ## 2026-08-17 — Open question for GB-41: the down-bias hypothesis is mean reversion
 
 **Decision.** Recorded, not tested. GB-41 starts from this hypothesis rather than from

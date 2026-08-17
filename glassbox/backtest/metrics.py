@@ -69,6 +69,18 @@ DAYS_PER_YEAR = 365.25
 # Sharpe so an empty cell explains itself.
 MIN_TRADES_FOR_SHARPE = 5
 
+# The trade count is a proxy, and GB-21 found the case where the proxy fails: **buy-and-hold
+# has no strategy trades at all** - it enters once and its exit is the data running out -
+# yet it is exposed on every bar of the fold, so its daily returns are entirely about what
+# it held. The rule above was written for the opposite situation, a curve that is mostly
+# flat because the account was mostly in cash, and the constant's own reasoning says so.
+#
+# So exposure is the second qualifying path, and it is the direct statement of the reason:
+# an arm holding a position on at least half the fold's bars has an equity curve that
+# describes its holdings, whatever its trade count. An arm satisfying neither has neither
+# argument behind its Sharpe and still gets NaN.
+MIN_EXPOSED_FRACTION = 0.5
+
 
 @dataclass(frozen=True, eq=False)
 class ArmResult:
@@ -196,10 +208,12 @@ def sharpe(arm: ArmResult, baseline: ArmResult | None = None) -> float:
     two differ and why this one is reported. Annualised with the fold's own bar rate, from
     :func:`periods_per_year`.
 
-    Returns NaN when the fold has fewer than :data:`MIN_TRADES_FOR_SHARPE` strategy trades,
-    when there are fewer than two returns to take a standard deviation of, or when that
-    standard deviation is zero - a curve that never moved has no risk-adjusted return, and
-    reporting infinity for it would be worse than reporting nothing.
+    Returns NaN when the arm qualifies on **neither** path - fewer than
+    :data:`MIN_TRADES_FOR_SHARPE` strategy trades *and* less than
+    :data:`MIN_EXPOSED_FRACTION` of the fold's bars exposed - when there are fewer than two
+    returns to take a standard deviation of, or when that standard deviation is zero. A
+    curve that never moved has no risk-adjusted return, and reporting infinity for it would
+    be worse than reporting nothing.
     """
     return _delta(_sharpe(arm), baseline, _sharpe)
 
@@ -328,6 +342,25 @@ def periods_per_year(index: pd.DatetimeIndex) -> float:
     return (len(index) - 1) / (span / DAYS_PER_YEAR)
 
 
+def exposed_fraction(arm: ArmResult) -> float:
+    """Fraction of the fold's bars on which the arm held **any** position.
+
+    Counts **every** trade, administrative exits included: a bar on which the account held
+    a position was exposed to the market regardless of how that position eventually ended.
+    Overlapping trades count a bar once, so five symbols held on the same day is one
+    exposed bar and not five.
+
+    The second qualifying path for :func:`sharpe` - see :data:`MIN_EXPOSED_FRACTION`.
+    """
+    bars = pd.DatetimeIndex(arm.equity.index)
+    if len(bars) == 0 or not arm.trades:
+        return 0.0
+    held = np.zeros(len(bars), dtype=bool)
+    for trade in arm.trades:
+        held |= (bars >= trade.entry_time) & (bars <= trade.exit_time)
+    return float(held.mean())
+
+
 def drawdown_curve(equity: pd.Series) -> np.ndarray:
     """Fractional fall below the running high-water mark, at every bar. Non-negative."""
     values = np.asarray(equity, dtype="float64")
@@ -409,7 +442,10 @@ def _total_return(arm: ArmResult) -> float:
 
 
 def _sharpe(arm: ArmResult) -> float:
-    if len(arm.strategy_trades) < MIN_TRADES_FOR_SHARPE:
+    if (
+        len(arm.strategy_trades) < MIN_TRADES_FOR_SHARPE
+        and exposed_fraction(arm) < MIN_EXPOSED_FRACTION
+    ):
         return math.nan
     returns = daily_returns(arm.equity)
     if len(returns) < 2:
@@ -461,6 +497,7 @@ def _require_finite(values: np.ndarray, name: str) -> np.ndarray:
 __all__ = [
     "DAYS_PER_YEAR",
     "METRICS",
+    "MIN_EXPOSED_FRACTION",
     "MIN_TRADES_FOR_SHARPE",
     "ArmResult",
     "always_long_accuracy",
@@ -468,6 +505,7 @@ __all__ = [
     "daily_returns",
     "direction_accuracy",
     "drawdown_curve",
+    "exposed_fraction",
     "hit_rate",
     "mae",
     "max_drawdown",

@@ -229,6 +229,68 @@ def test_sharpe_is_undefined_for_a_curve_that_never_moved() -> None:
     assert math.isnan(metrics.sharpe(flat))
 
 
+# ── ruling 2, amended by GB-21: exposure is the second qualifying path ───────
+
+
+def held_throughout(net_pnl: float = 8.9) -> Trade:
+    """One position opened on the first bar and closed on the last, administratively.
+
+    The buy-and-hold shape: no strategy trade at all, and exposed on every bar.
+    """
+    index = curve().index
+    return Trade(
+        symbol="TEST",
+        entry_time=index[0],
+        exit_time=index[-1],
+        size=1.0,
+        entry_price=100.0,
+        exit_price=100.0 + net_pnl,
+        gross_pnl=net_pnl,
+        costs=0.0,
+        net_pnl=net_pnl,
+        exit_reason=END_OF_DATA,
+        strategy_exit=False,
+    )
+
+
+def test_an_arm_exposed_throughout_has_a_sharpe_with_no_strategy_trades() -> None:
+    """Buy-and-hold, which the trade-count rule alone would have left permanently NaN.
+
+    It enters once and its exit is the data running out, so it has zero strategy trades -
+    yet it is exposed on every bar, so its daily returns are entirely about what it held.
+    The rule's own reasoning is about a curve flat from sitting in cash, and this is its
+    opposite.
+    """
+    passive = arm(trades=(held_throughout(),))
+
+    assert passive.strategy_trades == ()
+    assert metrics.exposed_fraction(passive) == 1.0
+    assert math.isfinite(metrics.sharpe(passive))
+
+
+def test_an_arm_that_barely_traded_and_barely_held_still_has_none() -> None:
+    """Neither path qualifies it, so the original ruling stands where it was aimed."""
+    glancing = arm(trades=(make_trade(1.0), make_trade(2.0)))
+
+    assert metrics.exposed_fraction(glancing) < metrics.MIN_EXPOSED_FRACTION
+    assert math.isnan(metrics.sharpe(glancing))
+
+
+def test_exposure_counts_a_bar_once_however_many_positions_were_open() -> None:
+    """Five symbols held on one day is one exposed bar, not five."""
+    together = arm(trades=(held_throughout(), held_throughout(), held_throughout()))
+
+    assert metrics.exposed_fraction(together) == 1.0
+
+
+def test_an_arm_that_held_nothing_is_exposed_on_no_bar() -> None:
+    """Persistence: the do-nothing floor, and still NaN under both paths."""
+    idle = arm(trades=())
+
+    assert metrics.exposed_fraction(idle) == 0.0
+    assert math.isnan(metrics.sharpe(idle))
+
+
 # ── ruling 1: direction accuracy, and what persistence's IS ──────────────────
 #
 # Nine windows, counted by hand on the H-day cumulative sign:

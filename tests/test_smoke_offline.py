@@ -15,12 +15,14 @@ import math
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from glassbox import smoke_offline
 from glassbox.backtest import metrics
 from glassbox.config.loader import Config, load_config
+from glassbox.engine import risk
 from glassbox.engine.signal import Thresholds
 
 
@@ -35,7 +37,7 @@ def cache_ready(cfg: Config, repo_root: Path) -> bool:
 
 
 def fake_run(
-    fold: int, name: str, equity: list[float], stood_aside: bool
+    fold: int, name: str, equity: list[float], stood_aside: bool, forecasts: bool = True
 ) -> smoke_offline.ArmRun:
     """An ArmRun without the pipeline behind it, for the reporting tests."""
     index = pd.date_range("2024-01-01", periods=len(equity), freq="B", tz="UTC")
@@ -53,6 +55,7 @@ def fake_run(
             candidates=(),
         ),
         seconds=0.0,
+        forecasts=forecasts,
     )
 
 
@@ -188,7 +191,18 @@ def test_the_direction_reference_sits_immediately_beside_the_accuracy() -> None:
     columns = list(smoke_offline.FOLD_COLUMNS)
 
     assert columns[columns.index("direction") + 1] == "dir_ref"
-    assert columns[columns.index("dir_ref") + 1] == "dir_delta"
+    assert columns[columns.index("dir_ref") + 1] == "dir_vs_long"
+
+
+def test_every_delta_column_names_its_own_reference() -> None:
+    """Three references in one table (§7.3), so no column may leave its own unstated.
+
+    A bare `delta` column would be read against whichever baseline the reader had in mind,
+    and two of the three would be wrong.
+    """
+    deltas = [c for c in smoke_offline.FOLD_COLUMNS if "_vs_" in c]
+
+    assert deltas == ["dir_vs_long", "mae_vs_pers", "ret_vs_bh", "sharpe_vs_bh"]
 
 
 def test_the_table_carries_the_reference_on_every_row() -> None:
@@ -230,7 +244,7 @@ def test_one_command_runs_the_whole_offline_path(cfg: Config, repo_root: Path) -
 
     table, summary = smoke_offline.run(cfg, model="dlinear", n_folds=1)
 
-    assert set(table["arm"]) == {"dlinear", "persistence"}
+    assert set(table["arm"]) == {"dlinear", "persistence", smoke_offline.BUY_AND_HOLD}
     assert list(table.columns) == list(smoke_offline.FOLD_COLUMNS)
     assert table["fold"].nunique() == 1
     assert "dlinear over 1 fold(s)" in summary
@@ -248,7 +262,9 @@ def test_persistence_stands_aside_because_the_pipeline_gave_it_nothing_to_trade(
 
     table, _ = smoke_offline.run(cfg, model="persistence", n_folds=1)
 
-    assert set(table["arm"]) == {"persistence"}  # deduped: the arm IS the baseline
+    # Deduped: the arm IS the baseline. Buy-and-hold still runs, as the trading reference.
+    assert set(table["arm"]) == {"persistence", smoke_offline.BUY_AND_HOLD}
+    table = table[table["arm"] == "persistence"]
     row = table.iloc[0]
     assert row["aside"] == "yes"
     assert row["trades"] == 0
@@ -256,10 +272,112 @@ def test_persistence_stands_aside_because_the_pipeline_gave_it_nothing_to_trade(
     assert not math.isnan(row["dir_ref"])  # the bar is a property of the fold
 
 
-def test_the_sizer_reads_its_fraction_from_the_config(cfg: Config) -> None:
-    """No magic number in the placeholder GB-21 will replace."""
-    signal = None  # unused by the sizer, which is the point
+def test_the_command_sizes_with_the_risk_layer_not_a_stand_in(cfg: Config) -> None:
+    """GB-24 shipped a placeholder; GB-21 replaced it. The caps now bind here too."""
+    del cfg
+    assert smoke_offline.risk.position_sizer is risk.position_sizer
+    assert not hasattr(smoke_offline, "size_position")
 
-    notional = smoke_offline.size_position(signal, 100_000.0, 0.0, cfg)
 
-    assert notional == pytest.approx(100_000.0 * cfg.risk.max_position_pct)
+# ── the buy-and-hold arm ─────────────────────────────────────────────────────
+
+
+def test_buy_and_hold_direction_accuracy_is_the_always_long_bar(
+    cfg: Config, repo_root: Path
+) -> None:
+    """The self-check: the same quantity, computed by two functions written apart.
+
+    Buy-and-hold calls up on every window, so its direction accuracy IS the bar. If they
+    ever disagree, one of `direction_accuracy` and `always_long_accuracy` is wrong and a
+    bad bar sits under every direction number in the study. The run asserts it too; this
+    proves the assertion is reached rather than skipped.
+    """
+    if not cache_ready(cfg, repo_root):
+        pytest.skip("no cached history; this test needs data_cache/")
+
+    table, _ = smoke_offline.run(cfg, model="dlinear", n_folds=1)
+    row = table[table["arm"] == smoke_offline.BUY_AND_HOLD].iloc[0]
+
+    assert row["direction"] == pytest.approx(row["dir_ref"], abs=1e-12)
+    assert row["dir_vs_long"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_the_bar_assertion_fires_when_the_two_disagree() -> None:
+    """Proof the check above can fail, rather than passing because nothing is compared."""
+    index = pd.date_range("2024-01-01", periods=3, freq="B", tz="UTC")
+    mismatched = metrics.ArmResult(
+        name="broken",
+        equity=pd.Series([100.0, 101.0, 102.0], index=index),
+        predicted=np.array([[0.01], [0.01]], dtype="float32"),
+        actual=np.array(
+            [[-0.01], [-0.01]], dtype="float32"
+        ),  # never agrees: 0.0 vs 0.0
+    )
+    # Both are 0.0 here, so nudge one window up: direction 0.5, always-long 0.5 -> equal.
+    # Make the forecast disagree with itself instead, which only direction_accuracy sees.
+    forecast_declines = metrics.ArmResult(
+        name="broken",
+        equity=mismatched.equity,
+        predicted=np.array([[-0.01], [0.01]], dtype="float32"),
+        actual=np.array([[0.01], [0.01]], dtype="float32"),
+    )
+
+    with pytest.raises(smoke_offline.SmokeError, match="same quantity by construction"):
+        smoke_offline._assert_is_the_bar(forecast_declines)
+
+
+def test_buy_and_hold_reports_no_forecast_error(cfg: Config, repo_root: Path) -> None:
+    """It makes a directional call and no magnitude forecast, so its MAE cell is empty.
+
+    The same treatment persistence's direction column gets: a metric an arm does not
+    produce is reported as absent, not as a number it never made.
+    """
+    if not cache_ready(cfg, repo_root):
+        pytest.skip("no cached history; this test needs data_cache/")
+
+    table, _ = smoke_offline.run(cfg, model="dlinear", n_folds=1)
+    row = table[table["arm"] == smoke_offline.BUY_AND_HOLD].iloc[0]
+
+    assert math.isnan(row["mae"])
+    assert math.isnan(row["mae_vs_pers"])
+    assert not math.isnan(row["total_return"])  # it does trade, and that IS reported
+
+
+def test_buy_and_hold_holds_rather_than_being_stopped_out(
+    cfg: Config, repo_root: Path
+) -> None:
+    """A 3% stop on a passive holding would make this arm something else entirely.
+
+    Every exit must be administrative — the data running out — not a stop or a target.
+    """
+    if not cache_ready(cfg, repo_root):
+        pytest.skip("no cached history; this test needs data_cache/")
+
+    table, _ = smoke_offline.run(cfg, model="dlinear", n_folds=1)
+    row = table[table["arm"] == smoke_offline.BUY_AND_HOLD].iloc[0]
+
+    assert row["trades"] == 0  # strategy trades; the liquidations are administrative
+
+
+def test_buy_and_hold_appears_in_the_table_and_the_aggregate(
+    cfg: Config, repo_root: Path
+) -> None:
+    if not cache_ready(cfg, repo_root):
+        pytest.skip("no cached history; this test needs data_cache/")
+
+    table, summary = smoke_offline.run(cfg, model="dlinear", n_folds=1)
+
+    assert smoke_offline.BUY_AND_HOLD in set(table["arm"])
+    assert f"{smoke_offline.BUY_AND_HOLD} over 1 fold(s)" in summary
+
+
+def test_the_equal_weight_sizer_cannot_overdraw(cfg: Config) -> None:
+    """Fully invested, but never past the cash: the fifth entry would otherwise exceed it
+    by the fees the first four paid."""
+    sizer = smoke_offline.equal_weight(5)
+
+    first = sizer(None, 100_000.0, 0.0, cfg)
+    last = sizer(None, 100_000.0, 95_000.0, cfg)
+
+    assert first == pytest.approx(20_000.0)
+    assert last == pytest.approx(5_000.0)  # capped by cash, not by 1/n
