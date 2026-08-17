@@ -40,32 +40,46 @@ difference: always-long scores 3/9 there and the majority class would have repor
 **Decision.** Recorded as a finding, not acted on. No sign-flip hunt, no inversion of the
 forecast, no change to the target alignment or the trend decomposition.
 
-**Reasoning.** DLinear scores 0.4751 against an always-long bar of 0.5625, which invites the
-reading that a consistently wrong classifier carries information. Three measurements over
-all 16 folds say otherwise.
+**Reasoning.** DLinear scoring below the always-long bar invites the reading that a
+consistently wrong classifier carries information. Measured over all 16 folds, under **both**
+batch settings — the diagnostic was first run on the full-batch model and re-run on the
+mini-batch model the re-check restored, because a finding about a configuration nobody uses
+is not a finding:
 
-1. **It calls up on 45.7% of windows** (per fold 14.4%–59.0%) against a 56.25% realised up
-   rate, and calls up **less than half the time in 9 of 16 folds**. An information-free
-   model calling up at that same rate scores `q·p + (1−q)·(1−p)` = **0.4893** on average.
-   Most of the 8.7-point shortfall is therefore a **down-bias**, not error: the model
-   forecasts negative too often, and a coin weighted the same way would score much the same.
-2. **Inverting the forecast scores 0.5245**, which beats the always-long bar in 6 folds of
-   16 and misses it by 3.8 points on average. If a sign were flipped somewhere in the target
-   alignment or the trend subtraction, inverting would beat the bar consistently. It does
-   not.
-3. **The residual is −1.42 points below the information-free level**, negative in 10 folds
-   of 16, sd 3.77 points, paired t ≈ **−1.5**. That is not significant, and the folds share
-   training data so they are not even independent draws. The shortfall against the bar is
-   also uniform rather than concentrated: per symbol it runs 0.4505 (AAPL) to 0.4931
-   (GOOGL), a 4.3-point spread with every symbol below 0.5, and the per-fold shortfall has
-   sd 10.5 points around a −8.7-point mean.
+| | **batch 64 (configured)** | full batch (measured, then reverted) |
+|---|---|---|
+| calls up | **0.5385** (0.330–0.800) | 0.4569 (0.144–0.590) |
+| market went up | 0.5625 | 0.5625 |
+| information-free at that call rate | **0.5016** | 0.4893 |
+| direction accuracy | **0.5071** | 0.4751 |
+| residual vs information-free | **+0.54 pts**, above it in 10/16 | −1.42 pts, below it in 10/16 |
+| inverted forecast | **0.4925** — worse than as-is | 0.5245 — better than as-is, still under the bar |
+| beats always-long | 5/16 | 4/16 |
+
+1. **The shortfall is a down-bias, not error.** The model calls up less often than the
+   market rose under both settings, and an information-free model calling up at the same
+   rate — `q·p + (1−q)·(1−p)` — scores within half a point of what the model actually
+   scores. Under the configured setting the model scores **above** its own information-free
+   counterfactual, so there is nothing anti-informative left to explain.
+2. **No sign is flipped.** Inverting the configured model makes it **worse** (0.4925 against
+   0.5071) and reaches the bar in fewer folds. A sign error in the target alignment or the
+   trend subtraction would show up as inversion beating the bar consistently. It does not,
+   under either setting.
+3. **It is uniform, not concentrated.** Per symbol the configured model runs 0.4952 (AAPL)
+   to 0.5261 (AMZN), a 3.1-point spread straddling 0.50; the per-fold shortfall against the
+   bar is −5.6 points with sd 8.8. Nothing points at one symbol or one period.
 
 **Consequence.** The claim "0.4751 is below the worst achievable by pure noise" does not
-survive measurement: the noise floor is not 0.4875 but 0.4893 at the model's own call rate,
-and 0.4375 at the extreme. GB-57 must report the call rate beside the direction accuracy —
-without it, a reader cannot tell a biased model from an anti-informative one. The open
-question this leaves is *why* a zero-initialised model with no intercept forecasts down more
-often than up on data that rose; that belongs to GB-41's diagnostics, not here.
+survive measurement even for the model it was made about: the noise floor is not 0.4875 but
+0.4893 at that model's own call rate, and 0.4375 at the extreme of `q`. For the configured
+model the question does not arise — it sits marginally above its own floor. GB-57 must
+report the **call rate beside the direction accuracy**, because without it a reader cannot
+tell a biased model from an anti-informative one, and must quote the configured model's
+figures with any full-batch number labelled as the reverted variant.
+
+What is left is a model that is **information-free on direction and cannot represent
+drift** — it scores its own no-information level while always-long scores 5.6 points more.
+That is the open question for GB-41, and the entry above gives it a hypothesis.
 
 ---
 
@@ -119,16 +133,55 @@ different studies. Spec §9's GB-20 row carries the ruling.
 
 ---
 
-## 2026-08-17 — GB-20 finding: §7.3's `Sharpe > 2.0` alarm fired, and what the audit found
+## 2026-08-17 — Open question for GB-41: the down-bias hypothesis is mean reversion
 
-**Decision.** Recorded, not silenced. §7.3 is left exactly as written — the rule is not
-softened by the code it just caught. What is added is the reading it needs: the alarm is
-about the **headline** figure, and per-fold values need the audit below before they mean
-anything.
+**Decision.** Recorded, not tested. GB-41 starts from this hypothesis rather than from
+scratch. Nothing in the model or the features changes now.
+
+**Reasoning.** The GB-20 diagnostic established that DLinear's direction shortfall is a
+**down-bias** — it calls up on 45.7% of windows against a 56.25% up rate — and left open
+*why* a zero-initialised, no-intercept model forecasts down more often than up on data that
+rose. Ben's hypothesis, which fits every measurement taken so far: **short-horizon mean
+reversion**. If the model learns "recently up → predict down", and the market mostly rose,
+it will call down more often than up. Weak mean reversion in daily equity returns is a real
+and documented effect, and **the absence of an intercept is what makes it decisive**: the
+model cannot capture the drift and then detect reversion *around* it, so it captures only
+the reversion. The drift is the part it is structurally unable to represent, and the drift
+is exactly what the always-long bar consists of.
+
+**The test, cheap and available now.** Correlate the sign of the model's forecast against
+the sign of the trailing `H`-day return in the input window, per fold and pooled. A strong
+negative correlation confirms it. Deliberately **not run** as part of GB-20 — it belongs
+with GB-41's diagnostics, where an intercept variant or a de-drifted target can be measured
+against it rather than merely discussed.
+
+**Consequence.** If confirmed, the finding is a structural one worth the report: the
+no-intercept constraint that makes attribution exact (`Σ per_channel == forecast`, §4.2)
+also removes the model's ability to represent drift. That is a genuine explainability /
+accuracy trade-off, measured rather than asserted, and it belongs in GB-57 beside the
+initialisation finding.
+
+---
+
+## 2026-08-17 — §7.3's `Sharpe > 2.0` alarm applies to the aggregate; the worked example
+
+**Decision.** §7.3 gains a paragraph, ruled by Ben: **the alarm is about the aggregate
+figure across folds, not any single fold.** A per-fold Sharpe on ~60 bars has a standard
+error near 2.0 annualised, so single-fold excursions past 2.0 are expected under a true
+Sharpe of zero. Evidence of leakage is an *aggregate* above 2.0, or a per-fold distribution
+**asymmetric** on the upside without matching negative excursions. Both the aggregate and
+the per-fold spread must be recorded whenever the rule is invoked. This entry is the worked
+example the rule refers to: the alarm fired, was audited, and correctly did not stick.
 
 **Reasoning.** The batch-size re-check produced per-fold test Sharpes above 2.0 in **8 of
 32 fold-runs** — up to 4.56 — and §7.3 requires a stop and an audit of `builder.py` and the
 fold boundaries. The audit:
+
+- **The arithmetic that settles it.** The standard error of a Sharpe estimated on n ≈ 60
+  daily observations is ≈ **0.129**, which annualises to **2.05**. A true Sharpe of zero
+  therefore throws ±2 routinely. The largest observed value, 4.56, is **2.23 σ**, and the
+  expected maximum |z| over 32 fold-runs is around **2.5**. The extreme is smaller than what
+  32 draws from an empty surface produce.
 
 - The causality harness passes on the keystone and the indicators, in both perturbation
   modes; the fold embargo of exactly `H` window-ends is tested against the failing case;
