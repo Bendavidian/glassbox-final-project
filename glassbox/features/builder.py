@@ -81,14 +81,17 @@ TARGET_CHANNEL = "close_logret"
 # **If this is ever changed, change the TARGET and re-derive.** A number tuned until a
 # sweep passes is how 352 got here; 1e-10 is a stated margin that can be argued with.
 #
-# Note this is a stricter quantity than indicators.RSI_WARMUP (77), which is only the
-# point where the seed stops *visibly* distorting the value.
+# `indicators.RSI_WARMUP` **is** this number, imported rather than repeated. GB-8 held a
+# second constant at 77, from a 1e-2 target with the same known-bad derivation, to answer
+# "when does the value stop remembering its seed?" — which is the same question as "when is
+# it byte-identical to what training computed?". GB-27 unified them: one derivation to
+# argue with rather than two constants to keep in step.
 #
 # GB-47 must add wav_a1..wav_a3 at 64 (the wavelet rolling window). min_history_bars then
 # updates itself with no edit anywhere else.
 PARITY_WARMUP = {
     "close_logret": 1,
-    "rsi14": 325,
+    "rsi14": indicators.RSI_WARMUP,
     "vol_z": indicators.VOL_Z_WINDOW,
     "mom10": indicators.MOMENTUM_LOOKBACK,
     "ma_dist20": indicators.MA_DIST_WINDOW,

@@ -31,7 +31,9 @@ from glassbox.features.indicators import (
     vol_z,
 )
 
-BARS = 120
+# 500, not 120: RSI holds its first 325 rows since GB-27 unified the emit warm-up
+# with the parity warm-up, so a 120-bar frame emits nothing at all.
+BARS = 500
 
 
 def frame_from(closes: list[float], volumes: list[float] | None = None) -> pd.DataFrame:
@@ -85,13 +87,19 @@ def reference_wilder_rsi(
 # ── rsi14 ────────────────────────────────────────────────────────────────────
 
 # Pinned from the reference implementation above, on WAVY_CLOSES.
+#
+# Re-pinned in GB-27: the warm-up moved from 77 rows to 325, so the old positions
+# (77-119) now sit inside it and the production series is NaN there. The values are
+# re-derived from the same independent reference at positions past the new warm-up, which
+# is what made them evidence in the first place — they were never captured from the code
+# under test.
 EXPECTED_RSI = {
-    77: 52.90531923395487,
-    80: 38.24876443117434,
-    90: 39.601122596721154,
-    100: 77.75692658926066,
-    110: 44.31675911166923,
-    119: 28.631336213261704,
+    325: 72.12909448785442,
+    350: 75.97871106673796,
+    400: 26.85876576397291,
+    450: 74.99567501802264,
+    480: 78.69148711239507,
+    499: 43.019830838368286,
 }
 
 
@@ -134,8 +142,15 @@ def test_rsi_stays_within_bounds() -> None:
 
 
 def test_rsi_warmup_is_exactly_the_seed_decay_length() -> None:
-    """77 rows: 14 to seed, then 63 more for the seed's weight to fall under 1%."""
-    assert RSI_WARMUP == 77
+    """325 rows: 14 to seed, then 311 more for the seed's influence to fall under 1e-10.
+
+    **It read 77 until GB-27**, from a 1e-2 target that bounded the seed's *weight* rather
+    than `weight x seed_difference` — the same error that made the 352-bar parity floor
+    marginal. It is now the same number as `builder.PARITY_WARMUP["rsi14"]`, which imports
+    it: "the value no longer remembers its seed" and "the value is byte-identical to what
+    training computed" are one question, and two constants answering it is how they drift.
+    """
+    assert RSI_WARMUP == 325
 
     result = rsi14(frame_from(WAVY_CLOSES))
     assert result.iloc[:RSI_WARMUP].isna().all()

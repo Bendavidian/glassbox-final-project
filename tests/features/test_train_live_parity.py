@@ -26,6 +26,13 @@ recomputed from the tail rather than inherited from ten years of history.
 Three things a naive parity test would miss, each with its own section: the parity floor
 from GB-9 (corrected in GB-27), the single-source rule from GB-8, and the per-window
 ``symbols`` tuple the universe-wide training change introduced.
+
+**A second correction followed the first.** GB-8 held a separate emit warm-up of 77 rows,
+from a 1e-2 target with the same known-bad derivation, answering the same question in a
+different unit. Unifying them at 325 rows means a tail below the declared floor no longer
+assembles a window at all — the builder refuses. The silent-difference failure this file
+was written to catch is now unreachable through the public path, which is why the
+below-floor tests assert a **refusal** rather than a divergence.
 """
 
 from __future__ import annotations
@@ -185,39 +192,34 @@ def test_the_floor_is_the_derived_number(cfg: Config) -> None:
     assert min_history_bars(cfg) == cfg.window.input_len + 14 + decay == 445
 
 
-def test_the_previous_floor_would_not_have_passed_this_sweep(
-    universe, trained_windows, sweep_stamps, cfg: Config
+@pytest.mark.parametrize("tail", [352, FLOOR_AT_1E9])
+def test_below_the_declared_floor_the_builder_refuses_rather_than_differing(
+    universe, sweep_stamps, cfg: Config, tail: int
 ) -> None:
-    """352, derived at a 1e-7 target, holds in a minority of pairs.
+    """The stronger property GB-27's second half bought, and it replaced a weaker one.
 
-    Kept as a test rather than a note because it is the evidence that the correction was
-    necessary — and because if a future change ever makes 352 sufficient, this fails and
-    someone re-reads the derivation.
+    Until the emit warm-up was unified with the parity warm-up, a 352- or 414-bar tail
+    **assembled a window and returned slightly wrong numbers** — silently, in 93 and 5 of
+    125 cells respectively. Now the warm-up trim takes 325 rows, so a 352-bar tail leaves
+    27 rows against an input length of 120 and the builder **refuses**.
+
+    That is a real trade: the 414-vs-445 divergence can no longer be observed through the
+    public path, so the measurement that justified the 1e-10 margin (120 of 125 at 414)
+    stands as a recorded result in DECISIONS rather than as a live assertion. In exchange,
+    the failure mode it measured is now impossible to reach silently — which is the better
+    end of the trade, because a refusal cannot be mistaken for a valid window.
     """
-    identical, total, _ = sweep(universe, trained_windows, sweep_stamps, cfg, 352)
+    assert tail < min_history_bars(cfg)
 
-    assert identical < total
-    assert identical < total // 2  # a minority, not a near miss
+    for symbol in sorted(universe):
+        with pytest.raises(ValueError, match="fewer than|bars behind it"):
+            live_window(universe[symbol], cfg, sweep_stamps[-1], tail, symbol)
 
 
-def test_the_1e9_floor_is_not_universally_byte_identical(
-    universe, trained_windows, sweep_stamps, cfg: Config
-) -> None:
-    """414 bars — the same derivation at a 1e-9 target — still fails somewhere.
-
-    This is what makes the 1e-10 margin justified rather than superstitious: the next
-    weaker target measurably does not hold, so the declared floor is not padding.
-    """
-    identical, total, failures = sweep(
-        universe, trained_windows, sweep_stamps, cfg, FLOOR_AT_1E9
-    )
-
-    assert identical < total, (
-        f"414 bars was universally byte-identical ({identical}/{total}); the 1e-10 "
-        "margin is more generous than needed and the derivation should be revisited"
-    )
-    assert identical > total * 0.9  # close, which is why it is a trap rather than a bug
-    assert failures
+def test_the_refusal_names_the_shortfall(universe, sweep_stamps, cfg: Config) -> None:
+    """A loop that asks for too little history must be told what it asked for."""
+    with pytest.raises(ValueError, match="120"):
+        live_window(universe[SYMBOL], cfg, sweep_stamps[-1], 352, SYMBOL)
 
 
 def test_both_paths_produce_float32(

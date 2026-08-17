@@ -392,22 +392,30 @@ class DLinearForecaster:
         Zero has none of that problem and costs nothing: the objective is convex, so the
         initialisation cannot change the optimum, only the path to it. Starting from zero
         means every weight the model moves is something it learned, and early stopping
-        degrades toward the baseline rather than toward noise. Measured out of sample on
-        walk-forward fold 1:
+        degrades toward the baseline rather than toward noise.
 
-        =========================  =========  ===========  ====================
-        initialisation             MAE        direction    largest contribution
-        =========================  =========  ===========  ====================
-        paper, ``1/sqrt(L)``       4.00x      0.344        1.39
-        fan-in, ``1/sqrt(2CL)``    1.96x      0.328        0.43
-        **zeros**                  **1.94x**  **0.557**    **0.058**
-        =========================  =========  ===========  ====================
+        **Swept in GB-27 over 3 arms x 16 folds x 5 symbols = 80 cells**, under the
+        configured model. The table this replaced was one fold of one symbol under a batch
+        setting later reverted, and it did not say the same thing:
 
-        The last column is why this matters beyond accuracy: with the paper's
-        initialisation the attribution is still exact but unreadable, a forecast of 0.01
-        explained by contributions of +1.39 and -1.20 that cancel. Zero-initialised weights
-        leave contributions on the same scale as the forecast, which is what GB-30 has to
-        render and a supervisor has to believe.
+        =========================  =============  =============  =================
+        initialisation             MAE ratio      direction      largest contrib.
+        =========================  =============  =============  =================
+        paper, ``1/sqrt(L)``       2.690 (0/80)   0.475 (22/80)  1.111 (0/80)
+        fan-in, ``1/sqrt(2CL)``    2.195 (46/80)  0.470 (17/80)  0.450 (0/80)
+        **zeros**                  2.190 (34/80)  **0.518**      **0.065 (80/80)**
+        =========================  =============  =============  =================
+
+        Cell wins in brackets. **Zeros is chosen on direction and on legibility, not on
+        MAE** - there it ties with the fan-in correction, 2.190 against 2.195, and fan-in
+        wins more cells. The single fold made that tie look like an order.
+
+        The last column is why this matters beyond accuracy, and it is the one axis that is
+        unanimous: with the paper's initialisation the attribution is still exact but
+        unreadable, a forecast of 0.01 explained by contributions of +1.39 and -1.20 that
+        cancel. Zero-initialised weights leave contributions on the same scale as the
+        forecast - seventeen times smaller here - which is what GB-30 has to render and a
+        supervisor has to believe.
 
         ``generator`` is unused here but kept in the signature: it seeds batch order in
         ``fit``, and a future initialisation that needs randomness should draw from it

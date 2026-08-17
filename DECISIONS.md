@@ -133,6 +133,129 @@ different studies. Spec §9's GB-20 row carries the ruling.
 
 ---
 
+## 2026-08-18 — GB-13's initialisation study, re-swept: the ranking survives, the reason changes
+
+**Decision.** Zero initialisation stands. The **single-fold table in `ltsf._initial_weights`
+and in GB-57 is replaced by the swept one**, because the swept result does not say what the
+single fold said.
+
+**Reasoning.** The original table was **walk-forward fold 1, one symbol**, under the
+full-batch variant later reverted — the same shape as the parity floor, a comparison that
+looked decisive at one point. Re-run through `tests/sweep.py` at **3 arms x 16 folds x 5
+symbols = 80 cells**, under the configured model (`batch_size: 64`):
+
+| axis | paper `1/sqrt(L)` | fan-in `1/sqrt(2CL)` | **zeros** |
+|---|---|---|---|
+| MAE vs persistence (lower better) | 2.6902 — **0/80** wins | **2.1947 — 46/80** | 2.1902 — 34/80 |
+| direction accuracy (higher better) | 0.4750 — 22/80 | 0.4703 — 17/80 | **0.5182 — 41/80** |
+| largest contribution (lower better) | 1.1110 — 0/80 | 0.4501 — 0/80 | **0.0653 — 80/80** |
+
+**What survives.** That the paper's `1/sqrt(L)` is wrong for this architecture: it wins
+**zero cells on MAE and zero on legibility**, and zeros beats it in 75 of 80 cells on MAE.
+The fan-in argument — that summing `C x 2` maps makes the true fan-in 1200, not 120 — is
+confirmed by the fan-in arm closing almost the whole MAE gap.
+
+**What does not survive is the MAE half of the ranking.** Zeros and fan-in are a tie:
+means 2.1902 against 2.1947, a difference of 0.2%, and **fan-in wins more cells, 46 to 34**.
+The original table's 1.94x against 1.96x was always that tie; one fold made it look like an
+order. Anyone quoting "zeros has the best MAE" is quoting a coin flip.
+
+**What is stronger than the original claimed.** Legibility is **unanimous, 80 of 80**, and
+it is the axis this project exists for: the largest single-channel contribution is 0.065
+against 1.111, seventeen times smaller. The single-fold legibility numbers (1.39 / 0.43 /
+0.058) reproduce almost exactly as swept medians (1.02 / 0.41 / 0.063) — that measurement
+was sound; the accuracy ones were not.
+
+**The levels do not reproduce at all.** Swept MAE is 2.69 / 2.19 / 2.19 against the fold's
+4.00 / 1.96 / 1.94, and swept direction 0.475 / 0.470 / 0.518 against 0.344 / 0.328 / 0.557.
+
+**Consequence.** GB-57 reports the swept table, and states the decision as it actually
+stands: **zeros is chosen on direction and on legibility, not on MAE**, where it ties with a
+correctly-scaled random initialisation. That is a more interesting finding than the original
+— a published default is wrong for a summed architecture, correcting its fan-in recovers the
+accuracy, and only initialising at zero also buys an attribution a human can read.
+
+---
+
+## 2026-08-18 — `tests/sweep.py`: the harness that was missing, and what it refuses
+
+**Decision.** A sweep harness beside `causality.py`, with two properties that are refusals
+rather than conventions:
+
+1. **A `SweepResult` cannot be used as a boolean.** `bool(result)` raises `TypeError` and
+   names the attributes to read instead. A caller who wants a verdict must say which
+   fraction satisfies them.
+2. **A sweep of one cell is refused**, with an error that explains why by citing the floor.
+
+`sweep()` covers *"X holds"*; `contest()` covers *"A beats B"*, reporting per-cell wins as
+well as means.
+
+**Reasoning.** The audit after the parity-floor correction found the mechanism rather than
+a list of suspects: **every claim in this project that survived scrutiny came from a task
+that happened to have a harness to sweep with, and every claim that did not came from a
+task that measured by hand on whatever was in front of it.** That is a statement about
+tooling, not about care, so the fix is a tool. `32 of 125` is the number that would have
+caught the floor; `it passes` is the number that did not — hence the boolean refusal, which
+makes the failure mode unavailable rather than merely discouraged.
+
+`contest` counts **wins by cell** as well as means because an arm that wins narrowly nine
+times and loses catastrophically once is a different animal from one that wins on average,
+and a mean cannot tell them apart.
+
+**Consequence.** Held to the same standard as `causality.py`: the decisive test replays the
+352-bar measurement on real data, and synthetic partial sweeps prove the harness reports
+fractions strictly between none and all. Every future claim of either shape is one call.
+
+---
+
+## 2026-08-18 — GB-27: `RSI_WARMUP` is deleted and unified with the parity warm-up
+
+**Decision.** `indicators.RSI_SEED_TOLERANCE` moves from **1e-2 to 1e-10**, so `RSI_WARMUP`
+becomes **325**, and `builder.PARITY_WARMUP["rsi14"]` **imports it** rather than repeating a
+number.
+
+**Reasoning.** The 77-row warm-up had the same defect just corrected in the parity floor —
+it bounded the seed's **weight** below 1e-2 rather than `weight × seed_difference` — and it
+answered the same question in a different unit. "The value no longer remembers its seed"
+and "the value is byte-identical to what training computed" are one question. Two constants
+answering it is how they drift; repairing both derivations separately would have kept two
+things to keep in step.
+
+**Cost, measured rather than assumed — and it is not quite zero.**
+
+| | before | after |
+|---|---|---|
+| feature rows per symbol | 2591 | **2343** (−248, exactly 325 − 77) |
+| first feature row | 2016-04-25 | 2017-04-19 |
+| folds | 16 | 16 |
+| fold 1 training starts | 2020-04-13 | **2020-04-06** |
+| windows per symbol | 2468 | 2220 |
+
+Ben's check was that no kept fold reads a discarded bar, and that holds: everything dropped
+is 2016–2017 and the earliest kept fold begins training in April 2020. But `make_folds`
+anchors its calendar grid on `index[input_len - 1]` of the **feature frame**, so a frame
+that starts later moves the anchor and the whole month grid shifts by about a week. Fold
+counts are unchanged and no fold's *train* size moved materially, but individual val/test
+window counts move by one or two (fold 3's test went 57 → 58).
+
+**So every previously measured number shifts slightly**, because the folds are not the same
+folds. The headline figures were re-measured after the change rather than carried over; see
+the GB-27 PROGRESS row.
+
+**A consequence worth more than the tidiness.** With the trim at 325 rows, a tail shorter
+than `min_history_bars` no longer assembles a window at all — `build_feature_frame` leaves
+fewer rows than `input_len` and the builder **refuses**. The silent below-floor divergence
+that GB-27 was written to catch is now **unreachable through the public path**: a caller
+asking for too little history gets an error, not a subtly wrong window.
+
+That costs one thing, stated plainly: the 414-versus-445 measurement (120 of 125) can no
+longer be reproduced through the public path, because 414 now refuses. It stands as a
+recorded measurement justifying the 1e-10 target rather than as a live assertion, and the
+below-floor tests assert the refusal instead. A loud failure that cannot be observed
+degrading is a better trade than a silent one that can.
+
+---
+
 ## 2026-08-18 — GB-27: the parity floor was marginal by construction; 352 becomes 445
 
 **Decision.** `PARITY_WARMUP["rsi14"]` becomes **325**, so `min_history_bars` returns

@@ -30,9 +30,27 @@ time, and must keep doing so.
 of the first ``RSI_PERIOD`` changes and then updated as ``(prev * 13 + new) / 14``. That
 seed never fully decays; its weight only falls geometrically, by ``(1 - 1/period)`` per
 bar. So the first published value is not on the same footing as the thousandth. Rows are
-therefore held NaN until the seed's weight drops below ``RSI_SEED_TOLERANCE``, which at
-1% works out to 77 rows. That costs 77 of 2668 bars, under 3% of the history, and buys
-the guarantee that no emitted RSI is still remembering its own warm-up.
+held NaN until the seed's influence falls below ``RSI_SEED_TOLERANCE``.
+
+**That tolerance was 1e-2, giving 77 rows, and GB-27 deleted it.** Two things were wrong
+with it. It bounded the seed's **weight** rather than ``weight x seed_difference``, which
+is the quantity that has to fall below resolution - the same error that made the parity
+floor of 352 bars marginal. And it answered a question the parity warm-up in
+``builder.PARITY_WARMUP`` was already answering, with a different number: "meaningful"
+means "independent of the seed", and so does "byte-identical to what training computed".
+**Two names for one quantity, and one of them had a known-bad derivation.** They are now a
+single number - 1e-10, 325 rows - so there is one derivation to argue with instead of two
+to keep in step.
+
+The cost is small and it is **not** zero, measured rather than asserted. Trimming 325 rows
+instead of 77 takes the feature frame from 2591 rows to 2343 and moves its start from
+2016-04-25 to 2017-04-19; everything discarded is 2016-2017, and the earliest kept fold
+begins training in April 2020, so no kept fold reads a discarded bar. But ``make_folds``
+anchors its calendar grid on the feature frame's start, so the grid itself shifted by about
+a week - fold 1's training now begins 2020-04-06 rather than 2020-04-13 - and individual
+validation and test window counts move by one or two. **Every number measured before this
+change therefore shifts slightly**, because the folds are not the same folds; the headline
+figures were re-measured rather than carried over.
 
 Implemented in GB-8.
 """
@@ -58,9 +76,21 @@ VOL_Z_WINDOW = 20
 MOMENTUM_LOOKBACK = 10
 MA_DIST_WINDOW = 20
 
-# The seed's weight after k further bars is (1 - 1/period) ** k. Hold rows NaN until that
-# falls below this tolerance: 1% gives 63 bars past the seed, so 77 rows in total.
-RSI_SEED_TOLERANCE = 0.01
+# The seed's weight after k further bars is (1 - 1/period) ** k. Rows are held NaN until
+# the seed's INFLUENCE - weight times the seed difference, not weight alone - falls below
+# this tolerance.
+#
+# 1e-10, not the 1e-2 this held until GB-27. The old target bounded the weight only, which
+# is sufficient only if the seed difference is at most 1; it is a difference of average
+# gains, in price units. Near RSI 50 a float32 ulp is 5.95e-06 and the residual GB-27
+# measured was 3.815e-06, the same order of magnitude. 1e-10 leaves three orders of
+# magnitude of margin over the value's own ulp.
+#
+# This is deliberately the SAME number as `builder.PARITY_WARMUP["rsi14"]`, which imports
+# it: "the value no longer remembers its seed" and "the value is byte-identical to what
+# training computed" are one question, and answering it twice with two constants is how
+# they drift apart.
+RSI_SEED_TOLERANCE = 1e-10
 RSI_WARMUP = RSI_PERIOD + math.ceil(
     math.log(RSI_SEED_TOLERANCE) / math.log(1 - 1 / RSI_PERIOD)
 )

@@ -19,7 +19,8 @@ from glassbox.config.loader import Config, load_config
 from glassbox.contracts.schemas import ChannelStats, WindowBatch
 from glassbox.features import builder
 
-BARS = 500
+# 750, not 500: 325 rows go to RSI's warm-up (GB-27), leaving 425 for windows.
+BARS = 750
 INPUT_LEN = 30
 HORIZON = 4
 
@@ -246,7 +247,10 @@ def test_no_window_reaches_past_its_own_timestamp(cfg: Config) -> None:
     frame = builder.build_feature_frame(bars, cfg)
     batch = builder.build_windows(frame, cfg, "AAPL")
 
-    cut = 300
+    # 500, not 300: the first window now ends at bar 354 (325 rows of RSI warm-up plus
+    # the 30-bar window), so a cut at 300 leaves nothing to compare and the assertion
+    # passes vacuously.
+    cut = 500
     perturbed_bars = bars.copy()
     tail = perturbed_bars.index[cut + 1 :]
     perturbed_bars.loc[tail, ["open", "high", "low", "close"]] *= 1.5

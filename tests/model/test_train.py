@@ -33,7 +33,9 @@ HORIZON = 4
 EPOCHS = 12
 PATIENCE = 3
 
-BARS = 420
+# 700, not 420: 325 rows go to RSI's warm-up since GB-27, and the fold needs a
+# train, a validation and a held-out split behind that.
+BARS = 700
 TRAIN_ROWS = 220
 VAL_ROWS = 60
 

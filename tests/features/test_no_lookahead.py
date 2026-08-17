@@ -24,7 +24,11 @@ from glassbox.config.loader import Config, load_config
 from glassbox.contracts.schemas import ChannelStats
 from glassbox.features import builder, indicators
 
-BARS = 500
+# 1600, not 500: RSI's warm-up takes 325 rows since GB-27, and the harness splits the BAR
+# frame at 25/50/75%. The earliest split must have WINDOW output behind it, and the first
+# window ends at bar 354 (325 of warm-up plus the 30-bar window), so 0.25 x BARS must clear
+# 354. 1600 gives 400.
+BARS = 1600
 INPUT_LEN = 30
 HORIZON = 4
 
