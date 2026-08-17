@@ -104,6 +104,7 @@ def test_default_config_values_match_the_spec() -> None:
     )
     assert set(cfg.channels.names) == {"C0_base", "C2_hybrid"}
     assert cfg.model.active == "dlinear"
+    assert cfg.model.batch_size is None  # full batch, ruled 2026-08-17
     assert cfg.signal.min_trend is None
     assert cfg.signal.max_trend is None
     assert cfg.live.mode == "co_pilot"
@@ -156,6 +157,38 @@ INVALID_CASES: tuple[tuple[str, Callable[[dict[str, Any]], None], str], ...] = (
         "rolling_window_too_small",
         lambda raw: raw["wavelet"].__setitem__("rolling_window", 4),
         "wavelet.rolling_window",
+    ),
+    # `null` means full batch, so the guard has to tell "deliberately absent" apart from
+    # every other falsy thing a typo could produce.
+    (
+        "batch_size_zero",
+        lambda raw: raw["model"].__setitem__("batch_size", 0),
+        "model.batch_size",
+    ),
+    (
+        "batch_size_negative",
+        lambda raw: raw["model"].__setitem__("batch_size", -1),
+        "model.batch_size",
+    ),
+    (
+        "batch_size_float",
+        lambda raw: raw["model"].__setitem__("batch_size", 64.0),
+        "model.batch_size",
+    ),
+    (
+        "batch_size_bool",
+        lambda raw: raw["model"].__setitem__("batch_size", True),
+        "model.batch_size",
+    ),
+    (
+        "batch_size_string",
+        lambda raw: raw["model"].__setitem__("batch_size", "all"),
+        "model.batch_size",
+    ),
+    (
+        "batch_size_missing",
+        lambda raw: raw["model"].pop("batch_size"),
+        "model.batch_size",
     ),
     (
         "cutoff_below_two",

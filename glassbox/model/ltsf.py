@@ -184,9 +184,11 @@ class DLinearForecaster:
         early after ``patience`` epochs without improvement and the best weights are
         restored; without it, training runs the full ``epochs``.
 
-        Randomness — initialisation and batch order — is drawn from a local generator
-        seeded with ``cfg.meta.seed``, never from torch's global state. Two runs of the
-        same config therefore produce identical weights, which is what GB-15 asserts.
+        ``cfg.model.batch_size`` of ``None`` means one batch of everything. Randomness -
+        batch order, and initialisation if it ever needs any - is drawn from a local
+        generator seeded with ``cfg.meta.seed``, never from torch's global state. Two runs
+        of the same config therefore produce identical weights, which is what GB-15
+        asserts; under full batch they are identical across *different* seeds too.
 
         Normalisation statistics are not stored here: ``features.builder`` applies them
         before the batch is assembled, and duplicating them in the model would create two
@@ -215,10 +217,25 @@ class DLinearForecaster:
         curve: list[EpochLoss] = []
         self.best_epoch, self.stopped_early = None, False
 
+        windows = targets.shape[0]
+        size = windows if plan.batch_size is None else plan.batch_size
+        # A permutation of a *single* batch changes nothing but the order floats are summed
+        # in, and that is not nothing: measured across three seeds it moved full-batch
+        # weights by a relative 5e-15, which is enough to make "same seed, same weights"
+        # the only determinism available. Skipping it when there is one batch makes
+        # full-batch training bit-identical across seeds as well, which is what `null`
+        # should mean. With mini-batches the permutation decides the partition and is the
+        # whole point, so it runs.
+        one_batch = size >= windows
+
         for epoch in range(1, plan.epochs + 1):
-            order = torch.randperm(targets.shape[0], generator=generator)
-            for start in range(0, len(order), plan.batch_size):
-                rows = order[start : start + plan.batch_size]
+            order = (
+                torch.arange(windows)
+                if one_batch
+                else torch.randperm(windows, generator=generator)
+            )
+            for start in range(0, windows, size):
+                rows = order[start : start + size]
                 optimiser.zero_grad()
                 loss = torch.nn.functional.mse_loss(
                     self._forward(torch, weights, [side[rows] for side in inputs]),

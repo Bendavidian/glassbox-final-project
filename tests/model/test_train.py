@@ -374,21 +374,24 @@ def test_two_runs_with_the_same_seed_produce_identical_weights(
     assert first.epochs_run == second.epochs_run
 
 
-def test_a_different_seed_produces_different_weights(
+def test_the_seed_is_honoured_where_it_still_has_work_to_do(
     frame: pd.DataFrame, cfg: Config, splits: tuple[pd.DatetimeIndex, ...]
 ) -> None:
-    """Proof the previous test is asserting something.
+    """Proof the previous test is asserting something rather than passing vacuously.
 
-    With zero initialisation the seed controls only mini-batch order, so the difference is
-    small — but it must exist, or the equality above would hold for a trainer that ignored
-    the seed entirely.
+    Under the configured ``batch_size: null`` the seed decides nothing — zero
+    initialisation and one batch leave no randomness in the run — so the equality above
+    would also hold for a trainer that ignored the seed entirely. Forcing mini-batches
+    puts the seed back in charge of the partition, and the weights must then differ.
     """
     train_index, val_index, _ = splits
-    other = replace(cfg, meta=replace(cfg.meta, seed=cfg.meta.seed + 1))
+    mini = replace(cfg, model=replace(cfg.model, batch_size=32))
+    other = replace(mini, meta=replace(mini.meta, seed=mini.meta.seed + 1))
 
-    first = trainer.train({SYMBOL: frame}, cfg, train_index, val_index)
+    first = trainer.train({SYMBOL: frame}, mini, train_index, val_index)
     second = trainer.train({SYMBOL: frame}, other, train_index, val_index)
 
+    assert cfg.model.batch_size is None
     assert not np.array_equal(
         first.model.weights_for("close_logret")["trend"],
         second.model.weights_for("close_logret")["trend"],

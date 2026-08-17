@@ -117,13 +117,21 @@ class ChannelConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Which forecaster is active and the shared training hyperparameters."""
+    """Which forecaster is active and the shared training hyperparameters.
+
+    ``batch_size`` is ``None`` for full-batch training - one batch of everything, every
+    epoch. ``None`` rather than a very large integer: it reads as an absence of
+    mini-batching rather than a lie about the field's name, and it cannot silently revert
+    to mini-batching the day a fold grows past whatever number was written. Adopted
+    2026-08-17 on a 16/16 measurement; see DECISIONS.md, including what that measurement
+    does and does not establish.
+    """
 
     active: str
     epochs: int
     patience: int
     lr: float
-    batch_size: int
+    batch_size: int | None
 
 
 @dataclass(frozen=True)
@@ -264,6 +272,25 @@ def _as_non_negative_float(section: Mapping[str, Any], path: str, key: str) -> f
     if value < 0:
         _fail(f"{path}.{key}", "zero or greater", value)
     return value
+
+
+def _as_optional_positive_int(
+    section: Mapping[str, Any], path: str, key: str
+) -> int | None:
+    """A positive integer, or ``None`` meaning "not applicable".
+
+    ``null`` is the same idiom ``signal.min_trend`` uses: a value that is deliberately
+    absent rather than defaulted. Anything else - zero, a float, a string, ``true`` - is
+    refused, so a typo cannot become "full batch" by accident.
+    """
+    value = _get(section, path, key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        _fail(f"{path}.{key}", "a positive integer or null", value)
+    if value <= 0:
+        _fail(f"{path}.{key}", "a positive integer or null", value)
+    return int(value)
 
 
 def _as_optional_float(section: Mapping[str, Any], path: str, key: str) -> float | None:
@@ -424,7 +451,7 @@ def _build_model(raw: Mapping[str, Any]) -> ModelConfig:
         epochs=_as_positive_int(section, "model", "epochs"),
         patience=_as_positive_int(section, "model", "patience"),
         lr=_as_positive_float(section, "model", "lr"),
-        batch_size=_as_positive_int(section, "model", "batch_size"),
+        batch_size=_as_optional_positive_int(section, "model", "batch_size"),
     )
 
 

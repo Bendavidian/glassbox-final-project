@@ -252,17 +252,30 @@ def test_two_fits_of_the_same_config_give_identical_weights(
     np.testing.assert_array_equal(first._remainder, second._remainder)
 
 
-def test_a_different_seed_gives_different_weights(
+def test_under_full_batch_the_seed_changes_nothing(
     cfg: Config, batch: WindowBatch
 ) -> None:
-    """Otherwise the seed is decorative and the determinism test above proves nothing."""
+    """Since 2026-08-17 the configured setting is ``batch_size: null``, and this is what
+    that costs and buys.
+
+    It costs the old assertion, which was that a different seed gives different weights —
+    true while the seed decided a mini-batch partition, false once there is one batch and
+    zero initialisation, because then nothing in the run is random at all. Rather than
+    weaken it to something vacuous, the teeth move to
+    ``test_mini_batches_still_depend_on_the_seed``: the seed is not decorative, it is
+    simply unused by the configuration in force.
+
+    What it buys is a stronger property than the determinism GB-15 asserts. Same seed,
+    same weights becomes *any* seed, same weights.
+    """
+    assert cfg.model.batch_size is None
     other = replace(cfg, meta=replace(cfg.meta, seed=cfg.meta.seed + 1))
     first = ALL_FORECASTERS["dlinear"](cfg, batch.channels)
     second = ALL_FORECASTERS["dlinear"](other, batch.channels)
     first.fit(batch)
     second.fit(batch)
 
-    assert not np.array_equal(first._trend, second._trend)
+    np.testing.assert_array_equal(first._trend, second._trend)
 
 
 def test_prediction_is_deterministic_without_torch(
@@ -279,6 +292,65 @@ def test_fit_records_provenance(model: DLinearForecaster, batch: WindowBatch) ->
     assert model.fitted is not None
     assert model.fitted.channels == batch.channels
     assert model.fitted.n_windows == len(batch.timestamps)
+
+
+def test_full_batch_trains_a_fold_larger_than_any_plausible_batch_size(
+    cfg: Config,
+) -> None:
+    """``batch_size: null`` means one batch of everything, at any fold size.
+
+    The observable consequence is that the seed stops mattering. With mini-batches the
+    seed decides the partition and different seeds give different weights; with one batch
+    there is no partition to decide, and the permutation that would still have perturbed
+    the float summation order is skipped. So bit-identical weights across three seeds is
+    proof the fold was not silently chunked — a check that a large window count cannot
+    pass by accident.
+    """
+    windows = 2_000  # larger than 64, 256 or 1024 — any plausible mini-batch
+    channels = cfg.channels.active_channels
+    rng = np.random.default_rng(5)
+    batch = WindowBatch(
+        X=(rng.standard_normal((windows, INPUT_LEN, len(channels))) * 0.02).astype(
+            "float32"
+        ),
+        y=(rng.standard_normal((windows, HORIZON)) * 0.02).astype("float32"),
+        channels=channels,
+        timestamps=pd.date_range("2016-01-01", periods=windows, freq="B", tz="UTC"),
+        symbols=("AAPL",) * windows,
+        source="yfinance",
+    )
+    full = replace(cfg, model=replace(cfg.model, batch_size=None))
+
+    weights = []
+    for seed in (1337, 1338, 1339):
+        seeded = replace(full, meta=replace(full.meta, seed=seed))
+        model = ALL_FORECASTERS["dlinear"](seeded, channels)
+        model.fit(batch)
+        weights.append(model.weights_for("close_logret")["trend"])
+
+    assert full.model.batch_size is None
+    for other in weights[1:]:
+        np.testing.assert_array_equal(weights[0], other)
+
+
+def test_mini_batches_still_depend_on_the_seed(cfg: Config, batch: WindowBatch) -> None:
+    """The other half: proof the test above is asserting the batching, not the model.
+
+    If weights were seed-independent whatever the setting, the equality above would say
+    nothing about how the fold was partitioned.
+    """
+    mini = replace(cfg, model=replace(cfg.model, batch_size=16, epochs=5))
+    other = replace(mini, meta=replace(mini.meta, seed=mini.meta.seed + 1))
+
+    first = ALL_FORECASTERS["dlinear"](mini, batch.channels)
+    second = ALL_FORECASTERS["dlinear"](other, batch.channels)
+    first.fit(batch)
+    second.fit(batch)
+
+    assert not np.array_equal(
+        first.weights_for("close_logret")["trend"],
+        second.weights_for("close_logret")["trend"],
+    )
 
 
 def test_a_validation_split_restores_the_best_weights(

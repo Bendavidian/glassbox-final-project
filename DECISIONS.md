@@ -7,6 +7,79 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-17 — FINDING: a pooled batch is not monotonic, so `FitProvenance` understated its own range
+
+**The finding.** `FitProvenance.from_batch` derived the training range as
+`timestamps[0]` and `timestamps[-1]`. That is correct for a single-symbol batch and wrong
+for a pooled one, because pooling concatenates several symbols' ranges and the result
+revisits every date once per symbol. The last row is the *last symbol's* last window, not
+the batch's latest.
+
+**Why it matters, and why it would not have been noticed.** GB-25's leakage audit asks
+whether the range a model was fitted on intersects the range it is scored on, and it reads
+that range from the checkpoint. A range that understates its own extent shrinks the
+intersection — so a model that *had* seen part of its test period could report a training
+range that ends before it, and the audit would pass. The audit would have been reading a
+number that was quietly not what it claimed to be, on exactly the question the audit exists
+to answer.
+
+Nothing about it is visible from the outside. The dates are real dates, in the right order,
+inside the right fold. Only the *extent* is wrong, and only when symbols end at different
+timestamps — which is the ordinary case the moment the universe is pooled.
+
+**The fix.** `timestamps.min()` and `.max()`. Recorded here as a finding rather than a fix
+note because the general lesson outlives it: **a derivation that was correct under an old
+contract does not announce itself when the contract changes.** `from_batch` was not edited
+by the contract change, passed every existing test, and was wrong from the moment
+`WindowBatch` learned to hold more than one symbol. Two tests now pin it — one asserting a
+pooled batch's timestamps are non-monotonic, one asserting `fitted_end != timestamps[-1]`
+for a pooled batch whose symbols end at different dates.
+
+---
+
+## 2026-08-17 — Full batch adopted as `model.batch_size: null`, on a metric this project bans
+
+**Decision.** `model.batch_size` becomes `null` — one batch of everything. Ben's ruling on
+the spelling: `null` reads as an absence of mini-batching rather than a lie about the
+field's name, cannot silently revert when a fold grows, and is the idiom `signal.min_trend`
+already uses for a deliberately-absent value. The loader accepts `null` or a positive
+integer and nothing else — not zero, not a float, not `true`, not a string — so a typo
+cannot become "full batch" by accident.
+
+**What decided it.** 16 pooled folds, full batch better on test MAE in **16/16**, median
+1.288× against 2.058× persistence. Not an artefact of `patience` truncating mini-batch:
+against mini with `patience` disabled it is also 16/16.
+
+**What that evidence is not.** The decision was made on **MAE, which spec §7.3 bans as a
+headline metric — and bans for exactly the reason that applies here.** A flatter forecast
+wins MAE. Full batch converges more completely to the MSE optimum, so a flatter forecast is
+the *expected* consequence of the change rather than an independent confirmation of it. And
+direction accuracy moved the other way in the same experiment, 0.5071 → 0.4751, which is
+plausibly the same phenomenon seen from the other side. Both direction figures are near
+chance and 16 folds will not separate them, so this is not evidence *against* full batch
+either. It is evidence that the decision rests on a **diagnostic** metric rather than a
+headline one.
+
+**Therefore this decision is provisional and carries a scheduled re-check.** Once GB-19 and
+GB-20 exist — metrics, and thresholds calibrated so a backtest produces a Sharpe — both
+batch settings are re-measured on **Sharpe and direction accuracy**, and full batch is
+reverted if the headline metrics disagree with MAE. The re-check is written into GB-20's
+"Done when" so it cannot be forgotten. That is the only honest way to hold a decision made
+on a banned metric.
+
+**One thing the ruling bought that the measurement had said was unavailable.** With one
+batch the permutation changes only the order floats are summed in — measured at a relative
+5e-15 across seeds, which was the reason full batch was rejected the first time. It is now
+skipped when there is a single batch, so full-batch training is **bit-identical across
+different seeds**, not merely across repeats of the same one. Two tests hold it: a
+2,000-window fold trained identically under three seeds, and a mini-batch run that still
+differs under two, so the first is not passing vacuously.
+
+**Unchanged and worth keeping in front.** Full batch at 1.288× is better than mini and
+still worse than persistence. The improvement is real and the model is not yet good.
+
+---
+
 ## 2026-08-17 — GB-16: the checkpoint decides everything, and full batch now wins 16/16
 
 **Decision.** Four rulings in `model/predict.py`, plus one measurement that reopens a
