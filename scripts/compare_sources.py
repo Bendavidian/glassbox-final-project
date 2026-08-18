@@ -16,6 +16,7 @@ try:
 
     from glassbox.config.loader import load_config
     from glassbox.data import historical, live
+    from glassbox.features import builder
 except ImportError as error:  # pragma: no cover - depends on the caller's interpreter
     raise SystemExit(
         f"cannot import {error.name!r}: this script needs the project environment.\n"
@@ -31,7 +32,11 @@ def main() -> int:
     cfg = load_config()
 
     offline = historical.load_history(cfg.universe, cfg)
-    online = live.load_live_bars(cfg.universe, cfg)
+    online = live.load_live_bars(
+        cfg.universe,
+        builder.min_history_bars(cfg),
+        requirement=builder.history_requirement(cfg),
+    )
 
     print(
         f"\n{'symbol':<8}{'field':<9}{'yfinance':>16}{'alpaca':>16}{'abs diff':>14}{'bps':>10}"

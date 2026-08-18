@@ -7,6 +7,85 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-18 — GB-26's two blockers closed, and GB-32's bidirectional rule
+
+### 1. The feed is asserted, not commented (blocker, ruled by Ben)
+
+**Decision.** `data/live.py` names `LIVE_FEED = DataFeed.SIP` and
+`LIVE_ADJUSTMENT = Adjustment.ALL` as constants, `_fetch_bars` uses them, `data_source()`
+renders them, and `load_live_bars` logs that line on **every fetch** — not only at session
+start, so every set of bars in the run log carries the tape it came from. Three tests: the
+constants are what they should be, the **request object handed to the SDK actually carries
+them**, and the line reaches the log.
+
+**Reasoning.** The module docstring already said a silent downgrade to IEX "would change
+the numbers without changing the schema", and GB-30's sweep priced it: **up to 193 bps on
+the low, 173 on the open, 90 on the close**, against a 1 bp tolerance and a 2 bps modelled
+slippage — roughly 190x the tolerance. Every schema test in the suite would still pass.
+A claim with a measured cost that large and no backstop is the definition of something to
+fix before the live loop, and asserting the constant is not enough on its own: a constant
+can exist and go unused, so the assertion that matters is on the **request**.
+
+### 2. The lookback and the guard are the caller's floor, not `input_len` (blocker)
+
+**Decision.** `load_live_bars`'s signature changes to
+`load_live_bars(symbols, min_bars, *, requirement="", lookback_days=None)`. `cfg` is gone —
+it was only ever read for `window.input_len`, which is the wrong number. The default
+lookback is `lookback_days_for(min_bars)`, and the guard raises below `min_bars`.
+
+**Reasoning.** Measured on 2026-08-18: the default resolved to `input_len × 2` = 240
+calendar days, which returned **163 bars** against a `min_history_bars` of **445**, and the
+guard raised only below `input_len` = 120 — so 163 passed. The failure did not corrupt
+anything (`rsi` is NaN through its whole 325-bar warm-up, so `build_feature_frame` returned
+an empty frame) but it surfaced downstream during market hours with nothing naming the
+cause.
+
+**Why `min_bars` is required rather than defaulted.** `data` sits **below** `features` in
+§3.1, so `live.py` cannot call `min_history_bars` and cannot be trusted to restate it —
+restating it as `input_len` is exactly how this was wrong. Making the caller name it turns
+a layer constraint into an explicit argument. For the same reason `features.builder` gains
+`history_requirement(cfg)` and `deepest_warmup_channel(cfg)`: the refusal message must name
+the channel that sets the floor, and only the feature layer knows it, so that layer writes
+the sentence and the caller carries it down.
+
+**The message now names all four things** Ben asked for — bars received, calendar days
+requested, the floor, and the channel behind it — plus why the failure would otherwise have
+been quiet. A test asserts each part, and another counts **real NYSE sessions** in the
+default window sliding across a decade and asserts the **worst** case still clears the
+floor, so the calendar-to-sessions margin is measured rather than assumed.
+
+### 3. Bidirectional text in GB-32 — decided here and reported
+
+**Decision.** Three rules, all asserted:
+
+1. **Direction is metadata.** `narrate` returns a `Narrative` carrying `direction`, and the
+   renderer sets `dir="rtl"`. Direction is never inferred from the first strong character —
+   which would fail immediately, because every sentence here opens with a ticker.
+2. **Every LTR run is wrapped in U+2066 / U+2069 isolates.** Not LRE/PDF embeddings and not
+   bare LRM marks. An embedding's contents can still influence the resolved level of the
+   surrounding text and an LRM only nudges the one boundary it sits at, so both require the
+   author to reason about every adjacency and both fail silently when a new adjacency
+   appears. An isolate cannot influence its surroundings at all, which is the property
+   being bought.
+3. **An atom is the whole unit, sign and percent included.** `-1.8%` is one atom, so the
+   minus can never separate from the digits; `rsi14 +57.1%` is one atom, so a channel
+   cannot be parted from its share. The list of atoms then reads right-to-left while each
+   atom reads left-to-right, which is correct Hebrew typography rather than a compromise.
+
+English gets none of this — isolates are invisible but real and would end up in the
+decision log — and a test asserts their absence there.
+
+**Reasoning.** The failure this prevents is a percentage rendering on the wrong side of its
+label, which bit this project once already in SVG. The tests do not check the rendering,
+which would need a shaping engine; they check the two structural properties that make the
+rendering correct: **no Latin or numeric run appears outside an isolate**, and **every
+isolate is balanced and never nested**. Both are decidable from the string.
+
+**Consequence.** Spec §9's GB-26, GB-32 and GB-57 rows carry these. The two blocker items
+in `PROGRESS.md`'s open questions are closed.
+
+---
+
 ## 2026-08-18 — GB-30: the decomposition lives on the schema, and shares are of the gross
 
 **Three decisions, one ruled by Ben and two taken here and reported.**

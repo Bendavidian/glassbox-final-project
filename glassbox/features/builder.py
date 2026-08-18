@@ -113,6 +113,33 @@ def min_history_bars(cfg: Config) -> int:
     return cfg.window.input_len + max(PARITY_WARMUP[channel] for channel in channels)
 
 
+def deepest_warmup_channel(cfg: Config) -> str:
+    """The active channel whose warm-up sets :func:`min_history_bars`.
+
+    Ties break on the channel name, so the answer does not depend on config ordering.
+    """
+    channels = cfg.channels.active_channels
+    _reject_unknown(channels, PARITY_WARMUP, "declared no parity warm-up")
+    return max(channels, key=lambda channel: (PARITY_WARMUP[channel], channel))
+
+
+def history_requirement(cfg: Config) -> str:
+    """One line saying where :func:`min_history_bars` comes from, for an error message.
+
+    ``data.live`` refuses a short history and has to explain why, but it sits **below**
+    ``features`` in the layer stack and cannot compute the floor or name the channel that
+    sets it. So the layer that knows writes the sentence and the caller carries it down.
+    That keeps the data layer ignorant of channel warm-ups, which is correct, without
+    making its refusal message useless, which would not be.
+    """
+    channel = deepest_warmup_channel(cfg)
+    return (
+        f"{min_history_bars(cfg)} bars is input_len {cfg.window.input_len} plus "
+        f"{PARITY_WARMUP[channel]} bars of {channel} warm-up, the deepest of the active "
+        "channels"
+    )
+
+
 def build_feature_frame(bars: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     """Assemble every channel of the active config into one frame.
 

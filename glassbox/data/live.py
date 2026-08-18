@@ -79,30 +79,78 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-from glassbox.config.loader import Config, alpaca_credentials
+from glassbox.config.loader import alpaca_credentials
 from glassbox.data.historical import normalise_bars
 
 LOGGER = logging.getLogger(__name__)
 
 SOURCE_ALPACA = "alpaca"
 
+# The two request parameters that decide *which numbers arrive*, named as constants so a
+# test can assert them and every fetch can log them. See the module docstring for what a
+# silent change to either is worth: 4x on adjustment, up to 190x the price tolerance on
+# feed. Neither is configurable, and neither has a fallback path.
+LIVE_FEED = DataFeed.SIP
+LIVE_ADJUSTMENT = Adjustment.ALL
+
 # A trading day is about 1.45 calendar days once weekends and holidays are counted.
 # Two gives roughly a 38% margin, which covers the longest holiday stretches.
 CALENDAR_DAYS_PER_TRADING_DAY = 2
 
 
+def data_source() -> str:
+    """The one line naming which tape these numbers come from. Logged on every fetch.
+
+    A feed downgrade is invisible to every schema check — the columns, the dtypes, the
+    index and the provenance string are all identical, and only the prices differ, by up
+    to 190x the tolerance GB-7 measured. A claim with a cost that large should not rest on
+    a reader remembering which constant is in the source, so it goes in the run log beside
+    the bars it produced. GB-26 also calls this at session start, so the banner of every
+    session names its own data source.
+    """
+    return f"feed={LIVE_FEED.value}, adjustment={LIVE_ADJUSTMENT.value}"
+
+
+def lookback_days_for(bars: int) -> int:
+    """Calendar days to request in order to receive at least ``bars`` sessions.
+
+    Derived from the caller's bar requirement rather than from ``input_len``, because the
+    two are not the same number and using the wrong one is the defect this function
+    exists to remove: recursive channels need warm-up *behind* the window, so
+    ``features.builder.min_history_bars`` is 445 for ``C0_base`` where ``input_len`` is
+    120. Asking for ``input_len`` worth of calendar days returned 163 bars, measured on
+    2026-08-18.
+    """
+    if bars <= 0:
+        raise ValueError(f"bars must be positive, got {bars!r}")
+    return bars * CALENDAR_DAYS_PER_TRADING_DAY
+
+
 def load_live_bars(
     symbols: Sequence[str],
-    cfg: Config,
+    min_bars: int,
+    *,
+    requirement: str = "",
     lookback_days: int | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Fetch recent daily bars for ``symbols``, in the historical loader's schema.
 
+    **The caller states how much history it needs, and this refuses to return less.**
+    ``min_bars`` is not defaulted and cannot be: the number is
+    ``features.builder.min_history_bars(cfg)``, and this module sits *below* ``features``
+    in the layer stack, so it cannot compute it. Making the caller name it is the honest
+    version of that constraint — and it is what stops the floor being quietly restated as
+    ``input_len``, which is exactly how the previous version was wrong.
+
     Args:
         symbols: Tickers to fetch.
-        cfg: Resolved configuration; supplies ``window.input_len``.
-        lookback_days: Calendar days of history to request. Defaults to enough to cover
-            ``window.input_len`` trading days with margin.
+        min_bars: The fewest bars every symbol must return. Pass
+            ``features.builder.min_history_bars(cfg)``; passing ``window.input_len`` is
+            the bug this parameter exists to prevent.
+        requirement: One line saying where ``min_bars`` comes from, for the refusal
+            message. ``features.builder.history_requirement(cfg)`` produces it.
+        lookback_days: Calendar days of history to request. Defaults to
+            :func:`lookback_days_for` of ``min_bars``.
 
     Returns:
         ``{symbol: DataFrame}`` with columns ``open, high, low, close, volume,
@@ -110,13 +158,21 @@ def load_live_bars(
         midnight — the same schema ``historical.load_history`` returns.
 
     Raises:
-        ValueError: A symbol returned no bars, or fewer than ``window.input_len`` of
-            them, which would leave the builder unable to assemble a window.
+        ValueError: A symbol returned no bars, or fewer than ``min_bars`` of them.
     """
+    if min_bars <= 0:
+        raise ValueError(f"min_bars must be positive, got {min_bars!r}")
     if lookback_days is None:
-        lookback_days = cfg.window.input_len * CALENDAR_DAYS_PER_TRADING_DAY
+        lookback_days = lookback_days_for(min_bars)
 
     start = datetime.now(UTC) - timedelta(days=lookback_days)
+    LOGGER.info(
+        "fetching %s: %s calendar days for at least %s bars each, %s",
+        ", ".join(symbols),
+        lookback_days,
+        min_bars,
+        data_source(),
+    )
     raw = _fetch_bars(list(symbols), start)
 
     frames: dict[str, pd.DataFrame] = {}
@@ -125,10 +181,16 @@ def load_live_bars(
             raise ValueError(f"{symbol} returned no live bars since {start:%Y-%m-%d}")
 
         frame = normalise_bars(raw.xs(symbol), symbol, SOURCE_ALPACA)
-        if len(frame) < cfg.window.input_len:
+        if len(frame) < min_bars:
             raise ValueError(
-                f"{symbol} returned {len(frame)} bars, fewer than the "
-                f"{cfg.window.input_len} the input window needs"
+                f"{symbol} returned {len(frame)} daily bars over the {lookback_days} "
+                f"calendar days requested, and at least {min_bars} are needed"
+                + (f" — {requirement}" if requirement else "")
+                + ". Proceeding on a short history would not fail loudly: the recursive "
+                "channels emit NaN through their whole warm-up, so build_feature_frame "
+                "returns an EMPTY frame rather than wrong values, and the failure "
+                "surfaces later without naming this as the cause. Request more calendar "
+                "days, or check the symbol has that much history at all."
             )
 
         frames[symbol] = frame
@@ -157,7 +219,7 @@ def _fetch_bars(symbols: list[str], start: datetime) -> pd.DataFrame:
         symbol_or_symbols=symbols,
         timeframe=TimeFrame.Day,
         start=start,
-        feed=DataFeed.SIP,
-        adjustment=Adjustment.ALL,
+        feed=LIVE_FEED,
+        adjustment=LIVE_ADJUSTMENT,
     )
     return client.get_stock_bars(request).df
