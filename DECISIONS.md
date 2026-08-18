@@ -133,6 +133,112 @@ different studies. Spec §9's GB-20 row carries the ruling.
 
 ---
 
+## 2026-08-18 — GB-29: one `Trade` type, and it moves to `contracts/schemas.py`
+
+**Decision.** A live trade and a backtest trade are **the same type**, not two types with a
+shared shape. `Trade` moves from `backtest/engine.py` to `contracts/schemas.py` (a §4.2
+addition) and gains two optional fields, `entry_order_id` and `exit_order_id`, which are
+`None` for every backtest trade.
+
+**Reasoning, and the layer contract settles it before the design argument does.** GB-19's
+metrics must read a live trade log **without a translation layer**. That rules out two
+types: every metric would have to accept both, the duck typing would be untested until one
+side grew a field, and "structurally identical" would be a property a reviewer checks by eye
+rather than one the type system holds.
+
+Given one type, where does it live? Not in `backtest/`: the live path may not import the
+validation harness, and `records.py` — which holds the live trade log — is exactly the module
+that would be tempted to. So the shared type belongs in `contracts`, the layer both sides
+already depend on. **The import contract decided the design**, which is the point of having
+one; `glassbox.records` is now named in the forbidden-import contract so the temptation is
+mechanically unavailable.
+
+The broker order IDs are the one thing live carries that a backtest cannot: a simulated fill
+has no order to point at. They are **optional fields rather than a second type** — GB-19
+never reads them, GB-32's replay needs them to tie a trade to what the broker actually did,
+and a live trade that could not name its own orders would be unreconcilable.
+
+**Consequence.** `engine.Trade is contracts.Trade` is asserted, and so is the end-to-end
+requirement: GB-19's `hit_rate`, `average_trade` and `total_return` run over a log built by
+`records.emit_trades` with no adapter. One duplication is accepted and guarded: the four exit
+reasons are repeated in `records.py` because it may not import `backtest`, and a test asserts
+they equal the backtester's own constants, so a rename there fails here rather than silently
+producing a log GB-19 reads differently.
+
+**The measurement this unlocks.** `costs` come from the fill prices the broker reports, so
+`realised_slippage_bps` compares what the frictions actually cost against the 6.0 bps the
+study charges by construction. That is the one comparison the live system can make and the
+backtest cannot, and GB-57 reports it.
+
+---
+
+## 2026-08-18 — GB-28: ranking breaks ties alphabetically, and that is the whole design
+
+**Decision.** `rank_signals` orders by descending `trend_strength` and breaks ties by symbol
+name, then takes `signal.top_k`. Only `enter_long` competes.
+
+**Reasoning.** Python's sort is stable, so a tie without a second key resolves by the
+caller's insertion order — which in the live loop is dictionary order, which is the order
+symbols came back from a broker call. That is a real source of run-to-run difference: two
+identical days would select different names and GB-32's replay would not reproduce. One sort
+key removes it. The negation of the strength rather than `reverse=True`, because reversing
+would also reverse the tie-break and the alphabetical order would silently run Z to A.
+
+Exits and holds are not candidates: **an exit is an obligation on capital already
+committed** and must never be crowded out by a better opportunity elsewhere.
+
+A non-finite `trend_strength` is refused rather than sorted — NaN compares false against
+everything, so ordering it is silently order-dependent, which is the exact class of bug the
+tie-break exists to remove.
+
+---
+
+## 2026-08-18 — GB-25's decomposition re-swept: the correlation does not reproduce at all
+
+**Decision.** The `r = -0.47` timing-versus-market correlation is **withdrawn**, and with it
+the "independent corroboration" framing GB-57 was told to carry. Ben withdrew his own praise
+of it on the triage rule — n = 16, 95% CI [-0.783, +0.034], includes zero — and the
+re-measurement is worse than that: **on the fold grid as it now stands, r = -0.0025**, CI
+[-0.498, +0.494]. It did not merely fail significance. It vanished.
+
+**Reasoning.** GB-27b's warm-up unification shifted the fold grid by about a week. Every
+number in the decomposition was re-measured on the new grid, with intervals:
+
+| | old grid | **new grid** | 95% CI | t |
+|---|---|---|---|---|
+| average gross exposure | 0.1600 | **0.0892** | — | — |
+| earned by exposure | +92.6 bps | **+98.1 bps** | [−11.2, +207.4] | +1.91 |
+| given back to timing | −37.0 bps | **−51.8 bps** | [−113.5, +9.9] | −1.79 |
+| paid in costs | −10.7 bps | **−6.1 bps** | [−9.1, −3.1] | −4.29 |
+| = actual | +44.8 bps | **+40.2 bps** | [−74.5, +154.9] | +0.75 |
+| β on market return | 0.141 | **0.0919** | [+0.032, +0.152] | +3.29 |
+| R² | 0.65 | **0.436** | — | — |
+| α per fold | −0.59% | **−0.31%** | [−1.32%, +0.70%] | −0.65 |
+| **r(timing, market)** | **−0.47** | **−0.0025** | **[−0.498, +0.494]** | −0.01 |
+
+**What survives, and it is the part that matters.** β ≈ average exposure on **both** grids —
+0.141 against 0.160, then 0.092 against 0.089 — with β significant (t = 3.29) and α not
+(t = −0.65). *The exposure explains the returns and there is no alpha* is robust to the grid
+moving. So is the shape of the split: earned by being in the market, most of it given back
+to timing and friction, with the timing term never distinguishable from zero.
+
+**What does not survive is anything that rested on one 16-point correlation.** A one-week
+shift in fold boundaries took r from −0.47 to −0.0025. Every level moved too — exposure
+nearly halved, because the strategy now stands aside on 3 folds of 16 rather than 1.
+
+**Consequence.** GB-57 reports the split with intervals and **must not** claim the
+forecast-side down-bias is corroborated by the equity curve: the equity-side half of that
+pair is gone. What remains is GB-20's forecast measurement alone — the model calls up 53.85%
+of the time against a 56.25% up rate — which is a measurement on its own terms and needs no
+second witness to be worth reporting.
+
+**The audit item this creates.** Ben's own claim entered the record as "the strongest
+finding in the project" and is now withdrawn twice over. It is in the single-point audit
+list as an item introduced by review rather than by implementation, because the report's
+claims are not only the implementer's to check.
+
+---
+
 ## 2026-08-18 — GB-13's initialisation study, re-swept: the ranking survives, the reason changes
 
 **Decision.** Zero initialisation stands. The **single-fold table in `ltsf._initial_weights`

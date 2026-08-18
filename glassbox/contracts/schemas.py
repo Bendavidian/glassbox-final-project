@@ -304,6 +304,53 @@ class FitProvenance:
 
 
 @dataclass(frozen=True)
+class Trade:
+    """One completed round trip. **The same type in a backtest and in a live session.**
+
+    ``entry_price`` and ``exit_price`` are **reference** prices - the levels the rules
+    chose, before slippage. Slippage lives in ``costs`` rather than being folded into the
+    prices, so the log answers "what did the rule pick?" and "what did the frictions take?"
+    separately. ``net_pnl == gross_pnl - costs`` exactly, and is asserted for every trade.
+
+    ``strategy_exit`` is ``False`` only for an administrative exit - ``end_of_data`` in a
+    backtest, a liquidation in a live session: the position was closed because something
+    ended, not because the strategy decided anything. **GB-19's rule, pinned here rather
+    than left to be invented later:** such trades ARE included in the equity curve and
+    total return, because the curve must be complete and the capital was genuinely
+    returned - but they are EXCLUDED from hit rate, average trade and any other
+    per-decision statistic. Filter on this field, never on an ``exit_reason`` string.
+
+    **Why this is a contract rather than a backtest-local type (GB-29).** It began in
+    ``backtest/engine.py``. GB-29 needs the live path to emit trades that GB-19's metrics
+    read **without a translation layer**, and the live path may not import the validation
+    harness - so a shared type cannot live there. Two types with a shared shape was the
+    alternative and it is worse: every metric would need to accept both, the duck typing
+    would be untested until one side grew a field, and "structurally identical" is a
+    property a reviewer has to check by eye rather than one the type system holds.
+
+    ``entry_order_id`` and ``exit_order_id`` are the broker's, and are ``None`` for every
+    backtest trade - a simulated fill has no order to point at. They are **optional
+    additions rather than a second type**: GB-19 never reads them, GB-32's replay needs
+    them to tie a trade back to what the broker actually did, and a live trade that could
+    not name its own orders would be unreconcilable.
+    """
+
+    symbol: str
+    entry_time: pd.Timestamp
+    exit_time: pd.Timestamp
+    size: float  # shares
+    entry_price: float
+    exit_price: float
+    gross_pnl: float
+    costs: float
+    net_pnl: float
+    exit_reason: str
+    strategy_exit: bool  # False when the exit was administrative, not a decision
+    entry_order_id: str | None = None  # live only; a backtest fill has no broker order
+    exit_order_id: str | None = None
+
+
+@dataclass(frozen=True)
 class Forecast:
     """A predicted log-return path for one symbol, as of one timestamp."""
 
@@ -372,5 +419,6 @@ __all__ = [
     "FitProvenance",
     "Forecast",
     "Signal",
+    "Trade",
     "WindowBatch",
 ]

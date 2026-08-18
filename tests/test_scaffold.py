@@ -51,6 +51,10 @@ SPEC_MODULES = (
     "backtest/calibrate.py",
     "experiments/study.py",
     "experiments/report.py",
+    # GB-29: decision records and the live trade log. Top-level beside `live_loop.py`
+    # because the live loop and the dashboard both read it and neither may reach the
+    # harness - it is named in the forbidden-import contract for that reason.
+    "records.py",
     "live_loop.py",
     "replay.py",
     "smoke_offline.py",

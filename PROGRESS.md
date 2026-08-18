@@ -11,8 +11,9 @@ Append one line per completed task. Newest at the bottom of each sprint.
 **Sprint 2:** **complete** — GB-17, GB-18, GB-13 on 16 Aug; GB-18 fix, GB-15, the
 `WindowBatch.symbols` contract change, GB-16, GB-19, GB-20, GB-24, GB-21 and GB-25 on
 17 Aug
-**Next task:** GB-26, the live loop — it carries the five-rule protection policy ruled
-18 Aug, consumes GB-23's `MISSING_PROTECTION` detection, and must request **445** bars
+**Next task:** GB-26, the live loop — every piece it needs now exists: the five-rule
+protection policy (18 Aug), GB-23's `MISSING_PROTECTION` detection, GB-28's ranking,
+GB-29's records and trade log, and a **445**-bar history request
 **Last gate passed:** **GATE 1, 17 Aug 2026**, 25 days before its commitment date
 **Blockers:** none. Standing note for GB-57, re-measured on the fold grid as it stands after
 GB-27's warm-up unification: the strategy beats **neither** reference it should be read
@@ -159,6 +160,8 @@ depends on nothing in the model layer.
 | GB-23 | 18 Aug 2026 | Ben | **Complete.** `engine/reconcile.py` (new, spec §3.4) — **reconcile-from-truth, not an order-lifecycle state machine**, per `SOLO_BUILD_PLAN.md` §2's cut. Positions and open orders are fetched every cycle, compared against a persisted `Book`, and **every divergence resolves in favour of the broker** and is logged at WARNING. **Three rulings.** An unexplained broker position is **quarantined** — recorded and counted against buying power, never given protective levels, never traded: adopting it would manage a position with no entry price, stop or decision behind it, and ignoring it would let the sizer over-commit the account. A local position the broker does not have is **dropped**, which is also exactly what a filled stop looks like. A quantity mismatch **takes the broker's number** and keeps the local provenance, which is how a partial fill is absorbed. A fourth check, `MISSING_PROTECTION`, is **detection only** — the input GB-26 rule 3 acts on; a reconciler that submitted or cancelled would be the state machine this task was scoped away from. **Acceptance, against the real paper account:** a cycle killed mid-flight with `os._exit(9)` left the book on disk untouched; a hand-desynchronised book claiming 1.0 MSFT and 0.5 AAPL was corrected in one cycle to the broker's actual `{AAPL: 0.01}` with all three divergence kinds reported, and the corrected book reconciled clean on the next pass. **Limit of the scope, found during that run:** reconciliation corrects existence and quantity but **cannot correct provenance** — the broker has none to offer, so a book that lies about *why* it holds something keeps the lie. 21 tests; suite at 626. |
 | GB-27 | 18 Aug 2026 | Ben | **Complete — and it did its job by failing.** `tests/features/test_train_live_parity.py` builds the model input window twice — the training path over full history, and the live path from a bar **tail** re-normalised through `normalise_bars` with Alpaca provenance — and asserts `np.array_equal`, no tolerance. **The first version passed on AAPL at one timestamp. Swept over five symbols and twenty-five timestamps it failed 93 of 125**, and the cause was the declared floor, not the test: GB-9's warm-up bounded the RSI seed's *weight* below 1e-7, which is sufficient only if the seed *difference* is at most 1, and it is a difference of average gains in price units. Near RSI 50 the residual (3.815e-06) is the same order as a float32 ulp (5.95e-06) — **352 was marginal by construction**. **Floor corrected to 445**, derived from a 1e-10 target: `(13/14)^311`, warm-up 325. Measured: 352 → 32/125, 414 (the 1e-9 target) → 120/125, **445 → 125/125**. The 1e-9 case is a standing test, so the margin is measured rather than assumed. The test now **sweeps by construction** — a single-point parity test is what produced the error. It also pins the teeth: a one-bar offset breaks parity, a bar *after* the window cannot change it (GB-10 causality — an earlier assertion had this backwards), too little history **raises** rather than differing quietly, a spliced two-source frame is refused, and the per-window `symbols` tuple survives pooling into a five-symbol batch. Corrections landed in place, as corrections, in spec §7.2 and the GB-9/GB-27 rows, `ARCHITECTURE.md`, `README.md` and the GB-9 DECISIONS entry. 16 tests; suite at 643. |
 | GB-27b | 18 Aug 2026 | Ben | **Complete.** Three rulings from the parity-floor post-mortem. **(1) `tests/sweep.py`**, beside `causality.py`: `sweep()` for "X holds", `contest()` for "A beats B", with two properties that are refusals rather than conventions — a `SweepResult` **cannot be used as a boolean** (`bool(result)` raises and names what to read instead), and a **sweep of one cell is refused** with an error citing the floor. Held to `causality.py`'s standard: the decisive test replays the 352-bar measurement on real data. 19 tests. **(2) `RSI_WARMUP` deleted and unified** with the parity warm-up at 325 (`RSI_SEED_TOLERANCE` 1e-2 → 1e-10); `PARITY_WARMUP["rsi14"]` now *imports* it, so there is one derivation rather than two constants to keep in step. **Cost measured, and not quite zero:** feature rows 2591 → 2343, first row 2016-04-25 → 2017-04-19, folds still 16 and no kept fold reads a discarded bar — but `make_folds` anchors its month grid on the feature frame's start, so the grid shifted about a week (fold 1 training 2020-04-13 → 2020-04-06) and individual val/test counts move by one or two. **Every previously measured number therefore shifts slightly**; the headline figures were re-measured rather than carried over: direction **0.5182** vs an always-long bar of **0.5560** (4/16), return **+0.40%** per fold vs buy-and-hold's **+7.73%**, Sharpe **+0.62** vs **1.39**, 3/16 folds standing aside. The conclusion is unchanged: the strategy beats neither reference. **A consequence worth more than the tidiness:** a tail below `min_history_bars` no longer assembles a window at all — the builder **refuses** — so the silent below-floor divergence is unreachable through the public path. The cost is that the 414-vs-445 measurement can no longer be reproduced live; it stands as a recorded result and the below-floor tests assert the refusal. **(3) GB-13's initialisation study re-swept** through the new harness: 3 arms × 16 folds × 5 symbols = 80 cells, under the configured `batch_size: 64`. **The ranking survives and its reason changes.** Paper `1/√L` wins **0/80** on MAE and **0/80** on legibility — that half is confirmed and strengthened. But zeros and the fan-in correction are a **tie on MAE** (2.190 vs 2.195, and fan-in wins more cells, 46 to 34): the original 1.94× vs 1.96× was always that tie, and one fold made it look like an order. Zeros wins **direction** (0.518 vs 0.470/0.475, 41/80) and **legibility unanimously, 80/80** (largest contribution 0.065 vs 0.450 vs 1.111). The single-fold *levels* do not reproduce; the single-fold *legibility* numbers do, almost exactly. GB-57 now carries the swept table and must not quote the old figures. |
+| GB-28 | 18 Aug 2026 | Ben | **Complete.** `engine/rank.py` — order by descending `trend_strength`, **break ties alphabetically**, take `signal.top_k`. The tie-break is the whole design: Python's sort is stable, so without a second key a tie resolves by the caller's insertion order, which in the live loop is the order symbols came back from a broker call — two identical days would select different names and GB-32's replay would not reproduce. Negating the strength rather than `reverse=True`, because reversing would also reverse the tie-break and run the alphabet backwards. Only `enter_long` competes: **an exit is an obligation on capital already committed** and must never be crowded out. A non-finite strength is refused rather than sorted, since NaN compares false against everything and ordering it is silently order-dependent. 14 tests. |
+| GB-29 | 18 Aug 2026 | Ben | **Complete.** `glassbox/records.py` (new, spec §3.4) — `DecisionRecord` persisted as JSONL under `decisions/YYYY-MM.jsonl` with the `config_hash`, `save_decision` / `load_decisions(start, end)`, numpy arrays as lists, timestamps as ISO-8601 UTC, lossless round trip including float32 dtype. A corrupt line is logged and skipped rather than costing the month — a session killed mid-write leaves exactly that. Bounds are inclusive and a bare end date covers its whole day, because "August 1st to 31st" excluding the 31st would be a trap. **Plus the live trade log**: `emit_trades` builds `Trade` records from the broker's filled-order history, `exit_reason` from **which leg filled** (by `client_order_id` suffix, not by price — two levels can sit close together) with `stop_gap`/`target_gap` decided by the fill price, **costs from the actual fills rather than the configured bps**, and `realised_slippage_bps` for GB-57's comparison against the modelled 6.0 bps. **Nothing is emitted for a quarantined position** — no entry basis, no invented number. **Ruling: a live `Trade` and a backtest `Trade` are one type**, moved to `contracts/schemas.py` (§4.2 addition) with two optional broker-order-ID fields; the layer contract forced it, since the live path may not import the harness and GB-19 must read both with no translation layer. `glassbox.records` is named in the forbidden-import contract so the temptation is mechanically unavailable. 27 tests; suite at 705. |
 
 ## Sprint 4 — FITS, Study, Report · 26 Sep – 10 Oct 2026 → GATE 3
 
@@ -211,6 +214,47 @@ symbol-timestamp pairs. Every other numerical claim marked verified or measured 
 for the same failure mode. **Nothing below has been re-verified** — this is the list, as
 asked, so that the ones most likely to be wrong in the same way are known before GB-57
 cites them.
+
+### Triage rule (adopted 18 Aug 2026)
+
+**Mechanical or identity claims held at one point because they are algebra; statistical
+claims did not.** GB-27b is the evidence: the single-fold *legibility* numbers reproduced
+almost exactly under an 80-cell sweep (1.39 / 0.43 / 0.058 → 1.02 / 0.41 / 0.063) while the
+single-fold *accuracy* numbers did not (4.00× / 1.96× / 1.94× → 2.69 / 2.19 / 2.19). So:
+confirm mechanical claims are **asserted somewhere in the suite** and move on; **re-sweep**
+anything statistical that GB-57 will quote.
+
+### Mechanical — confirmed asserted, not re-swept
+
+| Claim | Asserted in |
+|---|---|
+| Round trip on a flat trade is exactly 6.0 bps | `tests/backtest/test_engine.py` (`round_trip_cost_bps`) |
+| Flat book ⇒ final equity = initial cash + Σ net_pnl | `engine._assert_accounted`, every backtest, plus `test_engine.py` |
+| `Σ per_channel == forecast` within 1e-5 | `tests/model/test_forecaster_contract.py`, `test_ltsf.py` |
+| Buy-and-hold's direction accuracy **is** the always-long bar | runtime `_assert_is_the_bar` + `tests/test_smoke_offline.py` |
+| Live and historical share one schema definition | `normalise_bars`, asserted in `test_historical.py` and the parity sweep |
+| Alpaca's fractional refusals ($1 notional, simple-orders-only, 9 decimals) | `tests/fake_broker.py` mirrors them; `tests/engine/test_executor.py` asserts them |
+| Causality: perturbing the future leaves the prefix bit-identical | `tests/features/test_no_lookahead.py`, both modes, three splits |
+| RAW vs adjusted differs by a split factor | mechanical (a corporate action), pinned in `data/live.py`'s docstring |
+
+### Statistical — re-swept
+
+| Claim | Result |
+|---|---|
+| GB-13 initialisation ranking | **Re-swept, 80 cells.** Ranking survives, its reason changes: zeros wins direction and legibility (80/80), ties fan-in on MAE. See the GB-27b row. |
+| GB-25 decomposition (β, R², timing residual) | **Re-swept with intervals.** β 0.0919 (t = 3.29) ≈ exposure 0.0892, α −0.31% (t = −0.65, CI includes zero), timing −51.8 bps (t = −1.79). Structure robust across both fold grids; every level moved. |
+| **r = −0.47, timing vs market** — *introduced by review, not by implementation* | **Withdrawn.** Ben withdrew it on the triage rule (n = 16, CI [−0.783, +0.034] includes zero); re-measured on the shifted grid it is **r = −0.0025**, CI [−0.498, +0.494]. It vanished rather than weakened. The "independent corroboration" framing goes with it. |
+
+### Statistical — deferred, with the cost stated
+
+`GB-7`'s price/volume agreement (<1 bp prices, 34–111 bps volume) rests on **one 163-bar
+window** across five symbols. Re-sweeping needs live Alpaca data across a longer and more
+stressed period; this account's SIP entitlement returns 403 on recent data, so the sweep
+would run on IEX and measure a different question. **Not run — it would cost more than an
+hour and would not answer the claim as stated.**
+
+`RSI_WARMUP = 77` left this list a different way: GB-27b **deleted it**, unifying it with
+the parity warm-up. A claim with a known-bad derivation was removed rather than re-verified.
 
 ### Established on a single symbol, fold, timestamp or machine
 

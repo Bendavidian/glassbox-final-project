@@ -102,6 +102,10 @@ type = "forbidden"
 source_modules = [
     "glassbox.live_loop",
     "glassbox.replay",
+    # GB-29. `records.py` holds the live trade log, so it is exactly the module that would
+    # be tempted to import `backtest.engine.Trade` - which is why that type moved to
+    # `contracts/schemas.py` and why this contract now names it.
+    "glassbox.records",
 ]
 forbidden_modules = [
     "glassbox.backtest",

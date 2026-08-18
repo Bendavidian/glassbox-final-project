@@ -67,7 +67,7 @@ from typing import Protocol
 import pandas as pd
 
 from glassbox.config.loader import Config
-from glassbox.contracts.schemas import Signal
+from glassbox.contracts.schemas import Signal, Trade
 from glassbox.engine.risk import shares_for
 
 # The verdict vocabulary belongs to the layer that produces verdicts, and is imported
@@ -101,37 +101,6 @@ class PositionSizer(Protocol):
     ) -> float:
         """Target notional for this signal. ``0.0`` means do not trade."""
         ...
-
-
-@dataclass(frozen=True)
-class Trade:
-    """One completed round trip.
-
-    ``entry_price`` and ``exit_price`` are **reference** prices - the levels the rules
-    chose, before slippage. Slippage lives in ``costs`` rather than being folded into the
-    prices, so the log answers "what did the rule pick?" and "what did the frictions take?"
-    separately. ``net_pnl == gross_pnl - costs`` exactly, and is asserted for every trade.
-
-    ``strategy_exit`` is ``False`` only for ``end_of_data``: the position was liquidated
-    because the data ran out, not because the strategy decided anything. **GB-19's rule,
-    pinned here rather than left to be invented later:** such trades ARE included in the
-    equity curve and total return, because the curve must be complete and the capital was
-    genuinely returned - but they are EXCLUDED from hit rate, average trade and any other
-    per-decision statistic, because no decision was made. Filter on this field, never on
-    an ``exit_reason`` string.
-    """
-
-    symbol: str
-    entry_time: pd.Timestamp
-    exit_time: pd.Timestamp
-    size: float  # shares
-    entry_price: float
-    exit_price: float
-    gross_pnl: float
-    costs: float
-    net_pnl: float
-    exit_reason: str
-    strategy_exit: bool  # False when the exit was administrative, not a decision
 
 
 @dataclass(frozen=True, eq=False)
