@@ -17,7 +17,7 @@ import pytest
 
 from glassbox.config.loader import Config, load_config
 from glassbox.contracts.schemas import Attribution, Forecast, Signal
-from glassbox.engine.risk import Order
+from glassbox.engine import risk
 from glassbox.engine.signal import ENTER_LONG, EXIT, HOLD, Thresholds
 from glassbox.explain.channel import cancellation, shares
 from glassbox.explain.narrate import (
@@ -90,14 +90,30 @@ def a_signal(action: str, strength: float, **overrides) -> Signal:
     return Signal(**fields)
 
 
-AN_ORDER = Order(
-    symbol="AAPL",
-    shares=0.0819,
-    price=305.59,
-    notional=25.03,
-    stop_loss=296.42,
-    take_profit=323.93,
-)
+PRICE = 305.59
+EQUITY = 100_000.0
+
+# Built by the real sizer rather than written by hand. The hand-written version carried
+# 0.0819 shares for a notional of 25.03 - the quantity of GB-22's deliberately tiny live
+# probe order - beside a stop and a target that were correctly derived from the price. The
+# numbers were individually defensible and the *set* was not: 25.03 is 0.025% of a 100k
+# account against a `max_position_pct` of 0.10, so anyone reading the fixture as an example
+# of the real path would have gone looking for a 400x bug in the sizer. There is none, and
+# a fixture that cannot be read as evidence of one is worth more than a shorter literal.
+AN_ORDER = risk.size_positions(
+    [
+        Signal(
+            symbol="AAPL",
+            action=ENTER_LONG,
+            trend_strength=0.018,
+            up_points=HORIZON,
+            passed_threshold=True,
+        )
+    ],
+    EQUITY,
+    {"AAPL": PRICE},
+    load_config(),
+)[0]
 
 
 def bare(text: str) -> str:
@@ -131,10 +147,23 @@ def test_enter_names_the_size_the_price_and_the_stop(
 
     assert "AAPL" in text
     assert "2026-08-18" in text
-    assert "0.0819" in text  # size
+    assert "32.7236" in text  # size
     assert "305.59" in text  # reference price
+    assert "10,000.00" in text  # notional
     assert "296.42" in text  # stop
     assert "323.93" in text  # target
+
+
+def test_the_narrated_order_is_the_sizers_own_output(cfg: Config) -> None:
+    """The fixture is the risk layer's answer, not a plausible-looking hand-written one.
+
+    Pinned because a narrative is read as an example of the live path, and a fixture whose
+    notional is 0.025% of equity when `max_position_pct` is 0.10 reads as a sizer bug.
+    """
+    assert AN_ORDER.notional == pytest.approx(EQUITY * cfg.risk.max_position_pct)
+    assert AN_ORDER.shares * AN_ORDER.price == pytest.approx(AN_ORDER.notional)
+    assert AN_ORDER.stop_loss == pytest.approx(PRICE * (1 - cfg.risk.stop_loss_pct))
+    assert AN_ORDER.take_profit == pytest.approx(PRICE * (1 + cfg.risk.take_profit_pct))
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

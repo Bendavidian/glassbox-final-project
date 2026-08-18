@@ -7,6 +7,135 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-18 — GB-26: two rulings taken in the live loop, and what the first run found
+
+### 1. Stale data — the symbol loses its entry and keeps its stop
+
+**Decision.** A symbol whose last completed bar predates the last completed exchange
+session is excluded from forecasting, ranking and entries for that cycle, **named in the
+log and in the cycle report**, and **has its protective legs verified and re-armed exactly
+as any other position's**.
+
+**Reasoning.** *A stale window may never justify opening risk, and may never suspend the
+management of risk already taken.* Those are two different questions and the previous
+framing — "skip the symbol" — collapsed them. Steps 1 to 4 of the cycle run on the broker's
+truth, which does not go stale, so protection is unaffected. What genuinely cannot be
+computed is a **model-driven** exit, and the honest statement is that the stop and the
+target are the risk control that does not depend on the model.
+
+The exclusion is loud rather than silent because `top_k = 2` is taken across the universe:
+dropping a symbol changes which two are chosen, and a reader has to be able to see that it
+happened before reading the selection. The report carries what was ranked over and what was
+dropped.
+
+**No partial-universe abort.** A rule like "abort below three symbols" is a number nobody
+measured, and the visible drop list already lets a reader discount the selection. If *every*
+symbol is stale the cycle is a logged no-op after reconciliation — there is nothing to
+forecast, and protection has already run.
+
+### 2. The first cycle may reduce risk and may not add any
+
+**Decision.** No entry is submitted on the first cycle after startup. Exits, reconciliation
+and protection all run in full.
+
+**Reasoning**, in order of weight:
+
+1. **The protection policy's own rule 2** says re-arm every open position before entries,
+   and the first cycle *is* that moment. Entering in the same cycle would submit an entry
+   before the re-arm it is supposed to follow had been verified.
+2. **Reconciliation has just rebuilt the book from a single observation** of the account. A
+   quarantine decided microseconds earlier is a belief with no second witness, and sizing
+   new risk against it trusts a one-sample view.
+3. **A mid-session restart must not double an entry.** Broker order state is eventually
+   consistent, and an entry the previous process submitted can be briefly absent from
+   `get_orders`. One cycle of observation lets it appear. Re-entering a position we already
+   hold is a failure the loop cannot undo; waiting one poll interval is not.
+
+An exit is **not** deferred, for the reason GB-28 refuses to let one be crowded out: it is
+an obligation on capital already committed, and delay is the cost.
+
+### 3. Supporting choices, each with its reason
+
+- **The session window is the exchange calendar's, not the configured clock's.** The Israel
+  window says when the process is willing to run; `pandas_market_calendars` says whether
+  there is a market. A holiday closes the loop and **a half-day closes it early** — the
+  configured 23:00 Israel close would otherwise poll a shut exchange for three hours after a
+  13:00 ET early close.
+- **`ISRAEL_TZ` is a module constant, and this is a flagged rule-5 bend.** Rule 5 is config
+  over constants. The justification is that `cfg.live.market_open_il`'s own field name fixes
+  the zone, so a config key could only ever disagree with the field it describes.
+- **Trades are emitted before reconciliation.** A filled stop makes the position vanish and
+  `reconcile` correctly drops the holding — which is the only record of the entry basis.
+  Emitting first builds the trade while the system still knows why it held the thing. This
+  ordering is load-bearing and is stated at the top of the module.
+- **`--dry-run` is a wrapping broker, not a skipped call.** `DryRunBroker` passes every read
+  through to the real broker and refuses every write, so the dry run exercises `execute`,
+  `protect` and the fill poll against real positions and real equity. A dry run that
+  branched around them would test the scheduler and nothing else.
+- **`smoke_offline --prepare-live DIR`** writes the checkpoint and the band, because
+  `live_loop` may not import the harness. It trains on the **most recent complete fold** and
+  calibrates on that fold's validation range — fitting up to yesterday and calibrating on
+  the same rows would be the project's own leakage rule broken through the back door of
+  "but it is live now".
+- **A missing or stood-aside band is `Thresholds.never()`**, never a default. The session
+  runs, records and explains, and trades nothing. Any other choice means inventing a
+  threshold, and a made-up band is the one input that would make every decision in the
+  session unexplainable.
+
+### What the first real run found, before the open
+
+`--prepare-live` trained on **fold 16 of 16** (train 2024-01-08 to 2025-12-29, validation
+2026-01-06 to 2026-03-27) and **the fold stands aside**: the best candidate on the grid
+scored a validation Sharpe of **−3.38** over 7 trades. So the session on 2026-08-18 will
+forecast, explain and record, and **will not trade**. That is GB-20's ruling applied to a
+live session rather than a backtest fold, and it is the correct outcome rather than a
+failure to configure.
+
+A forced dry-run cycle against the live SIP feed completed all ten steps: 610 bars per
+symbol against a floor of 445, no stale symbol, the 0.01 AAPL probe correctly quarantined,
+five decisions recorded and narrated, nothing submitted.
+
+**One thing the narration surfaced that is worth GB-57's attention.** Four of the five
+symbols tripped GB-32's offsetting sentence — the surviving fraction of the gross channel
+view was **15.4%, 20.6%, 23.1% and 49.2%**, against the 50% line. The model's forecasts on
+this data are largely **small differences of larger opposing channel contributions**, which
+is exactly the property Ben's `cancellation` column in GB-49 was added to track, measured
+here for the first time on live data.
+
+---
+
+## 2026-08-18 — The dashboard carries the model's track record, standing, in the panel
+
+**Decision.** Ruled by Ben off the back of GB-32's output. GB-34's dashboard must show the
+model's **measured reliability** persistently in the panel — direction accuracy, the
+always-long bar it is measured against, the fold count behind it, and the date it was
+measured — rather than caveating each narrated decision. Recorded in spec §9's GB-34 row
+and its "Done when".
+
+**Reasoning.** GB-32 renders *the model predicts a 2.02% rise over the next 4 trading
+days*, which reads as a confident claim. This project's own measurement is that the same
+model's directional calls are **indistinguishable from chance**, falling **3.8 to 5.0
+points short of the always-long bar at every one of three fold-grid anchors**, beating that
+bar in 4 or 5 folds of 16.
+
+The narration is nevertheless right not to hedge every sentence. A caveat on every line is
+noise, and a reader learns to skip noise — which would make the hedge worse than useless,
+because it would look like disclosure while functioning as decoration. The fix is
+structural rather than textual: put the track record in the **frame**, where it is standing,
+unavoidable and identical whichever decision is on screen.
+
+**The general principle, which belongs in GB-57 as well as in the code:** *a system that
+explains a decision while hiding the decider's track record is doing the thing this project
+exists to oppose.* An explanation makes a decision legible; it does not make it right, and
+a legible wrong decision presented without its base rate is more persuasive than an opaque
+one — which is a worse outcome than the black box the project set out to replace.
+
+**Consequence.** GB-34's row and acceptance criterion carry it. The numbers it must display
+are the three-anchor table recorded on this date, and they are a range across anchors rather
+than a single figure, per the same day's grid-sensitivity ruling.
+
+---
+
 ## 2026-08-18 — GB-26's two blockers closed, and GB-32's bidirectional rule
 
 ### 1. The feed is asserted, not commented (blocker, ruled by Ben)

@@ -57,6 +57,7 @@ Implemented in GB-24; the buy-and-hold arm and the real sizer landed with GB-21.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 import time
@@ -71,7 +72,7 @@ from glassbox.backtest import metrics
 from glassbox.backtest.calibrate import Calibration, calibrate_thresholds
 from glassbox.backtest.engine import run_backtest
 from glassbox.backtest.walkforward import Fold, make_folds
-from glassbox.config.loader import Config, load_config
+from glassbox.config.loader import Config, config_hash, load_config
 from glassbox.contracts.schemas import Forecast, Signal, WindowBatch
 from glassbox.data.historical import load_history
 from glassbox.engine import risk
@@ -131,6 +132,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entry point. Returns a process exit code rather than raising."""
     args = _parse_args(argv)
     try:
+        if args.prepare_live:
+            prepare_live(load_config(), args.prepare_live, log=print)
+            return 0
         table, summary = run(
             load_config(), model=args.model, n_folds=args.folds, log=print
         )
@@ -231,6 +235,84 @@ def load_cached_bars(cfg: Config) -> dict[str, pd.DataFrame]:
             'cfg = load_config(); load_history(list(cfg.universe), cfg)"'
         )
     return load_history(sorted(cfg.universe), cfg)
+
+
+def prepare_live(cfg: Config, directory: str | Path, log=lambda m: None) -> Path:
+    """Write the checkpoint and the calibrated band the live loop loads. **GB-26.**
+
+    `live_loop.py` may not import this layer - the forbidden-import contract keeps the
+    validation harness out of the live path - so it cannot train a model or calibrate a
+    band, only load them. This is the other side of that: the harness's own entry point,
+    which is already exempt, produces both artefacts and puts them where the loop looks.
+
+    **The most recent complete fold, not a fresh split.** Its training range ends where its
+    validation range begins, and that validation range is the newest data the walk-forward
+    protocol allows a threshold to be chosen on. Fitting on everything up to yesterday and
+    calibrating on the same rows would be the leakage the whole project is built to prevent,
+    arriving through the back door of "but it is live now".
+
+    A fold that stands aside writes a band that says so rather than a number: the live loop
+    then runs, records and explains, and trades nothing - the same ruling GB-20 made for a
+    backtest fold, applied to a session.
+
+    Returns:
+        The directory written.
+    """
+    target = Path(directory)
+    bars = load_cached_bars(cfg)
+    frames = {symbol: build_feature_frame(frame, cfg) for symbol, frame in bars.items()}
+    folds = make_folds(_common_index(frames), cfg)
+    if not folds:
+        raise SmokeError(
+            "no complete walk-forward fold fits the cached history, so there is nothing to "
+            "train the live model on"
+        )
+
+    fold = folds[-1]
+    log(
+        f"preparing from fold {fold.number} of {len(folds)}: train "
+        f"{fold.train[0]:%Y-%m-%d}..{fold.train[-1]:%Y-%m-%d}, val "
+        f"{fold.val[0]:%Y-%m-%d}..{fold.val[-1]:%Y-%m-%d}"
+    )
+
+    run = trainer.train(frames, cfg, fold.train, fold.val, fold.test)
+    val_batch = _windows(frames, run, cfg, fold.val)
+    calibration = calibrate_thresholds(
+        _forecasts(val_batch, run.model.predict(val_batch.X)),
+        _bars_between(bars, fold.val[0], fold.val[-1]),
+        risk.position_sizer,
+        cfg,
+    )
+
+    trainer.save_checkpoint(target / "checkpoint", run, cfg, fold.val, fold.test)
+    band = {
+        "stood_aside": calibration.stood_aside,
+        "lower": None if calibration.stood_aside else calibration.thresholds.lower,
+        "upper": None if calibration.stood_aside else calibration.thresholds.upper,
+        "val_sharpe": (
+            None if math.isnan(calibration.val_sharpe) else calibration.val_sharpe
+        ),
+        "val_trades": calibration.val_trades,
+        "fold": fold.number,
+        "val_start": fold.val[0].isoformat(),
+        "val_end": fold.val[-1].isoformat(),
+        "config_hash": config_hash(cfg),
+    }
+    (target / "thresholds.json").write_text(
+        json.dumps(band, indent=2), encoding="utf-8"
+    )
+    log(
+        "band: "
+        + (
+            "stands aside - validation found no candidate with a positive Sharpe"
+            if calibration.stood_aside
+            else f"lower={calibration.thresholds.lower:.6f} "
+            f"upper={calibration.thresholds.upper} "
+            f"(val sharpe {calibration.val_sharpe:.3f}, {calibration.val_trades} trades)"
+        )
+    )
+    log(f"written to {target}")
+    return target
 
 
 def fold_table(runs: Sequence[ArmRun]) -> pd.DataFrame:
@@ -588,6 +670,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         choices=(BASELINE, "dlinear"),
         default="dlinear",
         help="which arm to run; persistence is always run beside it (default: dlinear)",
+    )
+    parser.add_argument(
+        "--prepare-live",
+        metavar="DIR",
+        default=None,
+        help=(
+            "train on the most recent fold, calibrate its band, and write both into DIR "
+            "for GB-26's live loop to load. Runs nothing else."
+        ),
     )
     return parser.parse_args(argv)
 
