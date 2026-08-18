@@ -311,8 +311,47 @@ def prepare_live(cfg: Config, directory: str | Path, log=lambda m: None) -> Path
             f"(val sharpe {calibration.val_sharpe:.3f}, {calibration.val_trades} trades)"
         )
     )
+    write_reliability(cfg, target, log=log)
     log(f"written to {target}")
     return target
+
+
+def write_reliability(cfg: Config, directory: str | Path, log=lambda m: None) -> Path:
+    """Measure the model's directional track record and write it beside the checkpoint.
+
+    **GB-34's reliability panel reads this file.** The numbers are measured here rather
+    than written into the dashboard, for the reason every number in this project is
+    measured somewhere it can go stale loudly: a hardcoded track record is right on the day
+    it is typed and wrong from then on, and the panel exists precisely so a viewer is not
+    misled about how well the decider decides.
+
+    Measured over every fold the grid holds, at the anchor the config produces. GB-49's
+    three-anchor sweep is the fuller answer and this is the one the deployed model can
+    state about itself; the file records the fold count so the panel can say what it rests
+    on.
+    """
+    target = Path(directory)
+    table, _ = run(cfg, model=cfg.model.active, n_folds=cfg.walkforward.max_folds)
+    arm = table[table["arm"] == cfg.model.active]
+    measured = {
+        "model": cfg.model.active,
+        "direction": float(arm["direction"].mean()),
+        "always_long": float(arm["dir_ref"].mean()),
+        "beats_bar": int((arm["direction"] > arm["dir_ref"]).sum()),
+        "folds": len(arm),
+        "measured_on": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d"),
+        "config_hash": config_hash(cfg),
+    }
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "reliability.json").write_text(
+        json.dumps(measured, indent=2), encoding="utf-8"
+    )
+    log(
+        f"reliability: direction {measured['direction']:.4f} against an always-long bar "
+        f"of {measured['always_long']:.4f}, beating it in {measured['beats_bar']} of "
+        f"{measured['folds']} folds"
+    )
+    return target / "reliability.json"
 
 
 def fold_table(runs: Sequence[ArmRun]) -> pd.DataFrame:

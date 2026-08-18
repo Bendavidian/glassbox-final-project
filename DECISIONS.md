@@ -7,6 +7,131 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-18 — A stated principle: risk already taken is managed whatever the data says
+
+**Principle, not a task ruling.** It was decided in GB-26 for stale market data and it
+generalises past that case, so it is recorded here in the form it should be applied in:
+
+> **A degraded input may never justify opening risk, and may never suspend the management
+> of risk already taken.**
+
+**Reasoning.** The two halves are different questions and the natural phrasing — "skip the
+symbol" — collapses them. Opening a position is an act of judgement that requires the input
+to be trustworthy. Managing an open position is an obligation that exists whether or not it
+is. The system holds the second even when it declines the first, and the instruments that
+carry it — the stop and the target sitting at the broker — are deliberately the ones that do
+not depend on the model at all.
+
+**Where it already applies, and where it is going to.** Stale bars (GB-26): the symbol is
+dropped from ranking and entries and its protective legs are still verified and re-armed. A
+missing or stood-aside band (GB-20, GB-26): no entry can fire, and every open position is
+still reconciled and protected. It should be applied the same way to any future case where
+an input is doubted — a failed feature build, a checkpoint hash mismatch, a broker read that
+returns something implausible. **The test of a correct implementation is the asymmetry:** if
+a degradation stops entries *and* stops protection, it has been implemented as a pause
+rather than as a refusal, and a pause is the wrong shape.
+
+---
+
+## 2026-08-18 — GB-38 absorbs two GATE 2 items, because the deployed band stands aside
+
+**Decision.** Ruled by Ben. GB-38's replay is extended to **drive the live loop's own
+cycle** — the same code path, not a reimplementation — over historical bars from **a fold
+whose band did fire**, using **the thresholds that fold actually calibrated**. It exercises
+forecasting, ranking, risk, attribution, narration, the decision record, and **Co-Pilot
+approve and reject**, entirely offline. Not implemented yet; recorded now.
+
+**Reasoning.** The most recent complete fold stands aside (validation Sharpe −3.38), so the
+live system cannot produce a recommendation. That leaves two GATE 2 items with nothing to
+demonstrate: Co-Pilot approve/reject has nothing to approve, and replay has no day that
+traded. Settling the path now rather than at the gate is the point — the alternative is
+discovering it on the day.
+
+**It must be visibly a replay.** Every replayed decision record carries a **replay flag and
+its source fold**, so a replayed decision can never be mistaken for a live one in the log,
+the dashboard or the report. Without that the two GATE 2 items would be demonstrated on
+records indistinguishable from real ones, which would make the demonstration itself the kind
+of thing this project exists to rule out.
+
+**Today's live session is recorded too, band and all.** A recorded session in which the
+system correctly declines to trade is worth having on its own terms, and the demonstration
+shows both: the real system abstaining, and a replayed fold where it acts.
+
+---
+
+## 2026-08-18 — GB-33 is satisfied by work already done, and hands GB-41 one constraint
+
+**Decision.** GB-33 is **closed without a new test**. §4.4's exactness properties are
+parameterised over `model.ALL_FORECASTERS` and run over **1,000 random windows per
+forecaster**; GB-30 added a second, independent pass in `tests/explain/test_channel.py`
+that iterates the same registry through `explain.channel.attribute`. Both properties have
+teeth — `MisreportingForecaster` breaks property 3 and `NonAdditiveForecaster` breaks
+property 4, and each is asserted to be rejected.
+
+**The registry is the integration point.** Adding `"fits": _fits` to `ALL_FORECASTERS` is
+the whole of GB-41's wiring; no test file is edited, which is deliberate — a test a model
+can edit is a test that model has judged itself with.
+
+**One constraint this hands GB-41, stated so it is met rather than discovered.** The
+contract asserts `tuple(attribution.per_channel) == batch.channels`, and §6.4 makes FITS
+univariate. So **FITS must return every active channel, with `0.0` for the ones it does not
+consume**, exactly as Persistence does. An attribution naming only the channels a model
+reads would render as a dashboard with panels missing, and would quietly change what
+"exact" means between arms.
+
+---
+
+## 2026-08-18 — GB-34/35/36: chrome and data are different colour families
+
+**Decision.** Ben's ruling, implemented. **Orange is interface chrome only** — labels,
+rules, borders, registration marks, active states, and the calibrated threshold, which is a
+rule line rather than a measurement. The **blue spectral ramp is the data encoding**, dark
+for slow and light for fast, as in the Hebrew proposal, the architecture report's three
+figures and the vision script.
+
+**Two consequences that had to be decided here.**
+
+**1. Sign is carried by geometry and a glyph, never by hue.** The one data family available
+is a *ramp*, and a ramp cannot encode a sign without inventing a second data colour, which
+the ruling forbids. So a positive contribution is a **filled** bar right of the zero rule
+and a negative one is a **hollow** bar left of it, and every signed figure is prefixed ▲/▼.
+A test asserts no traffic-light pair appears anywhere. The side effect is worth having: the
+chart is readable in greyscale, which is the test of whether colour was doing the work.
+
+**2. The ramp is assigned by channel speed, not by config order.** A ramp encodes a
+quantity; the quantity here is how far back a channel looks, so `ma_dist20` takes the
+darkest entry and `close_logret` the lightest. Assigning it in config order would look the
+same and encode nothing.
+
+**The charts are hand-built SVG rather than a plotting library.** The design language is
+dashed hairlines, numbered rulers and registration marks, which a chart library fights
+rather than helps — and an SVG builder is a pure function returning a string, so the
+threshold line, the ramp assignment and the bar geometry are unit-testable without a
+browser. It also adds no dependency, which `DECISIONS.md` would otherwise have to justify.
+
+**Three smaller rulings, each with its reason.**
+
+- **`STOOD ASIDE` outranks every other status.** A session whose band cannot fire is not
+  idle between decisions; it has decided in advance that it will not act. A status line
+  reading `RUNNING` beside a flat book would leave a viewer waiting for a trade that cannot
+  come.
+- **A `never()` band is said on the chart, not omitted.** Dropping the threshold line makes
+  a system that abstains look like one that has not acted yet, and those are different
+  claims.
+- **A Hebrew narrative gets an explicit `dir`, not `dir="auto"`.** `auto` resolves from the
+  first strong character and every narrative GB-32 writes opens with a ticker, so `auto`
+  would call a Hebrew sentence left-to-right and undo the isolation work that keeps a
+  percentage on the correct side of its label.
+
+**The reliability panel reads a measured file.** `smoke_offline --prepare-live` now writes
+`reliability.json`, and the panel renders `NOT MEASURED` when it is absent rather than
+hiding itself. A hardcoded track record is right on the day it is typed and wrong from then
+on, which is the exact failure the panel exists to prevent. Measured today: direction
+**0.5182** against an always-long bar of **0.5560**, beating it in **4 of 16 folds** — the
+same figures as the anchor-0 column of the three-anchor table, arrived at independently.
+
+---
+
 ## 2026-08-18 — GB-26: two rulings taken in the live loop, and what the first run found
 
 ### 1. Stale data — the symbol loses its entry and keeps its stop
