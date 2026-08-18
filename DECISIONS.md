@@ -7,6 +7,235 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-18 — GB-30: the decomposition lives on the schema, and shares are of the gross
+
+**Three decisions, one ruled by Ben and two taken here and reported.**
+
+### 1. Where the one decomposition lives — ruled by Ben
+
+GB-30's brief was "move DLinear's inline explain logic into `explain/channel.py` and have
+the model delegate to it, so there is one decomposition rather than one per model". Taken
+literally that breaks spec §3.1: `explain` sits **above** `model`, so the delegation is an
+upward import and a module cycle, and it would cost an `ignore_imports` exception in the
+layers contract.
+
+**Ruling: the summation becomes `Attribution.from_terms`, a classmethod on the schema
+itself (L0).** Both the model's `explain` and `explain.channel.attribute` call it. No
+exception, no cycle, and `lint-imports` still reports 2 kept / 0 broken. Precedent for
+putting real work on a frozen schema is `WindowBatch.concat` and `FitProvenance.from_batch`;
+no field changed, so §4.2 is untouched.
+
+The version that costs nothing is also the stronger one. The exactness property was declared
+in `Attribution`'s docstring and enforced only by a test. It is now enforced **at
+construction**, so every attribution in the system is built by the one function that refuses
+a residual — and that refusal names the two causes worth checking first, an intercept and a
+reversible normalisation added back outside the per-channel terms.
+
+Each layer keeps a real job: the model says *which* terms exist, which is architecture; the
+contract sums them and holds the invariant; `channel.py` is the face GB-32 and GB-53 call
+and **re-checks the reported total against `predict` itself**. That last check is not
+redundant. `from_terms` can only prove the parts sum to the total *the model reported*; a
+model that reports a total it did not forecast is internally consistent and describes
+nothing, and only a layer that asks `predict` directly can see it.
+
+**One change that follows, and it removes a tautology.** `forecast_total` used to be
+`sum(per_channel.values())`, which made spec §4.4's property 4 true by construction —
+the assertion could not fail. It now comes from `predict`, so properties 3 and 4 are two
+independent checks. The residue this introduces is the float32 cast on `predict`'s output
+and nothing else: **5.005e-08 worst over 1,000 random windows, a 200× margin** under the
+1e-5 tolerance. `tests/model/test_ltsf.py` had asserted the old identity at `abs=1e-12` and
+now bounds the residual by `H × ulp(max|path|)`, which is a measurement rather than a
+loosened tolerance.
+
+### 2. Percentage shares when contributions have opposite signs — decided here
+
+**Shares are normalised by the gross:** `share[c] = c / Σ|c|`.
+
+Ben's example — `+0.08`, `−0.06`, forecast `+0.02` — reads **+57%** and **−43%** rather than
+400% and −300%. Magnitudes sum to exactly 100%, every share lies in [−100%, +100%], and the
+sign survives.
+
+Percent-of-net is rejected on two grounds, and the second is the decisive one. It is
+unbounded, so a reader meets 400% and concludes the explanation is broken — on that
+denominator they are right to. And it is **discontinuous**: it blows up and flips sign as
+the forecast crosses zero, which on daily log returns is exactly where this project renders
+most of its explanations.
+
+The cancellation the shares no longer show is not discarded — it is reported directly, as
+`cancellation = |Σc| / Σ|c|` = **0.143** for that window. GB-32 can then write *the channels
+largely cancelled: 14% of the gross view survived into the forecast*, which is the honest
+sentence and the one percent-of-net cannot express at all. `per_channel` remains the exact
+quantity that sums to the forecast; shares are a rendering aid and the panel shows both.
+
+### 3. Attribution of a forecast of exactly zero — decided here
+
+**Defined, total, and never NaN.** The gross denominator separates two cases that
+percent-of-net conflates:
+
+- **Every contribution exactly zero** — persistence, on every window. The gross is zero too
+  and every share is `0.0`. That preserves GB-11's ruling that the baseline reports each
+  active channel with a zero rather than an empty mapping: a renderer then shows *no channel
+  drove this, because nothing was predicted*, rather than a blank panel indistinguishable
+  from a bug.
+- **Contributions that cancel to a zero forecast** — a real model can do this. The gross is
+  non-zero, so the shares are well-defined and non-zero, and it is `cancellation` that reads
+  0.0.
+
+So the ratio is undefined only in the single case where "nothing" is the true answer, and
+there the answer is zero rather than an error. **That is the strongest argument for the
+gross denominator**, and it is why the zero case needs no special-casing anywhere else in
+the system.
+
+**Consequence.** `PersistenceForecaster.explain` no longer writes `dict.fromkeys(channels,
+0.0)` by hand: it reports **no terms at all** for each channel, and the zeros fall out of
+the same arithmetic every other model goes through. A baseline that constructs its own
+answer is a baseline the exactness check never actually exercised.
+
+**One thing this task added that was not asked for, and the reason.** The ban on SHAP, LIME
+and captum is written in spec §4.2, in three module docstrings and in `CLAUDE.md`, and was
+enforced by nothing. A syntax-tree test now asserts that no module under `explain/` imports
+any of them. It is the same treatment `signal.py`'s no-numeric-literal rule gets, and it
+matters more here: a perturbation library would not fail a test, it would produce plausible
+numbers that do not sum to the forecast — the one defect this project's central claim exists
+to rule out.
+
+---
+
+## 2026-08-18 — Every headline claim is measured at three fold-grid anchors
+
+**Decision.** Ruled by Ben, as a standing requirement rather than a one-off check. GB-49's
+study runs the whole grid at **three fold-grid anchors**, offset from one another by roughly
+one third of `step_months` — 21 trading sessions at `step_months: 3`. `results.csv` carries
+the anchor as a column. GB-52's report shows, for every headline claim, whether it holds at
+all three. GB-57 carries a required methods subsection on the protocol and what it found.
+
+**Reasoning.** The rule is written *from* a failure, not in anticipation of one. GB-27b's
+warm-up unification moved the fold boundaries by about a week and the timing-versus-market
+correlation went from `r = -0.47` to `r = -0.0025`. Nothing about the single-anchor
+measurement said it might. If a one-week shift can erase a finding, other findings may be
+equally fragile and a single-grid study has no way to tell which — the sensitivity is not a
+robustness garnish, it is the only instrument that separates a finding from a property of
+the grid. Most work in this area reports one grid, so reporting the sensitivity is a
+methodological point the report can make rather than a defensive footnote.
+
+**Cost.** 16 folds run in about 31 seconds, so three anchors is about 93. The two-claim
+re-check below took 3 minutes 40, because it runs buy-and-hold on every fold as well.
+
+**Consequence.** Spec §9's GB-49, GB-52 and GB-57 rows carry it. **A claim shown at one
+anchor is not reportable.**
+
+---
+
+## 2026-08-18 — The two claims already relied on, re-checked at three anchors: one holds, one splits
+
+**Decision.** Recorded, not acted on. No change to the model, the band, the sizer or the
+config. Anchors are offsets applied to the index handed to `make_folds`, so anchor `+21` is
+the same data with the fold boundaries moved one month later.
+
+**Claim B — direction accuracy against the always-long bar. Holds at all three.**
+
+| anchor | first test | DLinear | always-long | gap | t | beats the bar |
+|---|---|---|---|---|---|---|
+| +0 | 2022-07-06 | 0.5182 | 0.5560 | −0.0377 | −1.53 | 4/16 |
+| +21 sessions | 2022-08-08 | 0.5027 | 0.5523 | −0.0496 | −2.55 | 5/16 |
+| +42 sessions | 2022-06-06 | 0.5236 | 0.5654 | −0.0418 | −2.39 | 4/16 |
+
+Same sign, a gap of 3.8 to 5.0 points, the bar beaten in 4 or 5 folds of 16, at every
+anchor. This is the most grid-stable claim in the project and it is a **negative** one: the
+model does not beat always calling up. Its stability is exactly why it is reportable.
+
+**Claim A — β tracks measured exposure. The identity holds; the significance does not.**
+
+| anchor | measured exposure | β | β t | β 95% CI | α per fold | α t | R² | stood aside |
+|---|---|---|---|---|---|---|---|---|
+| +0 | 0.0892 | 0.0919 | 3.29 | [+0.032, +0.152] | −0.31% | −0.65 | 0.436 | 3/16 |
+| +21 sessions | 0.0934 | 0.0507 | 1.51 | [−0.021, +0.122] | −0.21% | −0.44 | 0.141 | 3/16 |
+| +42 sessions | 0.1390 | 0.0848 | 2.28 | [+0.005, +0.165] | +0.11% | +0.20 | 0.271 | 1/16 |
+
+Three readings, and they must not be collapsed into one:
+
+1. **The measured exposure lies inside β's 95% interval at every anchor.** The identity
+   "β is the exposure" survives.
+2. **α is never distinguishable from zero** — |t| ≤ 0.65 at every anchor, and it changes
+   sign between them. *The exposure explains the returns and there is no alpha* survives.
+3. **β's own significance does not survive.** At +21 its interval includes zero (t = 1.51).
+   The previous entry's "with β significant (t = 3.29)" was true of one anchor and is
+   **amended here**: it holds at two anchors of three.
+
+The point estimates are not stable either — exposure 0.089 to 0.139, β 0.051 to 0.092, R²
+0.14 to 0.44 — so GB-57 reports each as a range across anchors, never as a single number.
+
+**One reconstruction check worth recording.** Average gross exposure is rebuilt bar by bar
+from the trade log and each symbol's own closes, holding a position from `entry_time` to
+`exit_time` inclusive. At anchor +0 that reproduces the **0.0892** already in the record to
+four decimals, which is what makes the other two anchors comparable to it. The exclusive
+variant — dropping the exit bar's close — gives 0.0720, so the definition is not a detail:
+it moves the number by 19%.
+
+**Consequence.** Spec §9's GB-57 row carries both tables and replaces its pre-GB-27b
+direction figures (bar 0.5625, DLinear 0.5071, 5 of 16), which were measured on a fold grid
+that no longer exists.
+
+---
+
+## 2026-08-18 — GB-7's deferral is withdrawn: SIP works, and the re-sweep confirms the claim
+
+**Decision.** The GB-7 audit item recorded as "deferred, needs live SIP data this account no
+longer serves" is **withdrawn as wrongly premised**, and the claim it deferred is re-swept
+and confirmed. I recorded that this account "returns 403 on recent SIP". That is not what
+the account does, and the imprecision produced a deferral that was never necessary.
+
+**What the account actually refuses.** Recent-*data* endpoints, not the SIP feed:
+
+| request | result |
+|---|---|
+| daily bars, SIP, 45 days | **served** — 31 sessions to 2026-08-17, the most recent completed bar |
+| daily bars, SIP, 400 days | **served** — 273 sessions per symbol |
+| minute bars, SIP, last 2h | served (empty — the market is shut) |
+| `get_stock_latest_bar`, SIP | **refused** — `subscription does not permit querying recent SIP data` |
+| `get_stock_latest_quote`, SIP | **refused** — same message |
+
+`data/live.py` requests **daily bars over completed sessions**, which is the served case.
+
+**Answering the three questions Ben posed before GB-26.**
+
+1. **Which feed does the live client resolve to for the most recent completed daily bar?**
+   SIP. `_fetch_bars` passes `feed=DataFeed.SIP` as a hardcoded enum with no fallback path,
+   and the request succeeds today.
+2. **Is it the same feed the training data was compared against in GB-7?** Yes. So the
+   parity question is not "does an unvalidated feed reach the live loop" — it does not.
+3. **Does it agree with the training source?** Re-swept over **273 sessions × 5 symbols =
+   1,365 bar-comparisons**, against GB-7's single 163-bar window. SIP against the cached
+   yfinance training source, worst cell of the whole sweep: **open 0.51, high 0.46, low
+   0.56, close 0.30 bps.** GB-7's 1 bp tolerance **holds on the sweep.** Volume's worst is
+   **213.6 bps**, so GB-7's stated 34–111 bps range widens to **34–214**.
+
+**What IEX would cost, since that was the feared path.** Same 273 sessions, IEX against the
+same training source: **open up to 173 bps (GOOGL), low up to 193 bps (MSFT), close up to 90
+bps (AMZN)**, volume ~9,900 bps. Against a 1 bp tolerance and a 2 bps modelled slippage, a
+silent IEX downgrade would be worth up to **190× the price tolerance**. It cannot happen
+silently — the feed is a constant and losing entitlement raises — but **nothing in the suite
+asserts that constant**, which is the one gap this leaves open.
+
+**A second gap, found while establishing the first, and it is the shape Ben predicted.**
+`load_live_bars` derives its default lookback as `input_len × 2 = 240` calendar days. That
+returns **163 trading bars** against a `min_history_bars` of **445** — 282 short — and the
+function's own guard raises only below `input_len` (120), so **163 passes it**. About 645
+calendar days are needed. The failure is *not* a silent divergence: `indicators.rsi` emits
+NaN for its whole 325-bar warm-up, so `build_feature_frame` returns an **empty frame**
+rather than contaminated values — the NaN warm-up is what protects parity here. But nothing
+on that path names the cause, and a caller trusting the default gets an empty frame with no
+explanation.
+
+**Consequence.** `data/live.py`'s docstring carries the re-swept table and the entitlement
+boundary. Spec §9's GB-26 row carries the lookback measurement. Two items go to Ben for a
+ruling rather than being acted on here: **(a)** a test asserting the feed constant, since "a
+silent downgrade would change the numbers without changing the schema" is a claim with no
+backstop; **(b)** restating `load_live_bars`'s default and guard in terms of
+`min_history_bars`, which is GB-26 scope.
+
+---
+
 ## 2026-08-17 — GB-20: the direction reference is always-long, not the per-fold majority class
 
 **Decision.** `metrics.directional_base_rate` — `max(up_rate, 1 − up_rate)`, added hours
@@ -218,7 +447,9 @@ number in the decomposition was re-measured on the new grid, with intervals:
 
 **What survives, and it is the part that matters.** β ≈ average exposure on **both** grids —
 0.141 against 0.160, then 0.092 against 0.089 — with β significant (t = 3.29) and α not
-(t = −0.65). *The exposure explains the returns and there is no alpha* is robust to the grid
+(t = −0.65). **Amended 2026-08-18:** re-checked at three fold-grid anchors, β ≈ exposure
+and “α is not distinguishable from zero” hold at all three, but β's own significance holds
+at only two of three (t = 1.51 at the +21 anchor). See the entry of that date. *The exposure explains the returns and there is no alpha* is robust to the grid
 moving. So is the shape of the split: earned by being in the market, most of it given back
 to timing and friction, with the timing term never distinguishable from zero.
 

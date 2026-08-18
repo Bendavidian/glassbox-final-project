@@ -14,7 +14,8 @@ Implemented in GB-3.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,6 +27,18 @@ import pandas as pd
 # per canonical channel name. No NaNs after warm-up trim.
 
 FLOAT32 = np.dtype(np.float32)
+
+# How far the parts may sum from the whole, from spec 4.2. A contract constant rather than
+# a tuning knob: it is the number the project's central claim is stated in. It lives here
+# because :meth:`Attribution.from_terms` enforces it and the contract test asserts it, and
+# two copies of a tolerance is how the two end up disagreeing.
+#
+# 1e-5 is loose against the float64 arithmetic that produces a contribution and tight
+# against anything a real defect would cause. The residues it must tolerate are the
+# float32 cast on `predict`'s output — order 1e-9 on a log-return forecast — and nothing
+# else. The residues it must catch are an intercept or a re-added normalisation constant,
+# which are the size of the forecast itself.
+EXACTNESS_TOLERANCE = 1e-5
 
 
 def _fail(field_path: str, requirement: str, value: Any) -> None:
@@ -378,6 +391,68 @@ class Attribution:
     gain_phase: dict[float, tuple[float, float]] | None  # FITS only
     forecast_total: float
 
+    @classmethod
+    def from_terms(
+        cls,
+        terms: Mapping[str, Sequence[tuple[np.ndarray, np.ndarray]]],
+        forecast_total: float,
+    ) -> Attribution:
+        """Assemble an attribution from a model's own linear terms, and refuse it if the
+        parts do not sum to the whole.
+
+        **This is the only place in the codebase where per-channel contributions are
+        summed** (GB-30). Every forecaster's ``explain`` and ``explain.channel.attribute``
+        both come through here, so there is one decomposition rather than one per model,
+        and the exactness property is enforced at construction rather than only by a test.
+
+        Args:
+            terms: ``{channel: ((W, v), ...)}`` — the ``(weight, input)`` pairs that
+                channel contributes to the forecast. DLinear supplies two per channel, one
+                per component; Persistence supplies none, and its contributions are then
+                zero by the arithmetic rather than by being written down. ``W`` is
+                ``(H, L)`` and ``v`` is ``(L,)``, so ``W @ v`` is the channel's own
+                contribution to the forecast path and its sum is the contribution to the
+                total.
+            forecast_total: What the model **predicts**, summed over the horizon. Not the
+                decomposition's own sum: taking it from ``predict`` is what makes spec
+                4.4's properties 3 and 4 two real checks on this object instead of one
+                real check and one identity.
+
+        Raises:
+            ValueError: ``terms`` is empty, or the contributions and ``forecast_total``
+                differ by more than :data:`EXACTNESS_TOLERANCE`.
+        """
+        if not terms:
+            _fail("Attribution.from_terms", "at least one channel", dict(terms))
+
+        per_channel = {
+            channel: float(
+                sum(float((weight @ values).sum()) for weight, values in pairs)
+            )
+            for channel, pairs in terms.items()
+        }
+        residual = float(forecast_total) - sum(per_channel.values())
+        if not math.isfinite(residual) or abs(residual) > EXACTNESS_TOLERANCE:
+            raise ValueError(
+                f"the decomposition does not close: the channels sum to "
+                f"{sum(per_channel.values())!r} while the model forecasts "
+                f"{float(forecast_total)!r}, a residual of {residual:.3e} against a "
+                f"tolerance of {EXACTNESS_TOLERANCE:.0e}. Attribution in this project is "
+                "algebra, not an estimate, so a residual is a defect in the decomposition "
+                "and not a number to report. The usual cause is a reversible "
+                "normalisation or an intercept — a constant the model subtracts and adds "
+                "back is part of the forecast and belongs to no channel, so unless it "
+                "appears in the terms the sum cannot close."
+            )
+
+        return cls(
+            per_channel=per_channel,
+            per_lag=None,
+            per_frequency=None,
+            gain_phase=None,
+            forecast_total=float(forecast_total),
+        )
+
     def __post_init__(self) -> None:
         if self.per_lag is not None and self.per_lag.ndim != 2:
             _fail(
@@ -413,6 +488,7 @@ class DecisionRecord:
 
 
 __all__ = [
+    "EXACTNESS_TOLERANCE",
     "Attribution",
     "ChannelStats",
     "DecisionRecord",

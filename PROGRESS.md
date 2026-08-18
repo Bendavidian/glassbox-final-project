@@ -13,7 +13,14 @@ Append one line per completed task. Newest at the bottom of each sprint.
 17 Aug
 **Next task:** GB-26, the live loop — every piece it needs now exists: the five-rule
 protection policy (18 Aug), GB-23's `MISSING_PROTECTION` detection, GB-28's ranking,
-GB-29's records and trade log, and a **445**-bar history request
+GB-29's records and trade log, GB-30's attribution, and a **445**-bar history request.
+**Two things measured on 18 Aug that GB-26 must handle:** `load_live_bars`'s default
+lookback is `input_len × 2` = 240 calendar days, which returns **163 bars** against a
+`min_history_bars` of 445, and its guard raises only below `input_len`, so 163 passes —
+about **645 calendar days** are needed. It does not silently diverge (`rsi` is NaN through
+its 325-bar warm-up, so the frame comes back empty), but nothing on that path names the
+cause. And the account refuses **recent** SIP data, so anything reaching for a live quote
+rather than a completed bar meets a wall.
 **Last gate passed:** **GATE 1, 17 Aug 2026**, 25 days before its commitment date
 **Blockers:** none. Standing note for GB-57, re-measured on the fold grid as it stands after
 GB-27's warm-up unification: the strategy beats **neither** reference it should be read
@@ -162,6 +169,7 @@ depends on nothing in the model layer.
 | GB-27b | 18 Aug 2026 | Ben | **Complete.** Three rulings from the parity-floor post-mortem. **(1) `tests/sweep.py`**, beside `causality.py`: `sweep()` for "X holds", `contest()` for "A beats B", with two properties that are refusals rather than conventions — a `SweepResult` **cannot be used as a boolean** (`bool(result)` raises and names what to read instead), and a **sweep of one cell is refused** with an error citing the floor. Held to `causality.py`'s standard: the decisive test replays the 352-bar measurement on real data. 19 tests. **(2) `RSI_WARMUP` deleted and unified** with the parity warm-up at 325 (`RSI_SEED_TOLERANCE` 1e-2 → 1e-10); `PARITY_WARMUP["rsi14"]` now *imports* it, so there is one derivation rather than two constants to keep in step. **Cost measured, and not quite zero:** feature rows 2591 → 2343, first row 2016-04-25 → 2017-04-19, folds still 16 and no kept fold reads a discarded bar — but `make_folds` anchors its month grid on the feature frame's start, so the grid shifted about a week (fold 1 training 2020-04-13 → 2020-04-06) and individual val/test counts move by one or two. **Every previously measured number therefore shifts slightly**; the headline figures were re-measured rather than carried over: direction **0.5182** vs an always-long bar of **0.5560** (4/16), return **+0.40%** per fold vs buy-and-hold's **+7.73%**, Sharpe **+0.62** vs **1.39**, 3/16 folds standing aside. The conclusion is unchanged: the strategy beats neither reference. **A consequence worth more than the tidiness:** a tail below `min_history_bars` no longer assembles a window at all — the builder **refuses** — so the silent below-floor divergence is unreachable through the public path. The cost is that the 414-vs-445 measurement can no longer be reproduced live; it stands as a recorded result and the below-floor tests assert the refusal. **(3) GB-13's initialisation study re-swept** through the new harness: 3 arms × 16 folds × 5 symbols = 80 cells, under the configured `batch_size: 64`. **The ranking survives and its reason changes.** Paper `1/√L` wins **0/80** on MAE and **0/80** on legibility — that half is confirmed and strengthened. But zeros and the fan-in correction are a **tie on MAE** (2.190 vs 2.195, and fan-in wins more cells, 46 to 34): the original 1.94× vs 1.96× was always that tie, and one fold made it look like an order. Zeros wins **direction** (0.518 vs 0.470/0.475, 41/80) and **legibility unanimously, 80/80** (largest contribution 0.065 vs 0.450 vs 1.111). The single-fold *levels* do not reproduce; the single-fold *legibility* numbers do, almost exactly. GB-57 now carries the swept table and must not quote the old figures. |
 | GB-28 | 18 Aug 2026 | Ben | **Complete.** `engine/rank.py` — order by descending `trend_strength`, **break ties alphabetically**, take `signal.top_k`. The tie-break is the whole design: Python's sort is stable, so without a second key a tie resolves by the caller's insertion order, which in the live loop is the order symbols came back from a broker call — two identical days would select different names and GB-32's replay would not reproduce. Negating the strength rather than `reverse=True`, because reversing would also reverse the tie-break and run the alphabet backwards. Only `enter_long` competes: **an exit is an obligation on capital already committed** and must never be crowded out. A non-finite strength is refused rather than sorted, since NaN compares false against everything and ordering it is silently order-dependent. 14 tests. |
 | GB-29 | 18 Aug 2026 | Ben | **Complete.** `glassbox/records.py` (new, spec §3.4) — `DecisionRecord` persisted as JSONL under `decisions/YYYY-MM.jsonl` with the `config_hash`, `save_decision` / `load_decisions(start, end)`, numpy arrays as lists, timestamps as ISO-8601 UTC, lossless round trip including float32 dtype. A corrupt line is logged and skipped rather than costing the month — a session killed mid-write leaves exactly that. Bounds are inclusive and a bare end date covers its whole day, because "August 1st to 31st" excluding the 31st would be a trap. **Plus the live trade log**: `emit_trades` builds `Trade` records from the broker's filled-order history, `exit_reason` from **which leg filled** (by `client_order_id` suffix, not by price — two levels can sit close together) with `stop_gap`/`target_gap` decided by the fill price, **costs from the actual fills rather than the configured bps**, and `realised_slippage_bps` for GB-57's comparison against the modelled 6.0 bps. **Nothing is emitted for a quarantined position** — no entry basis, no invented number. **Ruling: a live `Trade` and a backtest `Trade` are one type**, moved to `contracts/schemas.py` (§4.2 addition) with two optional broker-order-ID fields; the layer contract forced it, since the live path may not import the harness and GB-19 must read both with no translation layer. `glassbox.records` is named in the forbidden-import contract so the temptation is mechanically unavailable. 27 tests; suite at 705. |
+| GB-30 | 18 Aug 2026 | Ben | **Complete.** `explain/channel.py` — `attribute`, `shares`, `cancellation`. **The one decomposition lives on the schema**, as `Attribution.from_terms` (Ben's ruling): `explain` sits above `model` in §3.1, so "move the logic up and delegate" would have needed a cycle and an `ignore_imports` exception; putting the summation on `Attribution` costs neither and makes exactness **structural** — every attribution in the system is built by the function that refuses a residual, and the refusal names an intercept and a re-added normalisation as the causes to check. `forecast_total` now comes from `predict` rather than from the contributions' own sum, which turns §4.4's property 4 from an identity into a real check; the residue is the float32 cast, **5.005e-08 worst over 1,000 random windows, a 200× margin**. `attribute` re-checks the model's total against `predict` itself, because `from_terms` can only prove the parts sum to the total the model *reported*. **Shares are of the gross, not the net**: +57%/−43% rather than 400%/−300%, bounded, signed, with the cancellation reported separately (0.143 on that window). **A zero forecast is defined** — all-zero contributions give all-zero shares, cancelling contributions keep their shares and read a cancellation of 0.0. Persistence now reports **no terms** per channel instead of hand-written zeros. A syntax-tree test asserts no perturbation library is importable from `explain/`, which nothing enforced before. 26 + 9 tests; suite at 731. |
 
 ## Sprint 4 — FITS, Study, Report · 26 Sep – 10 Oct 2026 → GATE 3
 
@@ -271,6 +279,22 @@ the parity warm-up. A claim with a known-bad derivation was removed rather than 
 | Smoke wall time — 8.4 s for one fold, 39.3 s for 16 (GB-24) | one machine | negligible | Performance only. |
 | Causality: `scale` passes a leaked direction, `shuffle` catches it (GB-10) | one synthetic series; the real-data check was AAPL | low | The synthetic series is adversarial by construction (sign changes often), arguably stronger than one real symbol — but it is still one series. |
 
+### Closed since the audit was written
+
+**GB-7's price/volume agreement — re-swept 18 Aug and confirmed.** It was recorded as
+deferred on the premise that this account "returns 403 on recent SIP". That premise was
+wrong: what the account refuses is the *recent-data* endpoints (`get_stock_latest_bar`,
+`get_stock_latest_quote`), while historical daily bars on SIP are served, including the most
+recent completed session. Re-swept over **273 sessions × 5 symbols = 1,365 bar-comparisons**
+against GB-7's single 163-bar window: worst price deviation **0.56 bps**, so the 1 bp
+tolerance holds; volume's worst is **213.6 bps**, so GB-7's stated 34–111 bps range is
+widened to **34–214**. IEX, had the live loop ever used it, would be out by up to **193 bps**
+on price — 190× the tolerance. See DECISIONS, 18 Aug.
+
+**The r = −0.47 correlation — withdrawn**, and every headline claim now runs at three
+fold-grid anchors (DECISIONS, 18 Aug). Direction against the always-long bar holds at all
+three; β tracks measured exposure at all three but is significant at only two.
+
 ### Established on a sweep, and sound as stated
 
 `13,309` entry resolutions across five symbols for GB-18's four pricing rules, with the
@@ -303,6 +327,15 @@ _Claude Code: write blocking questions here rather than guessing._
   blocking the cycle; (c) round to whole shares so a real bracket becomes legal, which
   reintroduces the price-level discretisation GB-18 chose fractional sizing to avoid. This
   needs a ruling before GB-26 wires the loop.
+
+- **Two rulings sought from GB-30's feed establishment (18 Aug), neither acted on.**
+  **(a)** Nothing in the suite asserts `data/live.py`'s `feed=DataFeed.SIP`. The module's own
+  docstring says "a silent downgrade to IEX would change the numbers without changing the
+  schema", and the sweep now prices that downgrade at up to 193 bps against a 1 bp tolerance
+  — a claim with a measured cost and no backstop. A one-line assertion would close it.
+  **(b)** `load_live_bars`'s default lookback and its guard are both expressed in
+  `input_len` and should be `builder.min_history_bars(cfg)`. That is GB-26 scope, so it is
+  recorded here rather than fixed.
 
 _The 14 Aug CI failure is resolved — see DECISIONS.md, "Python floor raised to 3.12";
 green on 176fe01._

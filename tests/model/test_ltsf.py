@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 from glassbox.config.loader import Config, load_config
-from glassbox.contracts.schemas import WindowBatch
+from glassbox.contracts.schemas import EXACTNESS_TOLERANCE, WindowBatch
 from glassbox.model import ALL_FORECASTERS
 from glassbox.model.ltsf import DECOMP_KERNEL, DLinearForecaster, decompose
 
@@ -208,15 +208,27 @@ def test_attribution_is_recomputable_from_the_weights_alone(
 def test_the_channel_contributions_sum_to_the_forecast(
     model: DLinearForecaster, batch: WindowBatch
 ) -> None:
-    """Exact by construction because there is no intercept to account for separately."""
+    """Exact by construction because there is no intercept to account for separately.
+
+    **The tolerance moved from 1e-12 to the contract's own in GB-30, and the reason is the
+    point of the change.** ``forecast_total`` used to be ``sum(per_channel.values())``, so
+    this assertion compared a number against itself and could not fail. It now comes from
+    ``predict``, whose output is float32, so the two quantities are computed independently
+    and their difference is a real measurement: the float32 cast on each of the H path
+    elements, bounded by ``H x ulp(max|path|)``. Asserting the residual is bounded *by the
+    cast* keeps the teeth that loosening the tolerance would otherwise remove — the bound
+    is on the path's own magnitude rather than the sum's, because elements that partly
+    cancel leave a total far smaller than the numbers that were rounded.
+    """
     for row in (0, 11, len(batch.timestamps) - 1):
         attribution = model.explain(batch.X[row], batch.channels)
-        forecast = float(model.predict(batch.X[row][None, ...])[0].sum())
+        path = model.predict(batch.X[row][None, ...])[0]
+        forecast = float(path.sum())
+        residual = abs(sum(attribution.per_channel.values()) - forecast)
 
-        assert sum(attribution.per_channel.values()) == pytest.approx(
-            attribution.forecast_total, abs=1e-12
-        )
-        assert attribution.forecast_total == pytest.approx(forecast, abs=1e-6)
+        assert residual <= EXACTNESS_TOLERANCE
+        assert residual <= HORIZON * float(np.spacing(np.abs(path).max()))
+        assert attribution.forecast_total == forecast
 
 
 def test_a_zero_window_forecasts_exactly_zero(model: DLinearForecaster) -> None:

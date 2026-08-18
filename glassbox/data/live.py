@@ -20,29 +20,49 @@ Three things this module pins deliberately, each measured rather than assumed:
   close to but not the consolidated print. If SIP access is ever lost the request fails
   loudly, which is the intended behaviour: a silent downgrade to IEX would change the
   numbers without changing the schema.
+
+  **How far "close to but not" actually is, measured 2026-08-18 over 273 sessions x 5
+  symbols against the same cached training source**: IEX is wrong by up to **173 bps on
+  the open** (GOOGL), **193 bps on the low** (MSFT) and **90 bps on the close** (AMZN),
+  against a 1 bp tolerance and a 2 bps modelled slippage. Volume is out by ~9,900 bps.
+  The downgrade this module refuses to make is therefore worth up to **190x the price
+  tolerance** — which is why the feed is a hardcoded enum with no fallback path rather
+  than a configurable default.
+
+  **The account's SIP entitlement is narrower than "SIP works", and the boundary matters.**
+  Historical daily bars on SIP are served, including the most recent completed session,
+  which is the only thing this module requests. The *recent-data* endpoints are refused:
+  ``get_stock_latest_bar`` and ``get_stock_latest_quote`` both return
+  ``subscription does not permit querying recent SIP data``. Anything in GB-26 that
+  reaches for a live quote rather than a completed bar meets that wall.
 * **No cache.** ``historical.py`` caches because a study needs a fixed snapshot (GB-4).
   Live has the opposite requirement: a cached bar served into a trading decision is a
   stale price, and the whole point of this module is freshness. Every call is a request.
 
 **Measured tolerance against yfinance**, from ``scripts/compare_sources.py`` over 163
-overlapping bars across the five-symbol universe on 14 Aug 2026:
+overlapping bars across the five-symbol universe on 14 Aug 2026, and **re-swept on
+2026-08-18 over 273 overlapping sessions per symbol** — 1,365 bar-comparisons rather
+than one window, which is what the GB-27b audit asks of any claim first measured at a
+single point:
 
-===========  ==================  ==========================================
-Field        Same-bar worst      Close, across every overlapping bar
-===========  ==================  ==========================================
-open         0.2 bps             median 0.00-0.08 bps per symbol
-high         0.0 bps             p95 0.00-0.25 bps
-low          0.2 bps             max 0.30 bps (NVDA, 2026-03-27)
-close        0.0 bps             --
-volume       111.4 bps           --
-===========  ==================  ==========================================
+===========  ===============  =================  ==========================
+Field        GB-7, 163 bars   Re-swept, 273/sym  Worst symbol
+===========  ===============  =================  ==========================
+open         0.2 bps          **0.51 bps**       NVDA
+high         0.0 bps          **0.46 bps**       GOOGL
+low          0.2 bps          **0.56 bps**       NVDA
+close        0.0 bps          **0.30 bps**       NVDA
+volume       111.4 bps        **213.6 bps**      NVDA
+===========  ===============  =================  ==========================
 
 So **prices agree to well under one basis point** — the residue is penny rounding on
-the open, not a methodology difference. **Volume does not agree**, by 34-111 bps, and it
-never will: the vendors include different venues and trade conditions. Any feature built
-on volume must therefore not assume cross-source equality; nothing in the C0 or C2
-channel sets does today. A price tolerance of 1 bp is a safe assertion; anything tighter
-will flake on the open.
+the open, not a methodology difference — and the 1 bp assertion **survives the sweep**,
+with 0.56 bps the worst cell of 1,365. **Volume does not agree**, and the sweep widens the
+range GB-7 reported from 34-111 bps to **34-214 bps**; it never will agree, because the
+vendors include different venues and trade conditions. Any feature built on volume must
+therefore not assume cross-source equality; nothing in the C0 or C2 channel sets does
+today. A price tolerance of 1 bp is a safe assertion; anything tighter will flake on the
+open.
 
 Implemented in GB-7.
 """

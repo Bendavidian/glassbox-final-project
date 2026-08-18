@@ -52,6 +52,24 @@ class PersistenceForecaster:
         self._require_window_shape(X)
         return np.zeros((X.shape[0], self.horizon), dtype=np.float32)
 
+    def linear_terms(
+        self, x: np.ndarray, channels: tuple[str, ...]
+    ) -> dict[str, tuple[tuple[np.ndarray, np.ndarray], ...]]:
+        """(L, C) -> every channel, contributing **no terms at all**.
+
+        Not a zero weight and not an omission: a model with no parameters has no terms,
+        and an empty tuple is the exact statement of that. The zeros then fall out of
+        :meth:`Attribution.from_terms`'s arithmetic rather than being written down here,
+        which is what keeps the baseline on the same code path as every other model
+        (GB-30). Before that it hand-wrote ``dict.fromkeys(channels, 0.0)``, and a
+        baseline that constructs its own answer is a baseline the exactness check never
+        actually exercised.
+        """
+        self._require_window_shape(x[None, ...])
+        if not channels:
+            raise ValueError("explain needs at least one channel name to attribute to")
+        return {channel: () for channel in channels}
+
     def explain(self, x: np.ndarray, channels: tuple[str, ...]) -> Attribution:
         """(L, C) -> an Attribution in which every channel contributes exactly zero.
 
@@ -60,13 +78,9 @@ class PersistenceForecaster:
         channel drove this, because nothing was predicted" — rather than an empty panel
         indistinguishable from a bug.
         """
-        self._require_window_shape(x[None, ...])
-        return Attribution(
-            per_channel=dict.fromkeys(channels, 0.0),
-            per_lag=None,
-            per_frequency=None,
-            gain_phase=None,
-            forecast_total=0.0,
+        return Attribution.from_terms(
+            self.linear_terms(x, channels),
+            float(self.predict(x[None, ...])[0].sum()),
         )
 
     def save(self, path: str) -> None:

@@ -343,6 +343,94 @@ def test_per_lag_must_be_two_dimensional_when_present() -> None:
         make_attribution(per_lag=np.zeros(LAGS, dtype=np.float32))
 
 
+# ── Attribution.from_terms: the one place contributions are summed (GB-30) ───
+
+
+def test_from_terms_sums_a_hand_checked_window() -> None:
+    """Weights and inputs small enough that the arithmetic fits in a comment."""
+    # a: W = [[1, 2], [0, 1]], v = [3, 4]  ->  W @ v = [1*3 + 2*4, 0*3 + 1*4] = [11, 4]
+    # b: W = [[0, 1], [1, 0]], v = [5, 6]  ->  W @ v = [6, 5]
+    # 15 + 11 = 26.
+    terms = {
+        "a": ((np.array([[1.0, 2.0], [0.0, 1.0]]), np.array([3.0, 4.0])),),
+        "b": ((np.array([[0.0, 1.0], [1.0, 0.0]]), np.array([5.0, 6.0])),),
+    }
+
+    attribution = Attribution.from_terms(terms, forecast_total=26.0)
+
+    assert attribution.per_channel == {"a": 15.0, "b": 11.0}
+    assert attribution.forecast_total == 26.0
+    assert attribution.per_lag is None
+    assert attribution.per_frequency is None
+
+
+def test_from_terms_sums_every_term_a_channel_has() -> None:
+    """DLinear supplies trend and remainder per channel; both must count."""
+    terms = {
+        "a": (
+            (np.array([[2.0]]), np.array([3.0])),  # 6
+            (np.array([[5.0]]), np.array([7.0])),  # 35
+        )
+    }
+
+    assert Attribution.from_terms(terms, 41.0).per_channel == {"a": 41.0}
+
+
+def test_a_channel_with_no_terms_contributes_exactly_zero() -> None:
+    """Persistence's case: the zeros fall out of the arithmetic, not out of a literal."""
+    attribution = Attribution.from_terms({"a": (), "b": ()}, 0.0)
+
+    assert attribution.per_channel == {"a": 0.0, "b": 0.0}
+
+
+def test_from_terms_refuses_a_decomposition_that_does_not_close() -> None:
+    """The single defect this project's central claim rules out."""
+    terms = {"a": ((np.array([[1.0]]), np.array([1.0])),)}  # contributes 1.0
+
+    with pytest.raises(ValueError, match="does not close"):
+        Attribution.from_terms(terms, forecast_total=1.5)
+
+
+def test_the_refusal_names_the_residual_and_its_likely_cause() -> None:
+    """An intercept and a re-added normalisation are the two causes worth naming.
+
+    A reader who meets this message is debugging exactly one of them, and the message
+    should say so rather than leaving them to rediscover it.
+    """
+    terms = {"a": ((np.array([[1.0]]), np.array([1.0])),)}
+
+    with pytest.raises(ValueError) as excinfo:
+        Attribution.from_terms(terms, forecast_total=1.5)
+
+    message = str(excinfo.value)
+    assert "5.000e-01" in message
+    assert "normalisation" in message
+    assert "intercept" in message
+
+
+def test_from_terms_accepts_a_residual_inside_the_tolerance() -> None:
+    """The float32 cast on predict's output is the residue this must not reject."""
+    terms = {"a": ((np.array([[1.0]]), np.array([1.0])),)}
+
+    attribution = Attribution.from_terms(terms, forecast_total=1.0 + 1e-6)
+
+    assert attribution.per_channel["a"] == 1.0
+
+
+def test_from_terms_refuses_a_non_finite_total() -> None:
+    """NaN compares false against every bound, so it needs rejecting explicitly."""
+    terms = {"a": ((np.array([[1.0]]), np.array([1.0])),)}
+
+    with pytest.raises(ValueError, match="does not close"):
+        Attribution.from_terms(terms, forecast_total=float("nan"))
+
+
+def test_from_terms_refuses_an_empty_channel_set() -> None:
+    """An attribution naming no channels explains nothing."""
+    with pytest.raises(ValueError, match="at least one channel"):
+        Attribution.from_terms({}, 0.0)
+
+
 def test_validation_message_follows_the_config_convention() -> None:
     """Same "{field} must be {requirement}, got {value!r}" shape as config/loader.py."""
     with pytest.raises(ValueError) as excinfo:

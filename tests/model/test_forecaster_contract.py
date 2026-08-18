@@ -27,7 +27,12 @@ from causality import assert_causal
 
 from glassbox.config.loader import Config, load_config
 from glassbox.contracts.protocols import Forecaster
-from glassbox.contracts.schemas import Attribution, FitProvenance, WindowBatch
+from glassbox.contracts.schemas import (
+    EXACTNESS_TOLERANCE,
+    Attribution,
+    FitProvenance,
+    WindowBatch,
+)
 from glassbox.model import ALL_FORECASTERS
 from glassbox.model.persistence import PersistenceForecaster
 
@@ -40,7 +45,9 @@ WINDOWS = 200
 # pass. A thousand random windows is cheap and covers the space the identity claims.
 EXACTNESS_SAMPLES = 1000
 
-EXACTNESS_TOLERANCE = 1e-5
+# EXACTNESS_TOLERANCE is imported from the contract rather than restated here. GB-30 made
+# `Attribution.from_terms` enforce it at construction, and a test that carried its own copy
+# could pass while the module it tests used a different number.
 
 # Keeps the contract suite quick for models that fit by gradient descent.
 EPOCHS = 3

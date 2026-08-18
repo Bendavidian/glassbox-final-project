@@ -288,12 +288,19 @@ class DLinearForecaster:
         )
         return forecast.astype("float32")
 
-    def explain(self, x: np.ndarray, channels: tuple[str, ...]) -> Attribution:
-        """(L, C) -> the exact per-channel decomposition of this window's forecast.
+    def linear_terms(
+        self, x: np.ndarray, channels: tuple[str, ...]
+    ) -> dict[str, tuple[tuple[np.ndarray, np.ndarray], ...]]:
+        """(L, C) -> ``{channel: ((W, v), ...)}``, the terms ``predict`` sums.
 
-        Not an approximation and not a re-derivation: the terms summed here are the same
-        terms ``predict`` sums, regrouped by channel. That is the whole reason the weights
-        are per channel, and it is why this project can ban SHAP rather than argue with it.
+        Two pairs per channel, one per component. They are **the same terms** the forward
+        pass computes, handed over ungrouped rather than re-derived — which is the whole
+        reason the weights are per channel, and why this project can ban SHAP rather than
+        argue with it.
+
+        This method says *which terms exist*, which is a property of the architecture.
+        Summing them is :meth:`Attribution.from_terms`'s job and lives in one place for
+        every model (GB-30).
         """
         if tuple(channels) != tuple(self.channels):
             raise ValueError(
@@ -303,21 +310,24 @@ class DLinearForecaster:
         self._require_window_shape(x[None, ...])
 
         trend, remainder = decompose(np.asarray(x, dtype="float64")[None, ...])
-        per_channel = {
-            channel: float(
-                np.sum(
-                    self._trend[position] @ trend[0, :, position]
-                    + self._remainder[position] @ remainder[0, :, position]
-                )
+        return {
+            channel: (
+                (self._trend[position], trend[0, :, position]),
+                (self._remainder[position], remainder[0, :, position]),
             )
             for position, channel in enumerate(self.channels)
         }
-        return Attribution(
-            per_channel=per_channel,
-            per_lag=None,
-            per_frequency=None,
-            gain_phase=None,
-            forecast_total=float(sum(per_channel.values())),
+
+    def explain(self, x: np.ndarray, channels: tuple[str, ...]) -> Attribution:
+        """(L, C) -> the exact per-channel decomposition of this window's forecast.
+
+        The total comes from :meth:`predict` rather than from the contributions' own sum,
+        so ``from_terms`` compares two independently computed quantities and spec 4.4's
+        properties 3 and 4 are both real checks on this object.
+        """
+        return Attribution.from_terms(
+            self.linear_terms(x, channels),
+            float(self.predict(x[None, ...])[0].sum()),
         )
 
     def save(self, path: str) -> None:
