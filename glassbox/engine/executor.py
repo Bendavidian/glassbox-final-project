@@ -71,6 +71,10 @@ DAY = "day"
 SUBMITTED = "submitted"
 PENDING_APPROVAL = "pending_approval"
 REJECTED = "rejected"
+# GB-37. Distinct from REJECTED, which is this module declining an order the broker would
+# have refused. A human saying no is a decision, not a validation failure, and the log has
+# to be able to tell them apart.
+DECLINED = "declined_by_operator"
 
 
 @dataclass(frozen=True)
@@ -212,6 +216,73 @@ def execute(broker: Broker, order: Order, decision_id: str, cfg: Config) -> Subm
             log=tuple(lines),
         )
 
+    return _submit(broker, order, quantity, decision_id, record, lines)
+
+
+def approve(broker: Broker, order: Order, decision_id: str, cfg: Config) -> Submission:
+    """Submit a recommendation a human approved. **GB-37.**
+
+    The same path :func:`execute` takes in ``auto`` mode, entered by a person instead of by
+    the mode. It does **not** consult ``live.mode``: the mode decides whether an order needs
+    an answer, and this is the answer. Re-checking it here would make an approval
+    conditional on a setting the approver cannot see.
+
+    The size is re-derived from the order's notional and price, exactly as ``execute``
+    does, so an approval cannot smuggle in a quantity that never went through
+    ``shares_for``.
+    """
+    lines: list[str] = []
+
+    def record(message: str) -> str:
+        line = f"[{decision_id}] {message}"
+        LOGGER.info(line)
+        lines.append(line)
+        return line
+
+    del cfg  # the mode has already had its say; see the docstring
+    quantity = shares_for(order.notional, order.price)
+    record(f"operator APPROVED {order.symbol}: submitting {quantity:.9f}")
+    if quantity <= 0.0:
+        return Submission(
+            decision_id=decision_id,
+            order=order,
+            status=REJECTED,
+            reason=(
+                f"{order.symbol}: notional {order.notional:.2f} is below the broker's "
+                "minimum order size; the approval could not be acted on"
+            ),
+            log=tuple(lines),
+        )
+    return _submit(broker, order, quantity, decision_id, record, lines)
+
+
+def decline(order: Order, decision_id: str) -> Submission:
+    """Record that a human rejected a recommendation. **Touches no broker.**
+
+    Returns a :class:`Submission` so the decision log holds one shape whatever the answer
+    was. ``entry`` and ``protection`` are empty because nothing was sent, which is the
+    property GB-37's acceptance criterion asks for: rejection leaves no order at the broker.
+    """
+    line = f"[{decision_id}] operator DECLINED {order.symbol}; no order was sent"
+    LOGGER.info(line)
+    return Submission(
+        decision_id=decision_id,
+        order=order,
+        status=DECLINED,
+        reason="declined by the operator in Co-Pilot mode",
+        log=(line,),
+    )
+
+
+def _submit(
+    broker: Broker,
+    order: Order,
+    quantity: float,
+    decision_id: str,
+    record,
+    lines: list[str],
+) -> Submission:
+    """Send the entry and arm what can be armed. One path, two callers."""
     record(
         f"submit MARKET BUY {quantity:.9f} {order.symbol} tif={DAY} "
         f"client_order_id={decision_id}"
@@ -412,6 +483,7 @@ __all__ = [
     "BUY",
     "CO_PILOT",
     "DAY",
+    "DECLINED",
     "PENDING_APPROVAL",
     "REJECTED",
     "SELL",
@@ -420,6 +492,8 @@ __all__ = [
     "Broker",
     "BrokerOrder",
     "Submission",
+    "approve",
+    "decline",
     "execute",
     "protect",
 ]

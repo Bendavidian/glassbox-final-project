@@ -475,7 +475,18 @@ class Signal:
 
 @dataclass(frozen=True)
 class DecisionRecord:
-    """The complete, replayable record of one decision."""
+    """The complete, replayable record of one decision.
+
+    ``provenance`` says where the decision came from: ``"live"``, or ``"replay:fold-13"``
+    naming the fold a replayed decision was driven from (GB-38, added 2026-08-18). **It is
+    a string naming the source rather than a boolean**, because a leak between the two is
+    then legible in the log instead of being a flag someone forgot to read.
+
+    It **defaults to live**, and the direction of that default is the safety property: a
+    reader who forgets to filter sees live decisions only, so the failure mode is a
+    replayed decision going *missing* rather than a replayed decision passing as real.
+    Records written before this field existed decode as live, which is what they were.
+    """
 
     as_of: pd.Timestamp
     symbol: str
@@ -485,6 +496,7 @@ class DecisionRecord:
     order: dict | None  # None in co-pilot-pending or hold
     narrative: str
     config_hash: str  # ties the record to the exact config that made it
+    provenance: str = "live"  # "live" | "replay:fold-N"
 
 
 __all__ = [

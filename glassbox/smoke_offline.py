@@ -135,6 +135,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.prepare_live:
             prepare_live(load_config(), args.prepare_live, log=print)
             return 0
+        if args.prepare_replay:
+            fold, directory = args.prepare_replay
+            prepare_replay(load_config(), int(fold), directory, log=print)
+            return 0
         table, summary = run(
             load_config(), model=args.model, n_folds=args.folds, log=print
         )
@@ -312,6 +316,82 @@ def prepare_live(cfg: Config, directory: str | Path, log=lambda m: None) -> Path
         )
     )
     write_reliability(cfg, target, log=log)
+    log(f"written to {target}")
+    return target
+
+
+def prepare_replay(
+    cfg: Config, fold_number: int, directory: str | Path, log=lambda m: None
+) -> Path:
+    """Write what GB-38's replay loads: a fold's checkpoint, its band and its test range.
+
+    **The band comes from the fold's own validation split**, exactly as the fold's
+    backtest used it. Calibrating on the test range replay is about to walk would be the
+    leakage the project exists to prevent, dressed up as a demo.
+
+    ``replay.py`` may not import this layer, so this is where the training and the
+    calibration happen — the same division GB-26 made, for the same reason.
+    """
+    target = Path(directory)
+    bars = load_cached_bars(cfg)
+    frames = {symbol: build_feature_frame(frame, cfg) for symbol, frame in bars.items()}
+    folds = {fold.number: fold for fold in make_folds(_common_index(frames), cfg)}
+    if fold_number not in folds:
+        raise SmokeError(
+            f"fold {fold_number} is not in the grid; it holds {sorted(folds)}"
+        )
+
+    fold = folds[fold_number]
+    run = trainer.train(frames, cfg, fold.train, fold.val, fold.test)
+    val_batch = _windows(frames, run, cfg, fold.val)
+    calibration = calibrate_thresholds(
+        _forecasts(val_batch, run.model.predict(val_batch.X)),
+        _bars_between(bars, fold.val[0], fold.val[-1]),
+        risk.position_sizer,
+        cfg,
+    )
+    if calibration.stood_aside:
+        raise SmokeError(
+            f"fold {fold_number} stands aside, so replaying it would demonstrate nothing "
+            "firing. Choose a fold whose band fired"
+        )
+
+    trainer.save_checkpoint(target / "checkpoint", run, cfg, fold.val, fold.test)
+    (target / "thresholds.json").write_text(
+        json.dumps(
+            {
+                "stood_aside": False,
+                "lower": calibration.thresholds.lower,
+                "upper": calibration.thresholds.upper,
+                "val_sharpe": calibration.val_sharpe,
+                "val_trades": calibration.val_trades,
+                "fold": fold.number,
+                "config_hash": config_hash(cfg),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (target / "replay.json").write_text(
+        json.dumps(
+            {
+                "fold": fold.number,
+                "test_start": fold.test[0].isoformat(),
+                "test_end": fold.test[-1].isoformat(),
+                "test_index": [stamp.isoformat() for stamp in fold.test],
+                "val_start": fold.val[0].isoformat(),
+                "val_end": fold.val[-1].isoformat(),
+                "config_hash": config_hash(cfg),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    log(
+        f"fold {fold.number}: test {fold.test[0]:%Y-%m-%d}..{fold.test[-1]:%Y-%m-%d}, "
+        f"band lower={calibration.thresholds.lower:.6f} "
+        f"upper={calibration.thresholds.upper}, {len(fold.test)} bars"
+    )
     log(f"written to {target}")
     return target
 
@@ -717,6 +797,17 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help=(
             "train on the most recent fold, calibrate its band, and write both into DIR "
             "for GB-26's live loop to load. Runs nothing else."
+        ),
+    )
+    parser.add_argument(
+        "--prepare-replay",
+        nargs=2,
+        metavar=("FOLD", "DIR"),
+        default=None,
+        help=(
+            "train on FOLD's training split, calibrate on its validation split, and write "
+            "the checkpoint, band and test range into DIR for GB-38's replay. Runs "
+            "nothing else."
         ),
     )
     return parser.parse_args(argv)

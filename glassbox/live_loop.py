@@ -37,8 +37,8 @@ import logging
 import signal as signal_module
 import sys
 import time
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -55,11 +55,14 @@ from glassbox.engine import risk
 from glassbox.engine.executor import (
     BUY,
     CO_PILOT,
+    PENDING_APPROVAL,
     SELL,
     AlpacaBroker,
     Broker,
     BrokerOrder,
     Submission,
+    approve,
+    decline,
     execute,
 )
 from glassbox.engine.rank import rank_signals
@@ -186,6 +189,14 @@ class LiveState:
     thresholds: Thresholds
     state_dir: Path
     language: str = EN
+    provenance: str = records.LIVE
+    fetch: Callable[[], dict[str, pd.DataFrame]] | None = None
+    """Where the bars come from. ``None`` is the live fetch.
+
+    Injected so **GB-38's replay drives this same cycle** rather than a copy of it. A
+    replay that reimplemented the loop would prove the reimplementation works, which is
+    the one thing nobody needs to know.
+    """
     book: Book = field(default_factory=Book)
     entry_fills: dict[str, list] = field(default_factory=dict)
     arming_failures: dict[str, int] = field(default_factory=dict)
@@ -509,10 +520,14 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
         state.save()
 
         log("step 5/10 data: completed daily bars for the universe")
-        bars = load_live_bars(
-            list(state.cfg.universe),
-            min_history_bars(state.cfg),
-            requirement=history_requirement(state.cfg),
+        bars = (
+            state.fetch()
+            if state.fetch is not None
+            else load_live_bars(
+                list(state.cfg.universe),
+                min_history_bars(state.cfg),
+                requirement=history_requirement(state.cfg),
+            )
         )
 
         log("step 6/10 features: drop the in-progress bar, then the keystone builder")
@@ -610,28 +625,50 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             )
             LOGGER.info("[%s] %s", decision_id, story.text)
 
+            record = DecisionRecord(
+                as_of=forecast.as_of,
+                symbol=symbol,
+                forecast=forecast,
+                attribution=found,
+                signal=verdict,
+                order=None if order is None else _order_dict(order, decision_id),
+                narrative=story.text,
+                config_hash=config_hash(state.cfg),
+                provenance=state.provenance,
+            )
+
             submission = None
             if verdict.action == EXIT and symbol in state.book.managed:
                 submission = exit_position(state, symbol, decision_id, log)
             elif order is not None:
                 submission = execute(state.broker, order, decision_id, state.cfg)
-                _absorb_entry(state, order, submission, when, log)
+                if submission.status == PENDING_APPROVAL:
+                    # GB-37: the recommendation outlives the cycle, because the approver
+                    # is a different process and a recommendation nobody can answer is
+                    # not a recommendation.
+                    records.save_pending(
+                        state.state_dir,
+                        {
+                            "decision_id": decision_id,
+                            "as_of": _iso(forecast.as_of),
+                            "symbol": symbol,
+                            "shares": order.shares,
+                            "price": order.price,
+                            "notional": order.notional,
+                            "stop_loss": order.stop_loss,
+                            "take_profit": order.take_profit,
+                            "narrative": story.text,
+                            "provenance": state.provenance,
+                            "record": records.encode_decision(record),
+                        },
+                    )
+                    log(f"{symbol}: queued for approval as {decision_id}")
+                else:
+                    _absorb_entry(state, order, submission, when, log)
             if submission is not None:
                 submissions.append(submission)
 
-            records.save_decision(
-                DecisionRecord(
-                    as_of=forecast.as_of,
-                    symbol=symbol,
-                    forecast=forecast,
-                    attribution=found,
-                    signal=verdict,
-                    order=None if order is None else _order_dict(order, decision_id),
-                    narrative=story.text,
-                    config_hash=config_hash(state.cfg),
-                ),
-                state.state_dir,
-            )
+            records.save_decision(record, state.state_dir)
             decisions.append(decision_id)
 
         log("step 10/10 persist: book and entry fills")
@@ -659,6 +696,75 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             failed_step=type(failure).__name__,
             error=str(failure),
         )
+
+
+def answer_pending(
+    cfg: Config,
+    broker: Broker,
+    state_dir: str | Path,
+    decision_id: str,
+    approved: bool,
+) -> Submission:
+    """Approve or decline a queued Co-Pilot recommendation. **GB-37.**
+
+    **Both answers write a decision record.** A rejection that left no trace would make the
+    log a record of what the system wanted rather than of what happened, and "the operator
+    said no" is a decision — arguably the more interesting one, since it is the only place a
+    human enters the loop.
+
+    Approving submits through ``executor.approve``, which re-derives the quantity from the
+    order's notional and price exactly as ``execute`` does, and arms protection on the fill.
+    Declining touches no broker at all, which is GB-37's acceptance criterion.
+
+    Raises:
+        LiveError: no recommendation with that id is queued. Answering twice is the
+            realistic way that happens - two dashboard tabs, one click each - and the
+            second answer must not resubmit.
+    """
+    root = Path(state_dir)
+    queued = [
+        entry
+        for entry in records.load_pending(root)
+        if entry["decision_id"] == decision_id
+    ]
+    if not queued:
+        raise LiveError(
+            f"no recommendation queued as {decision_id!r}; it was answered already, or "
+            "this is a stale view of the queue"
+        )
+    entry = queued[0]
+    order = risk.Order(
+        symbol=entry["symbol"],
+        shares=float(entry["shares"]),
+        price=float(entry["price"]),
+        notional=float(entry["notional"]),
+        stop_loss=float(entry["stop_loss"]),
+        take_profit=float(entry["take_profit"]),
+    )
+
+    if approved:
+        submission = approve(broker, order, decision_id, cfg)
+        answer = f"Approved by the operator. {submission.status}: " + (
+            f"entry {submission.entry.id}"
+            if submission.entry is not None
+            else str(submission.reason)
+        )
+    else:
+        submission = decline(order, decision_id)
+        answer = "Declined by the operator. No order was sent to the broker."
+
+    original = records.decode_decision(entry["record"])
+    records.save_decision(
+        replace(
+            original,
+            narrative=f"{original.narrative} {answer}",
+            order=None if not approved else original.order,
+        ),
+        root,
+    )
+    records.resolve_pending(root, decision_id)
+    LOGGER.info("[%s] %s", decision_id, answer)
+    return submission
 
 
 # ── protection: the five rules, implemented ──────────────────────────────────
@@ -1169,6 +1275,7 @@ __all__ = [
     "LiveError",
     "LiveState",
     "SessionReport",
+    "answer_pending",
     "drop_incomplete_bar",
     "in_session",
     "is_stale",

@@ -7,6 +7,114 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-18 — GB-22 closed: the order filled at the open, and the position is quarantined
+
+**The acceptance criterion is met, and the same run surfaces an operational fact worth
+stating.**
+
+| | |
+|---|---|
+| order | `385e982a-2a20-467b-85e6-a3d6f6bf89c4` |
+| status | **FILLED**, 0.081919619 of 0.081919619 |
+| fill price | **307.49** |
+| filled at | **2026-08-18 13:30:02.113 UTC — two seconds after the open** |
+
+That is exactly the fill GB-18's ruling 2 models: a decision made after the close cannot
+fill at that close, it fills at the next session's open. The backtester's convention and
+the broker's behaviour agree, measured rather than assumed.
+
+**Protection did not arm, and every step behaved as designed.** `executor.protect` returned
+empty at submission because the entry had not filled — its own log line says so: *protection
+is not armed yet and must be armed by the cycle that sees the fill.* GB-26's rule 1 exists
+to arm it in that cycle. But **GB-22's order was submitted by a one-off script rather than
+by the loop**, so no `Holding` was ever written, and reconciliation therefore sees a
+position with no decision behind it.
+
+**Reconciliation quarantined it**, correctly: `UNKNOWN_POSITION`, 0.091919619 AAPL — the
+0.01 probe and the 0.0819 entry merged into one broker position. And a quarantined position
+is **never protected**, by design: *the system cannot protect or explain what it did not
+open.*
+
+**So the fact to state plainly: the only orders this system protects are the ones it
+decided.** An order placed outside the loop is counted against buying power, shown in the
+dashboard as `QUARANTINED`, and left alone. That is the correct behaviour of GB-23's
+read-only reconciler, and it is also a live gap: the paper account currently holds
+**0.0919 AAPL, unprotected**, at an average entry of 307.238389. Ben's standing instruction
+to flatten both AAPL positions is outstanding and is **not** executed here — he is reviewing
+the dashboard the position appears in, and flattening would empty the screen mid-review.
+
+---
+
+## 2026-08-18 — GB-38: which fold, and whether replay shares the decision store
+
+### 1. Fold 13, chosen on exit-reason coverage — and the coincidence stated
+
+**Decision.** Replay drives **fold 13**, test range **2025-07-07 to 2025-09-29**, band
+`lower = 0.056133`, `upper = 0.122473`, calibrated on that fold's own validation split.
+
+**The criterion was fixed before the numbers were looked at**: the fold should contain a
+stop, a target and a signal exit. Measured across all 16 folds, **fold 13 is the only one
+that contains all five exit kinds** — `stop` 2, `stop_gap` 1, `target` 2, `target_gap` 2,
+`signal` 6, over 13 trades. The next best are folds 8, 5, 1 and 7 with four kinds each.
+
+**The uncomfortable part, stated rather than left to be noticed.** Fold 13 also returns
+**+2.71%**, the second best of the 13 folds whose band fired, with a Sharpe of 2.902. That
+is a coincidence of the selection rule and not the rule itself, and the honest way to hold
+it is:
+
+- The **full return distribution** of eligible folds is on the record: −3.96%, −3.59%,
+  −0.61%, −0.60%, −0.31%, +0.24%, +0.34%, +1.22%, +1.63%, +2.45%, +2.67%, **+2.71%**,
+  +4.23%. Fold 13 is 12th of 13 ascending.
+- **The fold is a parameter, not a constant.** `smoke_offline --prepare-replay FOLD DIR`
+  takes it, so nothing is baked in and any fold can be shown.
+- **Fold 1 is the recommended counterweight** and is equally replayable: four exit kinds,
+  10 stops and 4 gapped stops, **−3.59%** and a Sharpe of −3.391. A demonstration that
+  shows only fold 13 is showing a good quarter.
+- Sharpe 2.902 does **not** trip §7.3's leak alarm: the alarm is on the aggregate, a
+  per-fold Sharpe on ~60 bars has a standard error near 2.05 annualised, and the
+  distribution is symmetric — folds 4 and 7 also exceed +2.0 while folds 1 and 2 reach
+  −3.39 and −4.57.
+
+### 2. One store, and the default filter is the safety property
+
+**Decision.** Replayed decisions share `decisions/` with live ones.
+`DecisionRecord.provenance` carries `"live"` or `"replay:fold-13"` — **a string naming the
+fold, not a boolean** — and `records.load_decisions` **defaults to live**.
+
+**Reasoning.** Two stores are the safer-sounding option and they duplicate the reader:
+GB-19's metrics, the dashboard and the report would each need two paths, which is the
+defect GB-29 already rejected when it moved `Trade` into the contract rather than keeping
+one type per side. The real risk of a single store is a filtering bug, and the answer is to
+make the failure direction safe rather than to hope: **a caller who forgets the filter sees
+live decisions only.** A replayed decision can go *missing* from a view; it can never be
+shown as real. The inverse default would have exactly the opposite property.
+
+Naming the fold rather than setting a flag is the second half. If a replayed record ever
+does reach a live view, it arrives labelled `REPLAY:FOLD-13` on its own row rather than as
+an unlabelled row that a reader has to know to distrust — the dashboard labels **both**
+origins, so neither can be read by default.
+
+**Consequence.** `DecisionRecord` gains `provenance: str = "live"` (a §4.2 addition,
+authorised by the GB-38 ruling). Records written before it decode as live, which is what
+they were.
+
+### 3. `ReplayBroker` is a demo instrument, not a backtester
+
+It fills a market order at the bar and checks the protective legs against the bar's range,
+**stop before target** as GB-18 ruled — but it models no gaps, no slippage, no fees and no
+accounting identity, and `replay.py` may not import the harness that does. **A PnL produced
+by replay is not a result and must never be reported as one.** What replay demonstrates is
+that a decision can be made, explained, answered and recorded; what the strategy earns is
+GB-18's question and is answered there. This is stated at the top of the module so nobody
+quotes a replay figure into the report.
+
+**Measured end to end**: 14 bars of fold 13 produced 70 decision records and **2
+recommendations**; one was approved — submitted, 47.59 AAPL, **both protective legs armed**
+— and one was declined, leaving the broker's order count unchanged. 72 records visible as
+`replay:fold-13`, **0 visible as live**.
+
+---
+
 ## 2026-08-18 — A stated principle: risk already taken is managed whatever the data says
 
 **Principle, not a task ruling.** It was decided in GB-26 for stale market data and it

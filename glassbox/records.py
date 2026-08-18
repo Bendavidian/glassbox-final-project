@@ -82,6 +82,24 @@ TARGET_SUFFIX = "-target"
 FILLED = frozenset({"filled", "partially_filled"})
 SELL = "sell"
 
+# Where a decision came from (GB-38). `LIVE` is the default on `DecisionRecord` and the
+# default filter here, and the direction of that default is the safety property: forgetting
+# to filter hides replayed decisions rather than passing them off as real ones.
+LIVE = "live"
+REPLAY_PREFIX = "replay:fold-"
+ANY_PROVENANCE = "*"
+
+PENDING_FILE = "pending.json"
+
+
+def replay_provenance(fold: int) -> str:
+    """The provenance string a replayed decision carries. Names the fold, not a boolean."""
+    return f"{REPLAY_PREFIX}{fold}"
+
+
+def is_replay(provenance: str) -> bool:
+    return provenance.startswith(REPLAY_PREFIX)
+
 
 # ── decision records ─────────────────────────────────────────────────────────
 
@@ -96,9 +114,21 @@ def save_decision(record: DecisionRecord, root: str | Path) -> Path:
 
 
 def load_decisions(
-    start: pd.Timestamp | str, end: pd.Timestamp | str, root: str | Path
+    start: pd.Timestamp | str,
+    end: pd.Timestamp | str,
+    root: str | Path,
+    provenance: str = LIVE,
 ) -> list[DecisionRecord]:
-    """Every record with ``start <= as_of <= end``, in chronological order.
+    """Every record with ``start <= as_of <= end`` and this provenance, chronologically.
+
+    **``provenance`` defaults to ``LIVE``, and that default is the safety property.**
+    Replayed decisions share the store with real ones — two stores would mean two readers,
+    and GB-29 already rejected duplication-for-safety when it moved ``Trade`` into the
+    contract rather than keeping one type per side. The risk a single store carries is a
+    filtering bug, and defaulting to live answers it in the only direction that is safe: a
+    caller who forgets the filter loses sight of replayed decisions, and can never be shown
+    one as though it were live. Pass :data:`ANY_PROVENANCE` to see everything, or a
+    specific ``"replay:fold-13"`` to see one replay.
 
     Reads only the month files the range touches, so a year of decisions does not have to
     be parsed to answer a question about one week.
@@ -116,8 +146,46 @@ def load_decisions(
         for month in _months_between(first, last)
         for record in _read_month(month_file(root, month))
         if first <= record.as_of <= last
+        and (provenance == ANY_PROVENANCE or record.provenance == provenance)
     ]
     return sorted(records, key=lambda record: (record.as_of, record.symbol))
+
+
+def save_pending(root: str | Path, entry: dict[str, Any]) -> Path:
+    """Queue one Co-Pilot recommendation for a human to approve or reject. **GB-37.**
+
+    Persisted rather than held in the loop's memory, because the approver is a different
+    process — the dashboard — and because a recommendation that vanished when the loop
+    restarted would be a recommendation nobody ever answered.
+
+    **No expiry.** A recommendation waits until it is answered. An expiry timer would mean
+    the system silently deciding "no" on the operator's behalf and recording nothing, which
+    is exactly the kind of unrecorded decision this project exists to remove.
+    """
+    path = Path(root) / PENDING_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    queue = load_pending(root)
+    queue = [item for item in queue if item["decision_id"] != entry["decision_id"]]
+    queue.append(entry)
+    path.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+    return path
+
+
+def load_pending(root: str | Path) -> list[dict[str, Any]]:
+    """Every recommendation still awaiting an answer, oldest first."""
+    path = Path(root) / PENDING_FILE
+    if not path.is_file():
+        return []
+    return list(json.loads(path.read_text(encoding="utf-8")))
+
+
+def resolve_pending(root: str | Path, decision_id: str) -> list[dict[str, Any]]:
+    """Take one recommendation off the queue once it has been answered."""
+    path = Path(root) / PENDING_FILE
+    queue = [item for item in load_pending(root) if item["decision_id"] != decision_id]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+    return queue
 
 
 def month_file(root: str | Path, when: pd.Timestamp) -> Path:
@@ -147,6 +215,22 @@ def _read_month(path: Path) -> Iterator[DecisionRecord]:
             # and skipped: a session killed mid-write leaves exactly this, and refusing the
             # whole file would lose every decision that did land.
             LOGGER.error("records: %s line %d is unreadable: %s", path, number, error)
+
+
+def encode_decision(record: DecisionRecord) -> dict[str, Any]:
+    """The JSON form of a record. Public because GB-37's pending queue carries one whole.
+
+    A queued recommendation has to survive a restart with everything a decision record
+    needs — the forecast, the attribution, the narrative — because the answer is written by
+    a different process and must produce a record indistinguishable in shape from the one
+    the loop wrote.
+    """
+    return _encode(record)
+
+
+def decode_decision(raw: dict[str, Any]) -> DecisionRecord:
+    """The inverse of :func:`encode_decision`."""
+    return _decode(raw)
 
 
 def _encode(record: DecisionRecord) -> dict[str, Any]:
@@ -190,6 +274,7 @@ def _encode(record: DecisionRecord) -> dict[str, Any]:
         "order": record.order,
         "narrative": record.narrative,
         "config_hash": record.config_hash,
+        "provenance": record.provenance,
     }
 
 
@@ -232,6 +317,9 @@ def _decode(raw: dict[str, Any]) -> DecisionRecord:
         order=raw["order"],
         narrative=raw["narrative"],
         config_hash=raw["config_hash"],
+        # Absent in records written before GB-38. They were live, so that is what they
+        # decode as - the default is a fact about those files, not a fallback.
+        provenance=raw.get("provenance", LIVE),
     )
 
 
@@ -409,15 +497,26 @@ def _filled_at(order: BrokerOrder) -> pd.Timestamp:
 
 
 __all__ = [
+    "ANY_PROVENANCE",
+    "LIVE",
+    "PENDING_FILE",
+    "REPLAY_PREFIX",
     "SIGNAL",
     "STOP",
     "STOP_GAP",
     "TARGET",
     "TARGET_GAP",
+    "decode_decision",
     "emit_trades",
+    "encode_decision",
     "exit_reason_for",
+    "is_replay",
     "load_decisions",
+    "load_pending",
     "month_file",
     "realised_slippage_bps",
+    "replay_provenance",
+    "resolve_pending",
     "save_decision",
+    "save_pending",
 ]

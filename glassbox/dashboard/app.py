@@ -32,8 +32,10 @@ Implemented in GB-34, GB-35 and GB-36. The spectral panel is GB-53.
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +68,13 @@ RAMP = ("#0A2239", "#123F63", "#1B6CA8", "#2E97D4", "#6FC3EC", "#B7E3F7")
 # Channels from slowest to fastest, which is the order the ramp is assigned in. The ramp
 # is a *ramp*: it encodes a quantity, and the quantity here is how far back a channel
 # looks. A palette assigned in config order would encode nothing.
+#
+# **The ordering is by NOMINAL period.** `rsi14` sits at 14 days on that reading, and its
+# Wilder smoothing has a longer effective memory than its nominal period - GB-27 measured
+# 325 bars for the seed to decay below float32 resolution. Most of its weight does sit in
+# the recent ~30 bars, so the position is defensible, but anyone re-deriving this from
+# effective memory rather than nominal period will reach a different answer and should know
+# which of the two this list is.
 CHANNEL_SPEED = (
     "ma_dist20",
     "rsi14",
@@ -442,6 +451,25 @@ def narrative_html(text: str) -> str:
     return f'<p class="gb-narrative" dir="{direction}">{text}</p>'
 
 
+def pending_summary(entry: dict) -> str:
+    """The one line above a recommendation's Approve and Reject controls. **GB-37.**"""
+    return (
+        f"{entry['symbol']}  {float(entry['shares']):.4f} @ "
+        f"{float(entry['price']):,.2f}  =  {float(entry['notional']):,.2f}  ·  "
+        f"STOP {float(entry['stop_loss']):,.2f}  ·  TARGET "
+        f"{float(entry['take_profit']):,.2f}"
+    )
+
+
+def provenance_label(provenance: str) -> str:
+    """How a decision's origin is shown. **A replayed decision says so on its own row.**
+
+    Never a blank for live and a badge for replay — a viewer would then have to know that
+    the absence means something. Both are labelled, so neither can be read by default.
+    """
+    return "LIVE" if provenance == records.LIVE else provenance.upper()
+
+
 def decision_rows(decisions: list[DecisionRecord]) -> pd.DataFrame:
     """The log as a table: newest first, one row per decision."""
     return pd.DataFrame(
@@ -454,6 +482,7 @@ def decision_rows(decisions: list[DecisionRecord]) -> pd.DataFrame:
                 "forecast_total": record.attribution.forecast_total,
                 "cancellation": cancellation(record.attribution),
                 "order": "yes" if record.order else "",
+                "source": provenance_label(record.provenance),
             }
             for record in decisions
         ],
@@ -465,6 +494,7 @@ def decision_rows(decisions: list[DecisionRecord]) -> pd.DataFrame:
             "forecast_total",
             "cancellation",
             "order",
+            "source",
         ],
     ).sort_values(["as_of", "symbol"], ascending=[False, True])
 
@@ -571,7 +601,9 @@ def header_html(cfg: Config, status: str, reliability: Reliability | None) -> st
 # ── the app ──────────────────────────────────────────────────────────────────
 
 
-def main(state_dir: str | Path = "checkpoints/live") -> None:  # pragma: no cover
+def main(
+    state_dir: str | Path = "checkpoints/live", source: str = records.LIVE
+) -> None:  # pragma: no cover
     """Render the dashboard. Exercised by ``streamlit run``, not by the suite.
 
     Every computation it performs lives in the pure functions above, which are tested. What
@@ -627,7 +659,9 @@ def main(state_dir: str | Path = "checkpoints/live") -> None:  # pragma: no cove
         unsafe_allow_html=True,
     )
 
-    decisions = _recent_decisions(root)
+    _copilot_panel(root, cfg, st)
+
+    decisions = _recent_decisions(root, source)
     if not decisions:
         st.markdown(
             '<div class="gb-meta">NO DECISIONS RECORDED YET</div>',
@@ -729,13 +763,65 @@ def _recent_closes(cfg: Config) -> dict[str, pd.Series]:  # pragma: no cover - n
         return {}
 
 
-def _recent_decisions(root: Path) -> list[DecisionRecord]:  # pragma: no cover - I/O
+def _recent_decisions(
+    root: Path, source: str
+) -> list[DecisionRecord]:  # pragma: no cover - I/O
+    """The log, filtered by provenance.
+
+    ``records.load_decisions`` defaults to live, so the dashboard shows real decisions
+    unless it is asked for a replay by name. The failure direction is the safe one: a
+    forgotten filter hides replayed decisions rather than presenting them as live.
+    """
     today = pd.Timestamp.now(tz="UTC")
-    return records.load_decisions(today - pd.Timedelta(days=30), today, root)
+    window = pd.Timedelta(days=30 if source == records.LIVE else 3650)
+    return records.load_decisions(today - window, today, root, source)
+
+
+def _copilot_panel(root: Path, cfg: Config, st) -> None:  # pragma: no cover - widgets
+    """Recommendations awaiting an answer, with Approve and Reject. **GB-37.**
+
+    Rendered above the log because it is the only thing on the page that is waiting for a
+    person. **No expiry**: a recommendation waits until it is answered, because a timer
+    would be the system deciding "no" on the operator's behalf and recording nothing.
+    """
+    from glassbox.engine.executor import AlpacaBroker
+    from glassbox.live_loop import answer_pending
+
+    queue = records.load_pending(root)
+    if not queue:
+        return
+
+    st.markdown(
+        '<div class="gb-label">AWAITING APPROVAL — CO-PILOT</div>',
+        unsafe_allow_html=True,
+    )
+    for entry in queue:
+        st.markdown(
+            f'<div class="gb-panel"><div class="gb-meta">{entry["decision_id"]}'
+            f" &nbsp;·&nbsp; {provenance_label(entry.get('provenance', records.LIVE))}"
+            f'</div><div class="gb-figure">{pending_summary(entry)}</div></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(narrative_html(entry.get("narrative", "")), unsafe_allow_html=True)
+        approve_col, reject_col = st.columns(2)
+        if approve_col.button("APPROVE", key=f"a-{entry['decision_id']}"):
+            answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], True)
+            st.rerun()
+        if reject_col.button("REJECT", key=f"r-{entry['decision_id']}"):
+            answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], False)
+            st.rerun()
 
 
 if __name__ == "__main__":  # pragma: no cover
-    main()
+    # Arguments, not environment variables: only the config layer may read the environment
+    # (CLAUDE.md rule 5), and `tests/config/test_config.py` enforces it. Streamlit passes
+    # anything after `--` straight through:
+    #     streamlit run glassbox/dashboard/app.py -- --state-dir checkpoints/replay     #         --source replay:fold-13
+    _parser = argparse.ArgumentParser(prog="glassbox dashboard")
+    _parser.add_argument("--state-dir", default="checkpoints/live")
+    _parser.add_argument("--source", default=records.LIVE)
+    _args, _ = _parser.parse_known_args(sys.argv[1:])
+    main(_args.state_dir, _args.source)
 
 
 __all__ = [
@@ -756,8 +842,10 @@ __all__ = [
     "load_reliability",
     "main",
     "narrative_html",
+    "pending_summary",
     "position_rows",
     "price_path",
+    "provenance_label",
     "status_of",
     "stylesheet",
 ]
