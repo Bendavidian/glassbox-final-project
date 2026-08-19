@@ -1266,3 +1266,166 @@ def test_a_kill_between_submission_and_fill_ends_booked_and_protected(
     # And no duplicate: the bar is decided and the client_order_id is spent.
     assert len([o for o in filled.orders if o.side == BUY]) == len(submitted)
     assert len(stored_decisions(tmp_path)) == len(UNIVERSE)
+
+
+# ── GB-40: the rehearsal proves the machine and never the model ─────────────
+
+
+def a_rehearsal(notional: float = 25.0, close_out: int = 15) -> live_loop.Rehearsal:
+    return live_loop.Rehearsal(
+        reason="gate2-execution-path",
+        notional=notional,
+        close_out_minutes=close_out,
+    )
+
+
+def rehearsing(cfg: Config, tmp_path: Path, broker: FakeBroker, total: float = 0.05):
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    state = a_state(auto, tmp_path, broker, total=total)
+    state.rehearsal = a_rehearsal()
+    state.provenance = state.rehearsal.provenance
+    state.thresholds = live_loop.permissive_band()
+    return state
+
+
+def test_a_rehearsal_never_writes_a_live_record(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """Condition 1. A rehearsal that looked live in the log would be worse than none."""
+    state = rehearsing(cfg, tmp_path, broker)
+
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+
+    assert records.load_decisions(MONTH, NOW, tmp_path) == []
+    everything = records.load_decisions(MONTH, NOW, tmp_path, records.ANY_PROVENANCE)
+    assert everything
+    assert all(records.is_rehearsal(r.provenance) for r in everything)
+    assert all("gate2-execution-path" in r.provenance for r in everything)
+
+
+def test_nothing_a_rehearsal_produces_is_reportable(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """Condition 2, asserted on GB-19's two inputs: the decision log and the trade log."""
+    state = rehearsing(cfg, tmp_path, broker)
+    live_loop.run_cycle(state, NOW)
+    second = live_loop.run_cycle(state, NOW)
+
+    everything = records.load_decisions(MONTH, NOW, tmp_path, records.ANY_PROVENANCE)
+    assert everything
+    assert not any(records.is_reportable(r.provenance) for r in everything)
+    # And no `Trade` is emitted at all - `Trade` carries no provenance, so the only way to
+    # keep a rehearsal out of the study's trade log is never to put one in.
+    assert second.trades == ()
+
+
+def test_a_rehearsal_emits_no_trade_even_when_a_sell_fills(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """The case the previous test cannot reach on its own: a filled sell is exactly what
+    `emit_trades` exists to turn into a Trade."""
+    state = rehearsing(cfg, tmp_path, broker, total=-0.05)
+    broker.positions["AAPL"] = 4.0
+    state.book = Book(
+        managed={
+            "AAPL": Holding(
+                symbol="AAPL",
+                quantity=4.0,
+                decision_id="d1",
+                entry_price=PRICE,
+                stop_loss=97.0,
+                take_profit=106.0,
+            )
+        }
+    )
+    state.entry_fills["AAPL"] = ["2026-08-11T13:30:00+00:00", PRICE, 0.0, "e1"]
+
+    first = live_loop.run_cycle(state, NOW)
+    second = live_loop.run_cycle(state, NOW)
+
+    assert any(order.side == SELL for order in broker.orders)
+    assert first.trades == () and second.trades == ()
+
+
+def test_a_rehearsal_order_is_capped_at_its_notional(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """Condition 4. The sizer is left alone and its output is capped: the point of the
+    rehearsal is that the ordinary path runs."""
+    state = rehearsing(cfg, tmp_path, broker)
+
+    live_loop.run_cycle(state, NOW)
+    second = live_loop.run_cycle(state, NOW)
+
+    placed = [s for s in second.submissions if s.entry is not None]
+    assert placed
+    for submission in placed:
+        assert submission.order.notional == pytest.approx(25.0)
+        # The sizer's own price, not the fixture's: the cap scales the order the ordinary
+        # path produced rather than re-deriving one.
+        assert submission.order.shares == pytest.approx(25.0 / submission.order.price)
+
+
+def test_a_rehearsal_flattens_before_the_close_and_opens_nothing(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """Condition 3, which is Ben's DAY-legs condition applied where it bites.
+
+    A rehearsal that holds overnight fails the rehearsal: the protective legs expire at
+    the close, so the position would be unprotected in exactly the window the backtest
+    models as protected.
+    """
+    state = rehearsing(cfg, tmp_path, broker)
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+    assert state.book.managed
+
+    _, closes = live_loop.market_session(cfg, NOW)
+    near_close = closes - pd.Timedelta(minutes=5)
+    report = live_loop.run_cycle(state, near_close)
+
+    closed_out = [
+        order
+        for order in broker.orders
+        if records.client_order_id(order).endswith("-closeout")
+    ]
+    assert closed_out
+    assert report.decisions == ()  # nothing new is opened in the close-out window
+
+
+def test_the_banner_says_the_run_is_a_rehearsal_and_why_it_is_not_reportable(
+    cfg: Config, broker: FakeBroker, tmp_path: Path
+) -> None:
+    state = rehearsing(cfg, tmp_path, broker)
+
+    banner = live_loop.session_banner(state, NOW, dry_run=False)
+
+    assert "REHEARSAL" in banner
+    assert "gate2-execution-path" in banner
+    assert "DELIBERATELY PERMISSIVE" in banner
+    assert "never 'live'" in banner
+    assert "reportable         : NO" in banner
+
+
+def test_the_permissive_band_could_not_be_mistaken_for_a_calibration() -> None:
+    band = live_loop.permissive_band()
+
+    assert band.fires
+    assert band.lower == live_loop.PERMISSIVE_LOWER
+    assert (
+        band.lower > 0.0
+    )  # Thresholds refuses zero, which is the contract having teeth
+
+
+def test_a_rehearsal_must_state_its_reason() -> None:
+    """It goes into every record, so an empty one would produce a provenance that says
+    nothing about why the decision is not live."""
+    with pytest.raises(ValueError, match="must state its reason"):
+        records.rehearsal_provenance("   ")
+
+
+def test_replay_and_rehearsal_are_both_unreportable_and_live_is_not() -> None:
+    assert records.is_reportable(records.LIVE)
+    assert not records.is_reportable(records.replay_provenance(13))
+    assert not records.is_reportable(records.rehearsal_provenance("gate2"))

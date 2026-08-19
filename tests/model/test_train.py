@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from glassbox.config.loader import Config, config_hash, load_config
+from glassbox.config.loader import Config, config_hash, load_config, model_config_hash
 from glassbox.contracts.schemas import WindowBatch
 from glassbox.features.builder import build_feature_frame, build_windows
 from glassbox.model import train as trainer
@@ -493,16 +493,17 @@ def test_the_checkpoint_answers_the_leakage_question_on_its_own(
     assert pd.Timestamp(manifest["training"]["val_end"]) < held_out_start
 
 
-def test_a_checkpoint_from_a_different_config_is_refused(
+def test_a_live_only_change_does_not_refuse_the_checkpoint(
     frame: pd.DataFrame,
     cfg: Config,
     splits: tuple[pd.DatetimeIndex, ...],
     tmp_path: Path,
 ) -> None:
-    """The hash covers the whole configuration, so an unrelated key still refuses.
+    """The other half of the split, and the reason for it.
 
-    ``risk.stop_loss_pct`` has nothing to do with training, and that is the point: a list
-    of "fields that matter" is wrong the first time someone adds a field and forgets it.
+    `risk.stop_loss_pct` has nothing to do with training. Under the old rule it refused
+    every checkpoint; under this one it loads, and the difference in the full hash is
+    logged so a reader still sees that the deployment has moved since training.
     """
     train_index, val_index, _ = splits
     trainer.train(
@@ -511,6 +512,40 @@ def test_a_checkpoint_from_a_different_config_is_refused(
     drifted = replace(cfg, risk=replace(cfg.risk, stop_loss_pct=0.04))
 
     assert config_hash(drifted) != config_hash(cfg)
+    assert model_config_hash(drifted) == model_config_hash(cfg)
+
+    loaded = trainer.load_checkpoint(tmp_path / "fold1", drifted)
+
+    assert loaded is not None
+
+
+def test_a_checkpoint_from_a_different_config_is_refused(
+    frame: pd.DataFrame,
+    cfg: Config,
+    splits: tuple[pd.DatetimeIndex, ...],
+    tmp_path: Path,
+) -> None:
+    """A checkpoint refuses a configuration that would have shaped it differently.
+
+    **The gate moved from `config_hash` to `model_config_hash` on 20 Aug 2026**, and the
+    fear this test used to record — *"a list of fields that matter is wrong the first time
+    someone adds a field and forgets it"* — is answered rather than dismissed. The list is
+    of **sections**, not fields, so a new field inside `window` or `model` is covered the
+    moment it exists; and
+    `test_config.py::test_every_config_section_is_classified_as_shaping_or_not` fails the
+    suite if a new top-level section appears that nobody has classified. What the old rule
+    bought was safety at the cost of refusing every model over a poll interval, which is a
+    guard that fires without a reason and therefore a guard somebody eventually removes.
+    """
+    train_index, val_index, _ = splits
+    trainer.train(
+        {SYMBOL: frame}, cfg, train_index, val_index, None, tmp_path / "fold1"
+    )
+    drifted = replace(
+        cfg, window=replace(cfg.window, input_len=cfg.window.input_len + 8)
+    )
+
+    assert model_config_hash(drifted) != model_config_hash(cfg)
     with pytest.raises(ValueError, match="refusing to load a model shaped by other"):
         trainer.load_checkpoint(tmp_path / "fold1", drifted)
 

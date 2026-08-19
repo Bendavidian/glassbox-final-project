@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Callable
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ import yaml
 
 from glassbox.config.loader import (
     DEFAULT_SETTINGS_PATH,
+    MODEL_SHAPING_SECTIONS,
     PAPER_ENDPOINT,
     AlpacaCredentials,
     BacktestConfig,
@@ -32,6 +33,7 @@ from glassbox.config.loader import (
     alpaca_credentials,
     config_hash,
     load_config,
+    model_config_hash,
     require_paper_endpoint,
 )
 
@@ -458,3 +460,102 @@ def test_no_script_reads_the_environment_directly(repo_root: Path) -> None:
             if token in source:
                 offenders.append(f"{path.relative_to(repo_root)}: {token}")
     assert not offenders
+
+
+# ── the model hash is narrower than the config hash (ruled 20 Aug 2026) ──────
+
+
+def test_a_live_only_key_leaves_the_model_hash_untouched() -> None:
+    """Measured on 19 Aug 2026 and fixed here.
+
+    Adding `live.retry_attempts` and `live.retry_backoff_seconds` — two numbers a polling
+    loop reads and no weight can see — changed `config_hash` and made `load_checkpoint`
+    refuse every existing model. The guard was right and the cost was pure waste. The
+    danger is not that retrain; it is Sprint 4, where FITS and the COF sweep touch the
+    configuration repeatedly and a guard that fires spuriously is one somebody weakens.
+    """
+    base = load_config()
+    live_only = replace(
+        base,
+        live=replace(base.live, retry_attempts=9, poll_seconds=15, mode="auto"),
+    )
+
+    assert config_hash(live_only) != config_hash(base)
+    assert model_config_hash(live_only) == model_config_hash(base)
+
+
+def test_changing_the_input_length_changes_the_model_hash() -> None:
+    """The other direction, which is what stops the split being a hole."""
+    base = load_config()
+    wider = replace(base, window=replace(base.window, input_len=60))
+
+    assert model_config_hash(wider) != model_config_hash(base)
+    assert config_hash(wider) != config_hash(base)
+
+
+def test_every_model_shaping_section_moves_the_model_hash() -> None:
+    """Named one by one, so a section added to the list without effect is caught."""
+    base = load_config()
+    moved = {
+        "data": replace(base, data=replace(base.data, start="2017-01-01")),
+        "window": replace(base, window=replace(base.window, horizon=8)),
+        "wavelet": replace(base, wavelet=replace(base.wavelet, levels=2)),
+        "fits": replace(base, fits=replace(base.fits, cutoff_period_days=10)),
+        "channels": replace(base, channels=replace(base.channels, active="C2_hybrid")),
+        "model": replace(base, model=replace(base.model, epochs=7)),
+    }
+    for section, changed in moved.items():
+        assert model_config_hash(changed) != model_config_hash(base), section
+
+
+def test_the_seed_is_part_of_the_model_hash_and_the_schema_version_is_not() -> None:
+    """Two models under identical settings and different seeds are different models.
+    `meta.version` versions the configuration schema, which no weight sees."""
+    base = load_config()
+    reseeded = replace(base, meta=replace(base.meta, seed=99))
+    reversioned = replace(base, meta=replace(base.meta, version=base.meta.version + 1))
+
+    assert model_config_hash(reseeded) != model_config_hash(base)
+    assert model_config_hash(reversioned) == model_config_hash(base)
+
+
+def test_the_full_hash_still_covers_everything() -> None:
+    """`config_hash` does not narrow. It is what a DecisionRecord promises: the settings a
+    decision was made under, including the ones that decided not to trade."""
+    base = load_config()
+    for changed in (
+        replace(base, live=replace(base.live, poll_seconds=15)),
+        replace(base, risk=replace(base.risk, max_position_pct=0.05)),
+        replace(base, signal=replace(base.signal, top_k=3)),
+    ):
+        assert config_hash(changed) != config_hash(base)
+
+
+def test_every_config_section_is_classified_as_shaping_or_not() -> None:
+    """A new top-level section must be classified before the suite goes green again.
+
+    This is the answer to the objection the old whole-config gate recorded: *a list of
+    "fields that matter" is wrong the first time someone adds a field and forgets it.*
+    `MODEL_SHAPING_SECTIONS` lists **sections**, so a new field inside `window` or `model`
+    is covered the moment it exists. The remaining hole is a whole new section, and this
+    closes it — adding one fails here until somebody has said which side it falls on.
+    """
+    # Sections that describe what the system DOES with a model rather than what shaped
+    # one. Named individually rather than derived, because the point is that a human
+    # decided each.
+    not_shaping = {
+        "meta",  # only `meta.seed` shapes a weight, and it is added explicitly
+        "universe",  # `Predictor.stats_for` refuses an untrained symbol by name
+        "signal",
+        "risk",
+        "backtest",
+        "walkforward",
+        "live",
+    }
+    sections = {field.name for field in fields(load_config())}
+
+    assert sections == set(MODEL_SHAPING_SECTIONS) | not_shaping, (
+        "a configuration section is neither in MODEL_SHAPING_SECTIONS nor listed here as "
+        "not shaping a trained weight. Classify it: if a weight can depend on it, it "
+        "belongs in the model hash and every checkpoint must be retrained"
+    )

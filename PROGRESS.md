@@ -14,10 +14,11 @@ Append one line per completed task. Newest at the bottom of each sprint.
 **Sprint 3:** **complete** — GB-26, GB-32, GB-33, GB-34/35/36, GB-37, GB-38, GB-39 and
 GB-40. **GATE 2 walked on 20 Aug, five weeks early: 3 of 6 green, not passed, FITS not
 cancelled.** See the gate log.
-**Next task:** the two rulings GATE 2 needs before 25 Sep — how criterion 2 is to be
-satisfied when the deployed band stands aside, and DAY versus GTC on the protective legs.
-Then Sprint 4 (GB-41 FITS core onward), and two or three real market sessions whenever the
-market is open.
+**Sprint 4 has started** with GB-42, written before GB-41 as §6.3 requires.
+**Next task:** run the GATE 2 rehearsal in a live session — `python -m glassbox.live_loop
+--rehearsal gate2-execution-path` — then GB-41, the FITS core. **Criterion 6 needs two or
+three separate sessions and only Wednesday to Friday are available.** Still open for Ben:
+DAY versus GTC on the protective legs, outside a rehearsal.
 **The account is flat** — the quarantined 0.0919 AAPL was sold at 310.394 on 18 Aug on
 instruction, and the following cycle's reconciliation logged the drop. GB-26 is complete and ran a full dry-run cycle
 against the live SIP feed on 18 Aug: ten steps, 610 bars a symbol against a floor of 445,
@@ -192,6 +193,10 @@ depends on nothing in the model layer.
 | GB-39 | 20 Aug 2026 | Noy | **Complete.** `faults.py` — `retry` with exponential backoff (3 attempts, 1s then 2s, giving up 3s in, well inside one 60s poll) and `Unavailable`, the type that says the outside world did not answer rather than that a defect was found. `executor.RetryingBroker` wraps every broker call; **a write is safe to retry only because the `client_order_id` is bar-derived** — a retry refused as a duplicate is read as the receipt for the attempt that timed out, and the order is recovered rather than reported as a failure. An unreachable cycle is logged loudly, skipped, and the session continues; a run of two or more says so. No circuit breaker and no health endpoint, per scope. 11 new tests. |
 | GB-39 blocker closed | 20 Aug 2026 | Noy | **`adopt_own_positions`.** Confirmed first, as asked: `reconcile` quarantines an unknown position and **never adopts**, and never looks at `client_order_id` — so the loop's own fill, arriving after `_absorb_entry`'s poll window or after a crash, was quarantined and therefore **never protected**. That was the gate blocker. Adoption now runs between reconciliation and protection, and takes a position back only on evidence: a filled buy whose `client_order_id` is a decision id this system mints, naming a decision **on disk in this log under this provenance**, carrying the order it produced. Anything short of that stays quarantined — the reconciler's ruling is untouched. **The ordering that makes it possible: the decision reaches disk before the order reaches the broker.** |
 | GB-40 | 20 Aug 2026 | Ben | **GATE 2 walked: 3 of 6 green. Not passed, and FITS is not cancelled** — the §8 rule fires on the gate's own date of 25 Sep, not on a rehearsal run five weeks early. PASS: exact attribution visible in the dashboard (75 records, worst residual **1.248e-08** against 1e-5); replay reproduces a recorded day **with `load_live_bars` and `AlpacaBroker` replaced by hard failures**; Co-Pilot approve and reject, replayed. FAIL: no full unattended session; no order placed by the loop; one live session, not two or three. **The finding that matters: criterion 2 is structurally unreachable, not merely unmet** — a band that stands aside can never place an order, so it will read FAIL on 25 Sep exactly as it does today. Three ways out are in DECISIONS; the choice is Ben's. |
+| GATE 2 criterion amended | 20 Aug 2026 | Ben | **Spec §8 criterion 2 replaced, and the amendment was prompted by the system behaving correctly.** The old wording conflated *does the execution path work against a real broker?* with *does the deployed model trade?* — only the first is a gate; the second is a result and already has an answer. Criterion 2 is now EXECUTION PATH PROVEN LIVE, demonstrable with a **rehearsal band** when the deployed band stands aside; 2b is DEPLOYED BAND BEHAVES CORRECTLY. Four conditions implemented: provenance `rehearsal:<reason>`, never `live`; **no rehearsal decision may reach a metric** — `records.is_reportable`, plus a rehearsal emits **no `Trade` at all**, because `Trade` carries no provenance and cannot (frozen contract §4.2); flatten 15 minutes before the close, satisfying the DAY-legs condition; capped at a small notional. Band is `Thresholds(lower=1e-9)` — the smallest the contract admits, since it refuses zero. 10 new tests. |
+| Config hash split | 20 Aug 2026 | Ben | **`model_config_hash` added; `config_hash` keeps its exact meaning.** The narrow one covers `data`, `window`, `wavelet`, `fits`, `channels`, `model` and `meta.seed`; checkpoints gate on it, and a difference in the full hash is **logged, not raised**. The danger was never the one retrain — it is Sprint 4, where FITS and the COF sweep touch config repeatedly and a guard that fires spuriously is one somebody weakens. `universe` is deliberately out: `stats_for` already refuses an untrained symbol by name. A guard test fails the suite if a new top-level section appears that nobody has classified — which answers the objection the old whole-config gate had recorded. 6 new tests. |
+| GB-42 | 20 Aug 2026 | Ben | **Written before GB-41, per §6.3 — the test comes first.** `tests/model/test_fits_amplitude.py`: the acceptance test feeds a sinusoid of known amplitude and period and asserts the backcast within 1e-4, marked `xfail(strict=True)` so the pass that arrives with GB-41 **fails the suite** until the marker is removed. It fixes GB-41's interface: `fits.extend_spectrum(x, horizon)`. **The companion passes today**, measuring the trap on `torch.fft` itself — omitting the scale divides every sample by exactly `L/(L+H)` — so the file demonstrates the bug it names. A third test states why it costs a day: 3.2% at L=120/H=4, invisible in a plot, and it **improves MSE**. FITS itself is not implemented. |
+| CI is read, not assumed | 20 Aug 2026 | Ben | `scripts/ci_status.py`, using the credential git already holds. Three consecutive reports had been written on an assumed green because `gh` is unauthenticated here and the repo is private. Verified: run **#13, `e4b55b2`, success**, and every run back to #8. |
 
 ## Sprint 4 — FITS, Study, Report · 26 Sep – 10 Oct 2026 → GATE 3
 
@@ -204,7 +209,7 @@ _not started_
 | Gate | Date | Result | Notes |
 |---|---|---|---|
 | GATE 1 | 17 Aug 2026 (commitment 11 Sep) | **PASS** | Four checklist items green, four leakage checks green, one qualified. Detail below. |
-| GATE 2 | walked 20 Aug 2026 (commitment 25 Sep) | **3 of 6 — not passed** | Rehearsed five weeks early, so the §8 cancellation is armed rather than fired. Detail below. |
+| GATE 2 | walked 20 Aug 2026 (commitment 25 Sep) | **3 of 6 — not passed; criterion 2 since amended** | Rehearsed five weeks early, so the §8 cancellation is armed rather than fired. Criterion 2 was found to be structurally unreachable and was **amended on 20 Aug** to test the execution path rather than the deployed model. Detail below. |
 | GATE 3 | 10 Oct 2026 | pending | **Unchanged.** The submission date does not move. |
 
 ### GATE 2 — walked 20 Aug 2026 · 3 of 6 · GB-40
@@ -215,7 +220,8 @@ line is answered by running something; nothing here is asserted.
 | Item | Result | Evidence |
 |---|---|---|
 | Live loop runs a full session unattended | **FAIL** | A dry-run cycle and three real cycles on 18 Aug. No open-to-close session. Outside the window `run_session` returns `stopped_by='outside the session'` after 0 cycles — the guard working, not a session. |
-| At least one order placed, filled and reconciled | **FAIL** | 0 live decisions produced an order. The loop **reconciled** two real Alpaca fills — GB-22's entry (quarantined, correctly) and the operator flatten (dropped, `missing_position`) — but has never **placed** one. |
+| 2. Execution path proven live | **NOT YET RUN** | **Criterion amended 20 Aug** (DECISIONS): it tests the machine, not the model, and may be demonstrated with a rehearsal band. The rehearsal path is built and tested; it has not been run against Alpaca, because the market was shut when the amendment landed. Under the old wording this read FAIL and was unreachable: 0 live decisions produced an order, and none could. The loop has **reconciled** two real Alpaca fills — GB-22's entry (quarantined, correctly) and the operator flatten (dropped, `missing_position`) — but has never **placed** one. |
+| 2b. Deployed band behaves correctly | **PASS** | The most recent complete fold stands aside — its best calibrated candidate scored a validation Sharpe of −3.38 over 7 trades — and the loop stands aside with it: `Thresholds.never()` in force, 5 decisions recorded and narrated, 0 orders. The behaviour matches what validation selected. **The gate log states which occurred: it stood aside.** |
 | Every decision carries an exact attribution, visible in the dashboard | **PASS** | 75 records live + replay; worst `abs(sum(per_channel) − forecast_total)` = **1.248e-08** against a 1e-5 tolerance. Every record has channels, every one renders, all visible in the table, the bars and the expander titles. |
 | Replay reproduces a recorded day offline | **PASS** | Fold 13, 14 bars → 14 cycles, 0 failed, 70 decisions, with `load_live_bars` and `AlpacaBroker` **replaced by functions that raise**. Offline is measured, not assumed. |
 | Co-Pilot approve and reject | **PASS, replayed** | 2 queued by the loop; one approved → submitted, both legs armed; one declined → broker order count unchanged. 70 records after, not 72, because an answer amends. Never exercised against Alpaca. |
@@ -225,15 +231,23 @@ line is answered by running something; nothing here is asserted.
 stands aside, so no order and no recommendation can exist; and the plan's own floor of two
 or three evenings at the desk has not been met.
 
-**Criterion 2 is structurally unreachable, not merely unmet.** The honest deployment choice
-is the most recent complete fold, that fold stands aside, and a band that stands aside can
-never place an order — so no amount of session time changes it. Three ways out are recorded
-in DECISIONS.md, 20 Aug; the choice is Ben's, and it is needed before 25 Sep.
+**Criterion 2 was structurally unreachable, and the criterion was fixed rather than the
+system.** A band that stands aside can never place an order, so the old wording would have
+read FAIL on 25 Sep exactly as on 20 Aug, and FITS would have been cancelled by a rule aimed
+at an unfinished product on a system that had correctly decided not to trade. Ben amended
+§8 the same day: criterion 2 now tests the **execution path**, demonstrable with a rehearsal
+band, and criterion 2b asks separately whether the **deployed band** behaved as validation
+selected. See DECISIONS.md, 20 Aug.
+
+**Criterion 6 stands unchanged and unmet.** It is a floor on observation, not on the model,
+and no amendment reaches it. Wednesday to Friday are the sessions available.
 
 **Condition, recorded and NOT exercised.** *The loop must not hold a position overnight
 while protective legs are DAY.* No position has been held overnight by the loop, and the
 deployed band stands aside, so the condition has never been tested. An untested guarantee is
-not a satisfied one.
+not a satisfied one. **A rehearsal is now bound by it in code**: `_rehearsal_close_out`
+flattens 15 minutes before the exchange close and opens nothing after, so the first run that
+could exercise the condition cannot violate it.
 
 ### GATE 1 — 17 Aug 2026 · PASS · GB-25
 

@@ -59,6 +59,7 @@ Implemented in GB-15.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -68,11 +69,18 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from glassbox.config.loader import Config, config_hash
+from glassbox.config.loader import (
+    MODEL_SHAPING_SECTIONS,
+    Config,
+    config_hash,
+    model_config_hash,
+)
 from glassbox.contracts.schemas import ChannelStats, WindowBatch
 from glassbox.features.builder import build_windows, fit_stats
 from glassbox.model import ALL_FORECASTERS
 from glassbox.model.history import EpochLoss, read_history, write_history
+
+LOGGER = logging.getLogger(__name__)
 
 CHECKPOINT_VERSION = 1
 
@@ -275,6 +283,7 @@ def save_checkpoint(
         "version": CHECKPOINT_VERSION,
         # Ties the weights to every value that shaped them. Checked on load.
         "config_hash": config_hash(cfg),
+        "model_config_hash": model_config_hash(cfg),
         "seed": cfg.meta.seed,
         "model": {
             "name": run.model.name,
@@ -344,12 +353,32 @@ def load_checkpoint(directory: str | Path, cfg: Config) -> LoadedCheckpoint:
             f"build reads version {CHECKPOINT_VERSION}"
         )
 
-    current = config_hash(cfg)
-    stored = manifest.get("config_hash")
-    if stored != current:
+    # **The checkpoint gates on the narrow hash.** A change to a live-only key - a poll
+    # interval, a retry count - cannot reach a trained weight, and refusing a model over
+    # one is a guard that fires without a reason. The wide hash is still compared, and a
+    # difference in it is logged rather than raised: it says the deployment's settings
+    # have moved since training, which a reader wants to know and which does not make the
+    # model wrong.
+    current_model = model_config_hash(cfg)
+    stored_model = manifest.get("model_config_hash")
+    if stored_model != current_model:
         raise ValueError(
-            f"{target} was trained under config {stored} and the configuration now in "
-            f"force is {current}; refusing to load a model shaped by other settings"
+            f"{target} was trained under model config {stored_model} and the "
+            f"model-shaping configuration now in force is {current_model}; refusing to "
+            "load a model shaped by other settings. The sections that count are "
+            f"{list(MODEL_SHAPING_SECTIONS)} plus meta.seed"
+        )
+
+    stored_full = manifest.get("config_hash")
+    if stored_full != config_hash(cfg):
+        LOGGER.info(
+            "%s was trained under full config %s and %s is now in force. The "
+            "model-shaping sections are unchanged, so the checkpoint is valid; the "
+            "difference is in settings that describe what the system does with a model "
+            "rather than what shaped one",
+            target,
+            stored_full,
+            config_hash(cfg),
         )
 
     name = manifest["model"]["name"]

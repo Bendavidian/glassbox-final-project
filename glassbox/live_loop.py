@@ -97,6 +97,18 @@ FILL_POLL_SECONDS = 1.5
 # closed one.
 ARMING_STRIKES = 2
 
+# GB-40's rehearsal defaults. Operator inputs for a one-off run rather than strategy
+# parameters, which is why they are CLI arguments with these as defaults rather than
+# configuration: a rehearsal is something a person decides to do on a particular
+# afternoon, and a configured value would be a value in every model's config hash.
+REHEARSAL_NOTIONAL = 25.0
+REHEARSAL_CLOSE_OUT_MINUTES = 15
+
+# The rehearsal band. `Thresholds` refuses a lower bound of zero, so this is the smallest
+# positive value that carries meaning at float64 - unmistakably not a calibration, which
+# is exactly what it is for.
+PERMISSIVE_LOWER = 1e-9
+
 STOP_LEG = "stop"
 TARGET_LEG = "target"
 LEGS = (STOP_LEG, TARGET_LEG)
@@ -203,6 +215,39 @@ class SessionReport:
 
 
 @dataclass(frozen=True)
+class Rehearsal:
+    """A deliberately permissive run that proves the execution path, and nothing else.
+
+    **GATE 2 criterion 2, as amended on 20 Aug 2026.** The criterion asks whether a
+    loop-produced decision becomes an order, fills, is reconciled, adopted and protected
+    against a real broker. That is a question about the machine. It was conflated with a
+    question about the model - *does the deployed band trade?* - which already has an
+    answer, correctly no, and which no amount of engineering can change. A rehearsal
+    separates them.
+
+    Four conditions, and each closes a way this could become a lie:
+
+    1. **The band is stated** in the banner and the provenance of every record it writes,
+       which is never ``live``. A rehearsal that looked live in the log would be worse
+       than no rehearsal.
+    2. **Nothing it produces may reach a metric.** ``records.is_reportable`` says so once,
+       and the suite asserts it rather than trusting each caller to remember.
+    3. **It closes out before the session close.** The protective legs are DAY orders, so
+       a position held overnight is unprotected overnight - the condition Ben set on this
+       gate. A rehearsal that holds overnight fails the rehearsal.
+    4. **It is small.** The point is that the path works, not that it was consequential.
+    """
+
+    reason: str
+    notional: float
+    close_out_minutes: int
+
+    @property
+    def provenance(self) -> str:
+        return records.rehearsal_provenance(self.reason)
+
+
+@dataclass(frozen=True)
 class Decision:
     """The one decision a symbol has at a given completed bar.
 
@@ -235,6 +280,7 @@ class LiveState:
     replay that reimplemented the loop would prove the reimplementation works, which is
     the one thing nobody needs to know.
     """
+    rehearsal: Rehearsal | None = None
     book: Book = field(default_factory=Book)
     decided: dict[str, Decision] = field(default_factory=dict)
     """The latest decision per symbol. Seeded from the log so a restart does not re-decide."""
@@ -431,6 +477,19 @@ class DryRunBroker:
 # ── loading what the harness produced ────────────────────────────────────────
 
 
+def permissive_band() -> Thresholds:
+    """The band a rehearsal runs on. **Not calibrated, and it says so everywhere.**
+
+    :data:`PERMISSIVE_LOWER` is the smallest band ``Thresholds`` admits — it refuses zero,
+    which is the contract having teeth — so any upward forecast at all qualifies. It could
+    not be mistaken for the output of a grid search, and that is the point: a rehearsal
+    band that looked like a plausible calibration would invite somebody to read its
+    results as results, and the whole of the amended criterion is that this run tests the
+    machine and says nothing about the model.
+    """
+    return Thresholds(lower=PERMISSIVE_LOWER)
+
+
 def load_thresholds(path: str | Path) -> Thresholds:
     """Read the calibrated band, or stand aside.
 
@@ -505,6 +564,26 @@ def session_banner(state: LiveState, when: pd.Timestamp, dry_run: bool) -> str:
             f"  config hash        : {config_hash(cfg)}",
             f"  thresholds         : {band}",
             f"  mode               : {cfg.live.mode}",
+            *(
+                []
+                if state.rehearsal is None
+                else [
+                    "  " + "!" * 74,
+                    f"  REHEARSAL          : {state.rehearsal.reason}",
+                    "  band               : DELIBERATELY PERMISSIVE - not the calibrated one",
+                    f"  provenance         : {state.rehearsal.provenance} (never 'live')",
+                    f"  size cap           : {state.rehearsal.notional:,.2f} notional",
+                    (
+                        f"  close-out          : {state.rehearsal.close_out_minutes}"
+                        " minutes before the close; nothing is carried overnight"
+                    ),
+                    (
+                        "  reportable         : NO. No metric, table or figure may"
+                        " include a decision from this run"
+                    ),
+                    "  " + "!" * 74,
+                ]
+            ),
             f"  universe           : {list(cfg.universe)}  top_k={cfg.signal.top_k}",
             f"  poll               : every {cfg.live.poll_seconds}s",
             f"  exchange session   : {hours}",
@@ -562,9 +641,20 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             and order.side == SELL
             and order.status in records.FILLED
         ]
-        trades = tuple(
-            records.emit_trades(
-                fresh, state.book, {k: tuple(v) for k, v in state.entry_fills.items()}
+        # **A rehearsal emits no trades at all.** `Trade` carries no provenance - it is a
+        # frozen contract (spec 4.2) and GB-19 reads it without translation - so the only
+        # place a rehearsal can be kept out of the study's trade log is here, by never
+        # putting one in. Condition 2 of the rehearsal, enforced at the single point that
+        # can enforce it.
+        trades = (
+            ()
+            if state.rehearsal is not None
+            else tuple(
+                records.emit_trades(
+                    fresh,
+                    state.book,
+                    {k: tuple(v) for k, v in state.entry_fills.items()},
+                )
             )
         )
         for trade in trades:
@@ -667,6 +757,8 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 state.predictor, frames[symbol], state.cfg, symbol, bars_at[symbol]
             )
 
+        closing_out = _rehearsal_close_out(state, when, log)
+
         log("step 8/10 decide, rank, size")
         signals = {
             symbol: decide(forecast, state.thresholds, state.cfg)
@@ -687,9 +779,14 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 state.cfg,
                 gross_exposure=gross,
             )
-            if entries_allowed
+            if entries_allowed and not closing_out
             else []
         )
+        if state.rehearsal is not None:
+            orders_to_place = [
+                _shrink_to_rehearsal_size(order, state.rehearsal)
+                for order in orders_to_place
+            ]
         if not entries_allowed:
             log(
                 "first cycle: entries are held back until protection has been verified "
@@ -843,6 +940,85 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             failed_step=type(failure).__name__,
             error=str(failure),
         )
+
+
+def _rehearsal_close_out(state: LiveState, when: pd.Timestamp, log) -> bool:
+    """Flatten a rehearsal's positions before the close, and stop it opening more.
+
+    **Condition 3 of the rehearsal, and it is Ben's GATE 2 condition applied where it
+    bites.** The protective legs are ``TimeInForce.DAY`` and expire at the close, so a
+    position carried overnight is unprotected overnight - which the backtest models as
+    protected. A rehearsal exists to prove the execution path, and holding overnight
+    proves something nobody asked about while taking a risk nobody sized. *A rehearsal
+    that holds overnight fails the rehearsal.*
+
+    Returns:
+        Whether the loop is in the close-out window, in which case no entry is sized.
+    """
+    if state.rehearsal is None:
+        return False
+    _, closes = market_session(state.cfg, when)
+    if when < closes - pd.Timedelta(minutes=state.rehearsal.close_out_minutes):
+        return False
+
+    if state.book.managed:
+        LOGGER.warning(
+            "REHEARSAL CLOSE-OUT: %s minutes to the close at %s. Flattening %s so nothing "
+            "is carried overnight - the protective legs are DAY orders and expire at the "
+            "close, so an overnight hold would be an unprotected hold",
+            state.rehearsal.close_out_minutes,
+            f"{closes:%H:%M}",
+            ", ".join(sorted(state.book.managed)),
+        )
+    for symbol, holding in sorted(state.book.managed.items()):
+        _flatten_for_close(state, symbol, holding, log)
+    log("rehearsal close-out window: no entry will be sized")
+    return True
+
+
+def _flatten_for_close(state: LiveState, symbol: str, holding: Holding, log) -> None:
+    """Cancel both legs and sell at market. Idempotent through the client_order_id."""
+    for order in state.broker.get_orders():
+        if (
+            order.symbol == symbol
+            and order.side == SELL
+            and _leg_of(order)
+            and order.status not in FINISHED
+        ):
+            state.broker.cancel_order(order.id)
+    try:
+        sold = state.broker.submit_market_order(
+            symbol=symbol,
+            quantity=holding.quantity,
+            side=SELL,
+            client_order_id=f"{holding.decision_id}-closeout",
+        )
+        log(f"{symbol}: rehearsal close-out submitted id={sold.id}")
+    except Exception as failure:  # noqa: BLE001 - retried on the next poll
+        LOGGER.error(
+            "RISK EVENT: the rehearsal close-out for %s failed (%s). It is retried on "
+            "the next poll; if the session ends first the position is carried overnight "
+            "UNPROTECTED and must be closed by hand",
+            symbol,
+            failure,
+        )
+
+
+def _shrink_to_rehearsal_size(order: risk.Order, rehearsal: Rehearsal) -> risk.Order:
+    """Cap an order at the rehearsal notional. **Condition 4: it is small.**
+
+    The sizer is left alone and its output is capped, rather than the rehearsal being
+    given its own sizing path: the point of the rehearsal is that the ordinary path runs,
+    and a second sizer would be one more thing that is not the thing being proven.
+    """
+    if order.notional <= rehearsal.notional:
+        return order
+    scale = rehearsal.notional / order.notional
+    return replace(
+        order,
+        shares=order.shares * scale,
+        notional=rehearsal.notional,
+    )
 
 
 def adopt_own_positions(
@@ -1429,6 +1605,7 @@ def run_session(
     clock=None,
     sleep=time.sleep,
     max_cycles: int | None = None,
+    rehearsal: Rehearsal | None = None,
 ) -> SessionReport:
     """Poll the market for a session, or return immediately when there is no market.
 
@@ -1443,11 +1620,20 @@ def run_session(
             waiting for one.
         sleep: Injected for the same reason.
         max_cycles: Stop after this many cycles. ``None`` runs to the close.
+        rehearsal: Run with a **deliberately permissive band** to prove the execution
+            path, per GATE 2 criterion 2 as amended on 20 Aug 2026. The calibrated band on
+            disk is ignored and :func:`permissive_band` is used instead; every record
+            carries the rehearsal's provenance and none is reportable. See
+            :class:`Rehearsal` for the four conditions this run must satisfy.
     """
     root = Path(state_dir)
     clock = clock or (lambda: pd.Timestamp.now(tz="UTC"))
     predictor = load_predictor(root / CHECKPOINT_DIR, cfg)
-    thresholds = load_thresholds(root / THRESHOLDS_FILE)
+    thresholds = (
+        permissive_band()
+        if rehearsal is not None
+        else load_thresholds(root / THRESHOLDS_FILE)
+    )
 
     # GB-39. Outermost so the dry run's refusals are not retried, and so every call the
     # loop makes - reads and writes alike - goes through one policy rather than each call
@@ -1463,6 +1649,8 @@ def run_session(
         thresholds=thresholds,
         state_dir=root,
         language=language,
+        provenance=(records.LIVE if rehearsal is None else rehearsal.provenance),
+        rehearsal=rehearsal,
         book=Book.load(root / BOOK_FILE),
         entry_fills=_load_entry_fills(root / ENTRY_FILLS_FILE),
     )
@@ -1653,6 +1841,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
             language=args.language,
             max_cycles=args.max_cycles,
+            rehearsal=(
+                None
+                if args.rehearsal is None
+                else Rehearsal(
+                    reason=args.rehearsal,
+                    notional=args.rehearsal_notional,
+                    close_out_minutes=args.rehearsal_close_out,
+                )
+            ),
         )
     except (LiveError, FileNotFoundError, ValueError) as failure:
         print(f"live_loop: {failure}", file=sys.stderr)
@@ -1688,6 +1885,36 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=None,
         help="stop after this many cycles (default: run to the close)",
     )
+    parser.add_argument(
+        "--rehearsal",
+        metavar="REASON",
+        default=None,
+        help=(
+            "prove the execution path with a DELIBERATELY PERMISSIVE band (GATE 2 "
+            "criterion 2). The reason is required and goes into the provenance of every "
+            "record, which is never 'live'. Nothing this run produces is reportable"
+        ),
+    )
+    parser.add_argument(
+        "--rehearsal-notional",
+        type=float,
+        default=REHEARSAL_NOTIONAL,
+        help=(
+            "cap on a rehearsal order, in account currency. Small on purpose: the point "
+            f"is that the path works (default: {REHEARSAL_NOTIONAL:,.0f})"
+        ),
+    )
+    parser.add_argument(
+        "--rehearsal-close-out",
+        type=int,
+        metavar="MINUTES",
+        default=REHEARSAL_CLOSE_OUT_MINUTES,
+        help=(
+            "minutes before the exchange close at which a rehearsal flattens. The "
+            "protective legs are DAY orders, so an overnight hold is an unprotected hold "
+            f"(default: {REHEARSAL_CLOSE_OUT_MINUTES})"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -1697,10 +1924,14 @@ if __name__ == "__main__":  # pragma: no cover - exercised by the CLI, not by te
 
 __all__ = [
     "ARMING_STRIKES",
+    "PERMISSIVE_LOWER",
+    "REHEARSAL_CLOSE_OUT_MINUTES",
+    "REHEARSAL_NOTIONAL",
     "CycleReport",
     "DryRunBroker",
     "LiveError",
     "LiveState",
+    "Rehearsal",
     "SessionReport",
     "adopt_own_positions",
     "answer_pending",
@@ -1711,6 +1942,7 @@ __all__ = [
     "load_thresholds",
     "main",
     "market_session",
+    "permissive_band",
     "run_cycle",
     "run_session",
     "session_banner",

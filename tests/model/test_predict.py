@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from glassbox.config.loader import Config, config_hash, load_config
+from glassbox.config.loader import Config, config_hash, load_config, model_config_hash
 from glassbox.contracts.schemas import Forecast, WindowBatch
 from glassbox.features.builder import build_feature_frame, build_windows
 from glassbox.model import predict as inference
@@ -269,14 +269,20 @@ def test_the_predictor_lists_the_symbols_it_can_score(
 def test_a_checkpoint_from_another_config_will_not_load(
     checkpoint: Path, cfg: Config
 ) -> None:
-    """Named in both directions, so the message says what to change."""
-    drifted = replace(cfg, risk=replace(cfg.risk, stop_loss_pct=0.04))
+    """Named in both directions, so the message says what to change.
+
+    The gate is `model_config_hash` since 20 Aug 2026, so the config that drifts here has
+    to be one that could have shaped the weights.
+    """
+    drifted = replace(
+        cfg, window=replace(cfg.window, input_len=cfg.window.input_len + 8)
+    )
 
     with pytest.raises(ValueError) as raised:
         inference.load_predictor(checkpoint, drifted)
 
-    assert config_hash(cfg) in str(raised.value)
-    assert config_hash(drifted) in str(raised.value)
+    assert model_config_hash(cfg) in str(raised.value)
+    assert model_config_hash(drifted) in str(raised.value)
 
 
 def test_the_hash_can_be_rechecked_at_the_point_of_use(

@@ -7,6 +7,111 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-20 — GATE 2 criterion 2 amended, because the system behaved correctly
+
+**Decision.** Spec §8's GATE 2 criterion 2 is replaced. It read *"at least one order
+placed, filled, and reconciled"*. It now reads:
+
+> **2. EXECUTION PATH PROVEN LIVE.** In a live session, a loop-produced decision becomes an
+> order, fills, is reconciled, adopted and protected. This may be demonstrated with a
+> deliberately permissive **rehearsal band** when the deployed band stands aside — the
+> criterion tests the machine, not the model.
+>
+> **2b. DEPLOYED BAND BEHAVES CORRECTLY.** Whether it trades or stands aside, the behaviour
+> matches what validation selected, and the gate log states which occurred.
+
+**Reasoning, and it is the reason this entry exists rather than a one-line edit.** The
+original wording conflated two questions — *does the execution path work end to end against
+a real broker?* and *does the deployed model trade?* — and only the first is a gate. The
+second is a **result**, it already has an answer, and the answer is no. The most recent
+complete fold's best calibrated candidate scored a validation Sharpe of −3.38 over 7
+trades, so `Thresholds.never()` is in force and no entry can fire.
+
+**The amendment was prompted by the system behaving correctly, not by it failing.** That is
+worth stating plainly because the opposite reading is the natural one. A criterion that
+cannot be met is usually a sign of unfinished work; here it was a sign of a finished system
+declining to trade, and of a criterion that had encoded an assumption nobody had noticed
+making — that a deployed model would want to trade. Left as written, 25 Sep would have
+cancelled FITS by a rule aimed at an unfinished product. **The criterion was fixed, not the
+system.**
+
+**Consequence — four conditions, each closing a way a rehearsal could become a lie.**
+
+1. **It says what it is.** The band appears in the run banner, and the provenance of every
+   record is `rehearsal:<reason>` — never `live`. `records.load_decisions` defaults to
+   live, so the same default that hides a replay hides this.
+2. **Nothing it produces is reportable.** `records.is_reportable` is the one place that
+   says so, and the suite asserts it over GB-19's two inputs. The trade log needed more
+   than a filter: `Trade` carries no provenance and cannot, because it is a frozen contract
+   (§4.2) that GB-19 reads without translation — so **a rehearsal emits no trade at all**,
+   enforced at the single point that can enforce it.
+3. **It closes out before the close**, 15 minutes by default. The protective legs are DAY
+   orders, so an overnight hold is an unprotected hold. *A rehearsal that holds overnight
+   fails the rehearsal.* This is the DAY-legs condition applied where it bites.
+4. **It is small**, capped at a notional the operator names, 25 by default. The sizer is
+   left alone and its output is capped, because the point is that the ordinary path runs.
+
+The band itself is `Thresholds(lower=1e-9)` — the smallest the contract admits, since
+`Thresholds` refuses zero. It could not be mistaken for the output of a grid search, which
+is exactly what it is for.
+
+**Criterion 6 — two or three separate live sessions — stands unchanged and unmet.** It is a
+floor on observation, not on the model, and no amendment reaches it.
+
+---
+
+## 2026-08-20 — The config hash is split rather than narrowed
+
+**Decision.** `config_hash` keeps its exact current meaning: the full resolved
+configuration, written to every `DecisionRecord`, answering *"under what settings was this
+decision made?"*. A second function is added. `model_config_hash` covers only the sections
+that can shape a trained weight — `data`, `window`, `wavelet`, `fits`, `channels`, `model`
+— plus `meta.seed`. **Checkpoints gate on the narrow one.** `load_checkpoint` refuses on
+`model_config_hash` and *logs* when `config_hash` differs while `model_config_hash`
+matches, so a live-only change is visible without being fatal. Both go in the manifest.
+
+**Reasoning.** Adding `live.retry_attempts` and `live.retry_backoff_seconds` for GB-39 —
+two numbers a polling loop reads and no weight can see — changed `config_hash` and made
+`load_checkpoint` refuse every existing model. The guard was correct and the cost was pure
+waste. Narrowing `config_hash` itself was rejected for the right reason: it would change
+what `DecisionRecord.config_hash` promises, and that field is a frozen contract whose whole
+value is that a record ties to *the exact* settings that produced it. So the answer is a
+second field, not a narrower first one.
+
+**The danger is not the retrain.** It is Sprint 4, where FITS and the COF sweep touch the
+configuration repeatedly, and **a guard that fires spuriously every time is a guard
+somebody eventually weakens or works around**. Fixed before that pressure exists rather
+than under it.
+
+**Consequence.** `universe` is deliberately *not* in the model hash, even though it decides
+which symbols were trained on. `Predictor.stats_for` already refuses an untrained symbol by
+name — *"the checkpoint holds no normalisation statistics for X; it was trained on [...]"* —
+so a universe change surfaces as a precise refusal at the point of use rather than as a
+blanket retrain. `meta.version` is excluded too: it versions the configuration *schema*,
+which no weight sees. Tests assert both directions — a live-only key leaves the model hash
+untouched, and `window.input_len` moves it — plus one that walks every model-shaping
+section by name, so a section added to the list without effect is caught.
+
+---
+
+## 2026-08-20 — CI is read, not assumed
+
+**Decision.** `scripts/ci_status.py` reports the CI conclusion for a commit, using the
+credential git already holds for github.com. Exit codes make it usable in a shell
+condition: 0 succeeded, 1 failed, 2 no run yet, 3 no credential.
+
+**Reasoning.** Three consecutive reports were written on an **assumed** green. `gh` is not
+authenticated on this machine and the repository is private, so the unauthenticated API
+returns 404 — and the gap between "I could not check" and "it is fine" got crossed silently
+three times. The credential that pushes the commit can read the run; there was never a
+reason to guess.
+
+**Consequence.** Verified for the commit that prompted this: run #13, `e4b55b2`,
+`completed / success`, and every run back to #8 is green. The token is read through
+`git credential fill` and never printed.
+
+---
+
 ## 2026-08-20 — GB-40, GATE 2 walked: 3 of 6 green, and FITS is not cancelled today
 
 **Decision.** GATE 2 is **not passed**. **FITS proceeds into Sprint 4 as planned**: the §8

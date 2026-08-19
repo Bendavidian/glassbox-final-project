@@ -575,17 +575,71 @@ def load_config(path: str | Path | None = None) -> Config:
     )
 
 
+# The sections a trained weight can depend on. Everything outside this list describes
+# what the system DOES with a model, not what shaped one: how often it polls, how many
+# times it retries, how it sizes a position, where the threshold sits.
+#
+# `universe` is deliberately absent even though it decides which symbols were trained on.
+# A checkpoint carries per-symbol normalisation statistics and `Predictor.stats_for`
+# already refuses an untrained symbol by name - "the checkpoint holds no normalisation
+# statistics for X; it was trained on [...]" - so a universe change surfaces as an
+# explicit refusal at the point of use rather than as a silently wrong forecast. Putting
+# it in the hash would trade that precise message for a blanket retrain.
+MODEL_SHAPING_SECTIONS = (
+    "data",
+    "window",
+    "wavelet",
+    "fits",
+    "channels",
+    "model",
+)
+
+
 def config_hash(cfg: Config) -> str:
     """Return a stable SHA-256 hex digest of the resolved configuration.
 
     The digest is computed over a canonical JSON rendering with sorted keys, so it is
     identical across processes and machines and changes if any value changes. It ties a
     ``DecisionRecord`` to the exact configuration that produced it (GB-29).
+
+    **This is the whole configuration and its meaning does not narrow.** It answers
+    "under what settings was this decision made?", and the answer has to include the
+    settings that decided *not* to trade as much as the ones that shaped the forecast.
+    :func:`model_config_hash` is the narrower question and is a different function
+    precisely so that this one can stay what a ``DecisionRecord`` promises.
     """
     payload = json.dumps(
         asdict(cfg), sort_keys=True, separators=(",", ":"), default=str
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def model_config_hash(cfg: Config) -> str:
+    """A digest of only the settings that can shape a trained weight. **Checkpoints gate
+    on this one.**
+
+    ``config_hash`` covers everything, which is right for a decision record and wrong for
+    a checkpoint. Measured on 19 Aug 2026: adding ``live.retry_attempts`` and
+    ``live.retry_backoff_seconds`` - two numbers a polling loop reads and no weight can
+    see - changed ``config_hash`` and made ``load_checkpoint`` refuse **every** existing
+    model. The guard was correct and the cost was pure waste.
+
+    **The danger is not that retrain.** It is Sprint 4, where FITS and the COF sweep touch
+    the configuration repeatedly, and a guard that fires spuriously every time is a guard
+    somebody eventually weakens or works around. This is fixed before that pressure
+    exists rather than under it.
+
+    Covers :data:`MODEL_SHAPING_SECTIONS` plus ``meta.seed`` - the seed decides the
+    initialisation and the shuffling, so two models under identical settings and different
+    seeds are different models. ``meta.version`` is excluded: it versions the
+    configuration *schema*, not anything a weight sees.
+    """
+    payload = {
+        section: asdict(getattr(cfg, section)) for section in MODEL_SHAPING_SECTIONS
+    }
+    payload["seed"] = cfg.meta.seed
+    rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
 def alpaca_credentials(dotenv_path: str | Path | None = None) -> AlpacaCredentials:

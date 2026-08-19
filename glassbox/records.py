@@ -87,6 +87,15 @@ SELL = "sell"
 # to filter hides replayed decisions rather than passing them off as real ones.
 LIVE = "live"
 REPLAY_PREFIX = "replay:fold-"
+
+# GB-40, ruled 20 Aug 2026. A rehearsal is the live loop, against the real broker, driven
+# by a deliberately permissive band so the EXECUTION PATH can be proven when the deployed
+# band stands aside. Its decisions are real in every sense except the one that matters for
+# a result: the band that produced them was not the one validation selected. So they carry
+# a provenance of their own and **never** `LIVE` - which means the default filter hides
+# them exactly as it hides a replay, and no metric can pick one up by forgetting to look.
+REHEARSAL_PREFIX = "rehearsal:"
+
 ANY_PROVENANCE = "*"
 
 PENDING_FILE = "pending.json"
@@ -110,6 +119,33 @@ def replay_provenance(fold: int) -> str:
 
 def is_replay(provenance: str) -> bool:
     return provenance.startswith(REPLAY_PREFIX)
+
+
+def rehearsal_provenance(reason: str) -> str:
+    """The provenance a rehearsal's decisions carry. Names the reason, not a boolean.
+
+    The same shape as :func:`replay_provenance` and for the same argument: a reader who
+    finds one of these in a log should learn *why* it is not live from the string itself,
+    rather than having to know that a flag somewhere meant something.
+    """
+    if not reason.strip():
+        raise ValueError("a rehearsal must state its reason; it goes in every record")
+    return f"{REHEARSAL_PREFIX}{reason.strip()}"
+
+
+def is_rehearsal(provenance: str) -> bool:
+    return provenance.startswith(REHEARSAL_PREFIX)
+
+
+def is_reportable(provenance: str) -> bool:
+    """Whether a decision may reach a metric, a table or a figure in the report.
+
+    **Only live decisions are.** A replay is a recorded day played back; a rehearsal is a
+    real order placed under a band nobody selected. Both are evidence that the machine
+    works and neither is evidence about the strategy, so both are excluded here rather
+    than at each of the places that would otherwise have to remember.
+    """
+    return provenance == LIVE
 
 
 # ── decision records ─────────────────────────────────────────────────────────
@@ -600,6 +636,7 @@ __all__ = [
     "ANY_PROVENANCE",
     "LIVE",
     "PENDING_FILE",
+    "REHEARSAL_PREFIX",
     "REPLAY_PREFIX",
     "SIGNAL",
     "STOP",
@@ -614,11 +651,14 @@ __all__ = [
     "emit_trades",
     "encode_decision",
     "exit_reason_for",
+    "is_rehearsal",
     "is_replay",
+    "is_reportable",
     "load_decisions",
     "load_pending",
     "month_file",
     "realised_slippage_bps",
+    "rehearsal_provenance",
     "replay_provenance",
     "resolve_pending",
     "save_decision",
