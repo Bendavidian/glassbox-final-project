@@ -338,3 +338,39 @@ def test_the_alpaca_broker_also_satisfies_the_protocol() -> None:
         "get_account",
     ):
         assert callable(getattr(executor.AlpacaBroker, method))
+
+
+# ── the broker's order history has to include finished orders ────────────────
+
+
+def test_get_orders_asks_the_broker_for_every_status() -> None:
+    """``TradingClient.get_orders()`` with no filter returns OPEN orders only.
+
+    That default was the bug, and it was silent in both directions that matter. Every
+    caller of this method that matters asks about orders which have **finished**:
+    ``records.emit_trades`` builds the live trade log from filled sells, so with an
+    open-only list the live trade log was structurally empty and GB-19 had nothing to
+    measure over paper results; and ``live_loop.protect_book`` detects a filled leg in
+    order to cancel its sibling, so rule 4 of the protection policy could never fire and a
+    filled stop would have left its take-profit working as a naked sell.
+
+    An empty list is a valid-looking answer to the wrong question, which is why this is
+    asserted on the request rather than inferred from behaviour.
+    """
+    from alpaca.trading.enums import QueryOrderStatus
+
+    from glassbox.engine.executor import ORDER_HISTORY, AlpacaBroker
+
+    asked = {}
+
+    class StubClient:
+        def get_orders(self, filter=None):  # alpaca-py names the parameter this
+            asked["filter"] = filter
+            return []
+
+    broker = object.__new__(AlpacaBroker)
+    broker._client = StubClient()
+
+    assert broker.get_orders() == []
+    assert asked["filter"].status == QueryOrderStatus.ALL
+    assert asked["filter"].limit == ORDER_HISTORY

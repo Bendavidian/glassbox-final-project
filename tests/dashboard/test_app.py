@@ -269,39 +269,44 @@ def test_an_english_narrative_stays_left_to_right() -> None:
     assert 'dir="ltr"' in app.narrative_html(english)
 
 
-def test_the_decision_log_is_newest_first_and_carries_the_cancellation() -> None:
+def a_record(
+    day: str = "2026-08-10",
+    symbol: str = "AAPL",
+    order=None,
+    close_logret: float = 0.08,
+    rsi14: float = -0.06,
+):
     from glassbox.contracts.schemas import DecisionRecord
 
-    def record(day: str, symbol: str) -> DecisionRecord:
-        attribution = an_attribution(close_logret=0.08, rsi14=-0.06)
-        return DecisionRecord(
-            as_of=pd.Timestamp(day, tz="UTC"),
+    stamp = pd.Timestamp(day, tz="UTC")
+    return DecisionRecord(
+        as_of=stamp,
+        symbol=symbol,
+        forecast=Forecast(
+            path=np.array([0.005] * 4, dtype="float32"), symbol=symbol, as_of=stamp
+        ),
+        attribution=an_attribution(close_logret=close_logret, rsi14=rsi14),
+        signal=Signal(
             symbol=symbol,
-            forecast=Forecast(
-                path=np.array([0.005] * 4, dtype="float32"),
-                symbol=symbol,
-                as_of=pd.Timestamp(day, tz="UTC"),
-            ),
-            attribution=attribution,
-            signal=Signal(
-                symbol=symbol,
-                action=HOLD,
-                trend_strength=0.02,
-                up_points=4,
-                passed_threshold=False,
-            ),
-            order=None,
-            narrative="",
-            config_hash="x",
-        )
-
-    table = app.decision_rows(
-        [record("2026-08-10", "AAPL"), record("2026-08-11", "MSFT")]
+            action=HOLD,
+            trend_strength=0.02,
+            up_points=4,
+            passed_threshold=False,
+        ),
+        order=order,
+        narrative="",
+        config_hash="x",
     )
 
-    assert list(table["symbol"]) == ["MSFT", "AAPL"]
-    assert "cancellation" in table.columns
-    assert table["cancellation"].iloc[0] == pytest.approx(0.02 / 0.14)
+
+def test_the_decision_log_is_newest_first_and_carries_the_cancellation() -> None:
+    ordered = app.decision_rows(
+        [a_record("2026-08-10", "AAPL"), a_record("2026-08-11", "MSFT")]
+    )
+
+    assert [record.symbol for record in ordered] == ["MSFT", "AAPL"]
+    assert "CANCELLATION" in app.decision_table(ordered)
+    assert f"{0.02 / 0.14:.4f}" in app.decision_table(ordered)
 
 
 # ── the design language ──────────────────────────────────────────────────────
@@ -361,3 +366,163 @@ def test_an_entry_decision_and_a_hold_both_render(cfg_stub) -> None:
         )
         assert signal.action in {ENTER_LONG, HOLD}
     assert app.contributions_svg(an_attribution(close_logret=0.01, rsi14=0.0))
+
+
+# ── the tables carry the design language, not Streamlit's ────────────────────
+
+
+def test_a_table_puts_orange_on_the_header_row_only() -> None:
+    """Two colour families, and the table is data. The header is the chrome in it."""
+    css = app.stylesheet()
+    header_rule = css[css.index(".gb-table th") : css.index(".gb-table td")]
+
+    assert app.ORANGE in header_rule
+    body_rule = css[css.index(".gb-table td") : css.index(".gb-table tbody")]
+    assert app.ORANGE not in body_rule
+
+
+def test_numeric_columns_are_right_aligned_with_tabular_figures() -> None:
+    """Digits have to line up in their columns or a reader cannot compare down one."""
+    html = app.table_html(("SYMBOL", "QTY"), [("AAPL", "1.00")], numeric=(1,))
+    css = app.stylesheet()
+
+    assert '<td class="num">1.00</td>' in html
+    assert '<td class="">AAPL</td>' in html
+    assert "tabular-nums" in css
+
+
+def test_rows_carry_thin_dashed_rules_on_a_near_black_ground() -> None:
+    css = app.stylesheet()
+
+    assert f"border-bottom: 1px dashed {app.HAIRLINE}" in css
+    assert f"background: {app.PANEL}" in css
+
+
+def test_a_cell_cannot_inject_markup() -> None:
+    html = app.table_html(("A",), [("<script>x</script>",)])
+
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_a_decision_with_no_order_shows_an_em_dash_not_a_blank() -> None:
+    """A blank cell in a technical table reads as missing data rather than as 'none'."""
+    html = app.decision_table([a_record()])
+
+    assert f'<td class="">{app.EM_DASH}</td>' in html
+    assert '<td class=""></td>' not in html
+
+
+def test_an_order_shows_as_yes() -> None:
+    html = app.decision_table([a_record(order={"symbol": "AAPL"})])
+
+    assert "YES" in html
+
+
+def test_a_quarantined_position_shows_em_dashes_rather_than_zeros() -> None:
+    from glassbox.engine.reconcile import Book
+
+    html = app.position_table(
+        app.position_rows(Book(), {"AAPL": 0.0919}, {"AAPL": 310.0})
+    )
+
+    assert "QUARANTINED" in html
+    assert html.count(app.EM_DASH) == 2  # no entry basis, and therefore no PnL
+
+
+# ── a decomposition that is mostly cancellation says so ──────────────────────
+
+
+def test_a_nearly_cancelled_decomposition_is_flagged_in_the_row() -> None:
+    """AMZN at 0.1535 means 85% of the gross channel view offset. Unflagged, the row looks
+    exactly like one where every channel agreed."""
+    fragile = a_record(close_logret=0.08, rsi14=-0.07)
+
+    assert app.cancellation(fragile.attribution) < app.EXPLANATION_FRAGILE_BELOW
+    assert app.is_fragile(fragile.attribution)
+    assert app.FRAGILE_LABEL in app.decision_table([fragile])
+    # The cancellation cell, not the whole row: one orange cell in a grey table is already
+    # the only thing the eye goes to.
+    assert 'class="num gb-flag"' in app.decision_table([fragile])
+    assert app.decision_table([fragile]).count("gb-flag") == 1
+
+
+def test_a_healthy_decomposition_is_not_flagged() -> None:
+    """The flag has to be the rarer of the two or it stops being read."""
+    solid = a_record(close_logret=0.08, rsi14=0.06)
+
+    assert not app.is_fragile(solid.attribution)
+    assert app.FRAGILE_LABEL not in app.decision_table([solid])
+
+
+def test_the_expander_title_carries_the_trend_and_the_flag() -> None:
+    """The list has to be scannable unopened."""
+    title = app.expander_title(a_record(close_logret=0.08, rsi14=-0.07))
+
+    assert "+0.0200" in title
+    assert "CANCELLATION" in title
+    assert app.FRAGILE_LABEL in title
+
+
+# ── nothing is drawn on top of data ──────────────────────────────────────────
+
+
+def test_the_band_note_sits_below_the_plot_area_not_over_it() -> None:
+    """The note used to be drawn at the same height as the NOW marker and across the price
+    line. Chrome does not compete with data for pixels in this design."""
+    import re
+
+    svg = app.forecast_svg(
+        HISTORY, app.price_path(103.5, [0.004]), Thresholds.never(), "AAPL"
+    )
+    plot_bottom = 250 - 30  # height less the strip
+
+    note = re.search(r'<text x="[\d.]+" y="([\d.]+)"[^>]*>NO CALIBRATED BAND', svg)
+    assert note is not None
+    assert float(note.group(1)) > plot_bottom
+
+    polylines = re.findall(r'points="([^"]+)"', svg)
+    drawn = [
+        float(point.split(",")[1]) for line in polylines for point in line.split(" ")
+    ]
+    assert max(drawn) <= plot_bottom
+
+
+def test_the_chart_scales_to_its_container_rather_than_being_letterboxed() -> None:
+    """A fixed height beside width=100% and a viewBox centres the drawing and wastes the
+    column, which is what left a third of the viewport empty."""
+    svg = app.forecast_svg(
+        HISTORY, app.price_path(103.5, [0.004]), Thresholds(0.01), "A"
+    )
+
+    opening = svg[: svg.index(">") + 1]
+    assert 'width="100%"' in opening
+    assert "height:auto" in opening
+    assert "height=" not in opening  # the viewBox supplies the ratio
+
+
+# ── the rulers and the masthead ──────────────────────────────────────────────
+
+
+def test_the_top_ruler_starts_at_zero_not_double_zero() -> None:
+    assert ">0<" in app.ruler_html()
+    assert ">00<" not in app.ruler_html()
+
+
+def test_there_is_a_numbered_ruler_down_the_left_edge() -> None:
+    ruler = app.left_ruler_html()
+
+    assert ">0<" in ruler and ">50<" in ruler
+    assert "position: fixed" in app.stylesheet()
+
+
+def test_the_content_column_is_not_capped(cfg_stub) -> None:
+    """The charts get the width the ruler does not take."""
+    assert "max-width: none" in app.stylesheet()
+
+
+def test_the_masthead_stacks_project_system_and_version(cfg_stub) -> None:
+    html = app.header_html(cfg_stub, app.ASIDE, None)
+
+    assert html.index("PROJECT") < html.index("SYSTEM") < html.index("VERSION")
+    assert html.count("gb-metarow") == 3

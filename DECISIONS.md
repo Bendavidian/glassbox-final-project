@@ -7,6 +7,117 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-19 — RULING: decide once per completed bar, manage every cycle
+
+**Decision.** An entry decision is computed and recorded **once per `(as_of, symbol)`**.
+Later cycles in the same session neither re-decide nor re-record it. Reconciliation,
+protection, trade emission and exits are **explicitly outside the rule** and run on every
+cycle. `records.save_decision` refuses a second record for the same key and
+`records.load_decisions` asserts uniqueness on load, so a duplicate arriving by any route
+surfaces rather than silently doubling a metric.
+
+**Reasoning.** A decision's `as_of` is the last **completed** daily bar, which does not
+change during a session. At 60-second polling a 6.5-hour session is 390 cycles, so the loop
+re-derived the identical verdict from identical inputs 390 times and wrote 390 identical
+rows per symbol — **1,950 decision records a day** over the five-symbol universe. The log
+was the visible half. The question it exposed was whether, with a live band, the loop would
+attempt an **entry** every 60 seconds.
+
+This is the generalisation of GB-26's first-cycle ruling: **a cycle may always reduce risk;
+adding it is what is rationed.** An entry is a function of daily data and can change once a
+day. An exit is an obligation on capital already committed, and prices move intraday, so it
+is re-*sent* until the broker has it — never re-*decided*.
+
+**What would have prevented a repeated entry submission today: the Book, and only as a
+race.** `run_cycle` sized entries over `[s for s in ranked if s.symbol not in
+state.book.symbols()]`, and the book is rebuilt each cycle from the broker's **positions**.
+A position appears only on the fill. `_absorb_entry` polls 10 times at 1.5s and, if the fill
+has not landed, returns without booking anything — so the next cycle sees no position, no
+holding, and sizes the same entry again. The executor added nothing: `decision_id` was
+`f"{cycle_id}-{symbol}"`, a **different** string every cycle, so Alpaca's own duplicate
+rejection could never fire. This is exactly the race, not a guard.
+`tests/test_live_loop.py::test_a_repeated_entry_is_never_submitted_when_the_fill_has_not_appeared`
+runs the loop against a broker that accepts and never fills, and pins one buy per symbol.
+
+**Consequence.**
+
+- `decision_id` is now `f"{as_of:%Y%m%d}-{symbol}"` — **derived from the bar, not the
+  cycle**. Because `execute` passes it through as the entry's `client_order_id`, a second
+  entry for one bar is refused **at the broker**, which is the only place that can win a
+  race against a fill that has not appeared. Measured, see the entry below.
+- `LiveState.decided` caches the day's verdict per symbol and is **seeded from the log** at
+  the first cycle, so a restart mid-session does not re-decide bars it already recorded.
+- Exits move out of the decision loop into `_send_exits`, which runs every cycle and asks
+  **the broker** — not a flag in memory — whether the exit order is already there.
+- `records.amend_decision` is added, and GB-37's approval uses it. An operator's answer is
+  not a second decision at the same bar; appended, it would have doubled exactly the count
+  this ruling protects, and the approval rate computed over the log would have been the
+  answers divided by twice the recommendations.
+- **Where the two rulings meet.** The first cycle may not add risk, and a bar is decided
+  once. Recording an `ENTER_LONG` verdict on the first cycle would strand it — the next
+  cycle would decline to re-decide and the entry would never be submitted, turning "the
+  first cycle does not enter" into "the session never enters". So a verdict the loop is
+  forbidden to act on **leaves the bar undecided**: a decision is recorded when it is
+  complete. The cost is one repeated forward pass on the first two cycles of a session,
+  not on all 390.
+- The existing live store held **20 lines for 5 unique decisions**. Repaired; see PROGRESS.
+
+---
+
+## 2026-08-19 — Measured: Alpaca consumes a `client_order_id` permanently, and three defects fall out of it
+
+**Decision.** Two facts were measured against the paper account rather than assumed, and
+each closes a live defect. The third defect is **reported and not fixed**, because it
+changes the protection policy and that is Ben's ruling to make.
+
+**Measured, 18 Aug 2026.** Submitting a limit order with `client_order_id` X, then
+submitting X again:
+
+- while the original is **working** → refused, `40010001 client_order_id must be unique`
+- after the original is **cancelled** → refused, same code
+
+So an id is consumed permanently. That is what makes the deterministic `decision_id` above
+a real guard, and it is also what broke re-arming.
+
+**Defect 1 — `AlpacaBroker.get_orders()` returned open orders only.** `TradingClient
+.get_orders()` with no filter defaults to `status=open`. Every caller that matters asks
+about orders that have **finished**: `records.emit_trades` builds the live trade log from
+filled sells, so **the live trade log was structurally empty** and GB-19 had nothing to
+measure over paper results; and `protect_book` detects a filled leg in order to cancel its
+sibling, so rule 4 could never fire and **a filled stop would leave its take-profit working
+as a naked sell**. Both silent — an empty list is a valid-looking answer to the wrong
+question. Now requests `QueryOrderStatus.ALL`; every caller already filtered on status
+itself. Asserted on the request, not inferred from behaviour.
+
+The flatten on 18 Aug showed this masked: no trade was emitted, which was correct because
+the position was quarantined — and *also* unavoidable, because no filled order was visible.
+The right outcome arrived for one reason while a second reason would have produced it
+anyway. That is the shape of a defect that survives a test suite.
+
+**Defect 2 — re-arming reused a consumed id.** `protect_book` re-armed
+`f"{holding.decision_id}-stop"`, the id the leg already had. Refused → arming failure →
+`ARMING_STRIKES` of them → **`_flatten` at market**. Now `f"{decision_id}#{n}-stop"`, with
+`n` derived from **the broker's own order history** so a restart cannot reset it into a
+collision. The `-stop`/`-target` suffix is preserved, so `records.exit_reason_for` still
+reads the leg from the id.
+
+**Defect 3 — the protective legs are `TimeInForce.DAY`. NOT FIXED; Ben's call.** They
+expire at every close, so a position held overnight is **unprotected overnight**, which the
+backtest models as protected. Defect 2 then turned the next morning's re-arm into a forced
+liquidation two cycles into the session. Defect 2 is fixed, so the liquidation is gone; the
+overnight gap is not, and closing it means `DAY → GTC`, which is a change to the protection
+policy recorded on 18 Aug rather than a bug in it. **No position has been held overnight by
+the loop** — the only position the account has held was GB-22's, quarantined and never
+protected — so this is latent, not realised. It is also moot while the deployed band stands
+aside. Flagged for a ruling rather than adapted silently (CLAUDE.md §5).
+
+**Consequence.** `ORDER_HISTORY = 500` is a new module constant in `executor.py`, flagged
+rather than buried: rule 5 is config over constants, and the justification is that a key
+here could only ever ask for *less* than everything the broker will tell us about, and
+"reconcile over fewer orders than are available" is not a policy anyone wants to set.
+
+---
+
 ## 2026-08-18 — GB-22 closed: the order filled at the open, and the position is quarantined
 
 **The acceptance criterion is met, and the same run surfaces an operational fact worth

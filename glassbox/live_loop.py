@@ -49,7 +49,7 @@ import pandas_market_calendars as mcal
 
 from glassbox import records
 from glassbox.config.loader import Config, config_hash, load_config
-from glassbox.contracts.schemas import DecisionRecord, Forecast, Trade
+from glassbox.contracts.schemas import DecisionRecord, Forecast, Signal, Trade
 from glassbox.data.live import data_source, load_live_bars
 from glassbox.engine import risk
 from glassbox.engine.executor import (
@@ -67,7 +67,7 @@ from glassbox.engine.executor import (
 )
 from glassbox.engine.rank import rank_signals
 from glassbox.engine.reconcile import Book, Holding, reconcile
-from glassbox.engine.signal import EXIT, Thresholds, decide
+from glassbox.engine.signal import ENTER_LONG, EXIT, Thresholds, decide
 from glassbox.explain.channel import attribute
 from glassbox.explain.narrate import EN, narrate
 from glassbox.features.builder import (
@@ -132,6 +132,7 @@ class CycleReport:
     at: pd.Timestamp
     entries_allowed: bool
     ranked_over: tuple[str, ...] = ()
+    settled: tuple[str, ...] = ()
     stale: tuple[str, ...] = ()
     divergences: tuple[str, ...] = ()
     rearmed: tuple[str, ...] = ()
@@ -163,6 +164,11 @@ class SessionReport:
             f"session {self.session_id} stopped by {self.stopped_by}",
             f"  cycles completed     : {len(self.cycles)}, {len(failed)} with a failed step",
             f"  decisions recorded   : {sum(len(c.decisions) for c in self.cycles)}",
+            (
+                "  bars already decided : "
+                f"{sum(len(c.settled) for c in self.cycles)} symbol-cycles"
+                " not re-decided"
+            ),
             f"  orders submitted     : {sum(len(c.submissions) for c in self.cycles)}",
             f"  trades emitted       : {sum(len(c.trades) for c in self.cycles)}",
             f"  positions re-armed   : {sum(len(c.rearmed) for c in self.cycles)}",
@@ -177,6 +183,21 @@ class SessionReport:
             + ("" if not self.open_orders else " — " + "; ".join(self.open_orders))
         )
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class Decision:
+    """The one decision a symbol has at a given completed bar.
+
+    Cached because the ruling of 19 Aug 2026 says a decision is made once per completed
+    bar. It is kept for the whole session rather than for one cycle because two later
+    cycles need it: the exit pass, which re-sends an obligation the broker has not yet
+    taken, and the guard that stops the loop deciding the same bar again.
+    """
+
+    bar: pd.Timestamp
+    signal: Signal
+    decision_id: str
 
 
 @dataclass
@@ -198,6 +219,9 @@ class LiveState:
     the one thing nobody needs to know.
     """
     book: Book = field(default_factory=Book)
+    decided: dict[str, Decision] = field(default_factory=dict)
+    """The latest decision per symbol. Seeded from the log so a restart does not re-decide."""
+    seeded: bool = False
     entry_fills: dict[str, list] = field(default_factory=dict)
     arming_failures: dict[str, int] = field(default_factory=dict)
     seen_orders: set[str] = field(default_factory=set)
@@ -208,6 +232,24 @@ class LiveState:
         (self.state_dir / ENTRY_FILLS_FILE).write_text(
             json.dumps(self.entry_fills, indent=2), encoding="utf-8"
         )
+
+
+def decision_id_for(as_of: pd.Timestamp, symbol: str) -> str:
+    """A decision's name, and the broker's idempotency key.
+
+    Derived from **the bar, not the cycle**. Under the ruling of 19 Aug 2026 a decision
+    happens once per completed daily bar, so the cycle that happened to carry it is an
+    accident of polling and has no business in its name - the cycle is still on every log
+    line, where tracing needs it.
+
+    The change buys a guard the loop could not otherwise have. Measured against the paper
+    account on 18 Aug 2026: Alpaca refuses a repeated ``client_order_id`` with
+    ``40010001 client_order_id must be unique``. Because ``execute`` passes this string
+    straight through as the entry's ``client_order_id``, a second entry for the same bar
+    is refused **at the broker** - which is the only place that can win a race against a
+    fill that has not yet appeared.
+    """
+    return f"{pd.Timestamp(as_of):%Y%m%d}-{symbol}"
 
 
 # ── the calendar, which decides when there is a market at all ────────────────
@@ -464,6 +506,16 @@ def session_banner(state: LiveState, when: pd.Timestamp, dry_run: bool) -> str:
 def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
     """One pass of the loop.
 
+    **Decide once per completed bar; manage every cycle.** (Ruling, 19 Aug 2026.) An entry
+    decision is a function of daily data, so it can change once a day - at 60-second
+    polling the loop would otherwise re-derive the identical verdict 390 times and record
+    390 identical decisions per symbol per session. Reconciliation, protection, trade
+    emission and exits are explicitly outside the rule and run on every cycle, because
+    prices move intraday and the risk already taken moves with them.
+
+    The rule is the generalisation of the first-cycle ruling below: **a cycle may always
+    reduce risk; adding it is what is rationed.**
+
     **The first cycle may reduce risk and may not add any.** No entry is submitted on it;
     exits, protection and reconciliation all run in full. Three reasons, in order of
     weight: rule 2 of the protection policy says re-arm before entries and the first cycle
@@ -551,6 +603,8 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 continue
             frames[symbol] = build_feature_frame(completed, state.cfg)
 
+        _seed_decided(state, when)
+
         if not frames:
             log("every symbol is stale; no forecast this cycle. Protection stands.")
             return CycleReport(
@@ -561,14 +615,34 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 divergences=divergences,
                 rearmed=tuple(rearmed),
                 flattened=tuple(flattened),
+                # An exit decided at an earlier cycle is an obligation, not a forecast, so
+                # it is still owed even on a cycle that can compute nothing new.
+                submissions=tuple(_send_exits(state, orders, log)),
                 trades=trades,
             )
 
-        log(f"step 7/10 forecast: {len(frames)} symbol(s), stale {stale or 'none'}")
+        bars_at = {symbol: frame.index[-1] for symbol, frame in frames.items()}
+        undecided = [
+            symbol
+            for symbol in sorted(frames)
+            if state.decided.get(symbol) is None
+            or state.decided[symbol].bar != bars_at[symbol]
+        ]
+        settled = tuple(symbol for symbol in sorted(frames) if symbol not in undecided)
+        if settled:
+            log(
+                "already decided at this bar, not re-decided: "
+                + ", ".join(f"{s} at {bars_at[s]:%Y-%m-%d}" for s in settled)
+            )
+
+        log(
+            f"step 7/10 forecast: {len(undecided)} undecided, {len(settled)} settled, "
+            f"stale {stale or 'none'}"
+        )
         forecasts: dict[str, Forecast] = {}
-        for symbol, frame in frames.items():
+        for symbol in undecided:
             forecasts[symbol] = predict_window(
-                state.predictor, frame, state.cfg, symbol, frame.index[-1]
+                state.predictor, frames[symbol], state.cfg, symbol, bars_at[symbol]
             )
 
         log("step 8/10 decide, rank, size")
@@ -600,13 +674,33 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 "once. Exits, protection and reconciliation ran in full"
             )
 
-        log("step 9/10 explain, narrate, execute, persist")
+        log("step 9/10 explain, narrate, execute, persist — bars not yet decided")
         decisions: list[str] = []
         submissions: list[Submission] = []
         sized = {order.symbol: order for order in orders_to_place}
         for symbol in sorted(signals):
-            decision_id = f"{cycle_id}-{symbol}"
+            decision_id = decision_id_for(bars_at[symbol], symbol)
             verdict = signals[symbol]
+
+            if not entries_allowed and verdict.action == ENTER_LONG:
+                # Where the two rulings meet. The first cycle may not add risk (GB-26),
+                # and a bar is decided only once (19 Aug 2026) - so recording this verdict
+                # now would strand it: the next cycle would decline to re-decide and the
+                # entry it justifies would never be submitted, turning "the first cycle
+                # does not enter" into "the session never enters".
+                #
+                # A decision is recorded when it is complete. A verdict the loop is
+                # forbidden to act on is not yet a decision it has made, so the bar is
+                # left undecided and the next cycle records it once, with the order it
+                # produced and a narrative written in the knowledge of that order. The
+                # cost is one repeated forward pass on the first two cycles of a session,
+                # not on all 390.
+                log(
+                    f"{symbol}: ENTER_LONG withheld and the bar left undecided; the "
+                    "first cycle may not add risk, and the next cycle records it once"
+                )
+                continue
+
             forecast = forecasts[symbol]
             found = attribute(
                 state.predictor.model,
@@ -638,9 +732,7 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             )
 
             submission = None
-            if verdict.action == EXIT and symbol in state.book.managed:
-                submission = exit_position(state, symbol, decision_id, log)
-            elif order is not None:
+            if order is not None:
                 submission = execute(state.broker, order, decision_id, state.cfg)
                 if submission.status == PENDING_APPROVAL:
                     # GB-37: the recommendation outlives the cycle, because the approver
@@ -669,7 +761,15 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 submissions.append(submission)
 
             records.save_decision(record, state.state_dir)
+            # Only once the record is on disk. Marking it decided first and then failing
+            # to write would lose the decision permanently: the loop would refuse to make
+            # it again and the log would never have it.
+            state.decided[symbol] = Decision(
+                bar=bars_at[symbol], signal=verdict, decision_id=decision_id
+            )
             decisions.append(decision_id)
+
+        submissions.extend(_send_exits(state, orders, log))
 
         log("step 10/10 persist: book and entry fills")
         state.save()
@@ -678,6 +778,7 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             at=when,
             entries_allowed=entries_allowed,
             ranked_over=tuple(sorted(frames)),
+            settled=settled,
             stale=tuple(stale),
             divergences=divergences,
             rearmed=tuple(rearmed),
@@ -696,6 +797,87 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             failed_step=type(failure).__name__,
             error=str(failure),
         )
+
+
+def _seed_decided(state: LiveState, when: pd.Timestamp) -> None:
+    """Rebuild what has already been decided, once, from the log on disk.
+
+    A process restarted mid-session starts with an empty cache. Without this it would
+    re-decide bars it had already recorded, ``records.save_decision`` would refuse the
+    duplicate - correctly - and the cycle would fail on that refusal every minute until
+    the close. The month is the window because the month is the unit the store is already
+    written in; only today matters, and a month is cheap to read.
+    """
+    if state.seeded:
+        return
+    state.seeded = True
+    now = pd.Timestamp(when)
+    month = (
+        now.tz_convert("UTC") if now.tzinfo else now.tz_localize("UTC")
+    ).normalize()
+    try:
+        stored = records.load_decisions(
+            month.replace(day=1), now, state.state_dir, state.provenance
+        )
+    except records.DuplicateDecision as failure:
+        raise LiveError(
+            f"the decision log cannot be read, so the loop cannot tell what it has "
+            f"already decided and will not guess: {failure}"
+        ) from failure
+    for record in stored:
+        state.decided[record.symbol] = Decision(
+            bar=record.as_of,
+            signal=record.signal,
+            decision_id=decision_id_for(record.as_of, record.symbol),
+        )
+    if stored:
+        LOGGER.info(
+            "seeded from the log: %s already decided, latest bar %s",
+            ", ".join(sorted({record.symbol for record in stored})),
+            f"{max(record.as_of for record in stored):%Y-%m-%d}",
+        )
+
+
+def _send_exits(
+    state: LiveState, orders: Sequence[BrokerOrder], log
+) -> list[Submission]:
+    """Send the exits the bar decided, every cycle, until the broker has them.
+
+    **Outside the decide-once rule**, by the ruling of 19 Aug 2026. An entry is a function
+    of daily data and is decided once; an exit is an *obligation on capital already
+    committed*, so a submission that failed is re-sent on the next poll rather than at the
+    next bar. Nothing is re-decided here - the verdict is the one the bar produced - it is
+    re-*sent*.
+
+    **The broker is asked whether it already has the order**, not a flag in memory. The
+    exit's ``client_order_id`` is a function of the bar, so one glance at the order
+    history answers "did this exit go?" correctly across a restart, where a flag would
+    have said no and sent a second market sell.
+    """
+    already = {records.client_order_id(order) for order in orders}
+    submissions: list[Submission] = []
+    for symbol in sorted(state.book.managed):
+        decision = state.decided.get(symbol)
+        if decision is None or decision.signal.action != EXIT:
+            continue
+        client_order_id = f"{decision.decision_id}-exit"
+        if client_order_id in already:
+            continue
+        try:
+            submission = exit_position(state, symbol, client_order_id, log)
+        except Exception as failure:  # noqa: BLE001 - retried, never fatal
+            LOGGER.error(
+                "RISK EVENT: %s was decided EXIT at %s and the submission failed (%s). "
+                "The position is still held and its protective legs are still live; the "
+                "exit is re-sent on the next poll",
+                symbol,
+                f"{decision.bar:%Y-%m-%d}",
+                failure,
+            )
+            continue
+        if submission is not None:
+            submissions.append(submission)
+    return submissions
 
 
 def answer_pending(
@@ -754,7 +936,10 @@ def answer_pending(
         answer = "Declined by the operator. No order was sent to the broker."
 
     original = records.decode_decision(entry["record"])
-    records.save_decision(
+    # Amended, not appended: the loop already recorded this decision when it queued the
+    # recommendation, and the operator's answer belongs to that decision rather than
+    # being a second one at the same bar.
+    records.amend_decision(
         replace(
             original,
             narrative=f"{original.narrative} {answer}",
@@ -835,9 +1020,10 @@ def protect_book(
             " and ".join(missing),
             ARMING_STRIKES,
         )
+        attempt = _next_arming(orders, holding.decision_id)
         try:
             for leg in missing:
-                _arm_leg(state, symbol, holding, leg, log)
+                _arm_leg(state, symbol, holding, leg, log, attempt)
             state.arming_failures.pop(symbol, None)
             rearmed.append(symbol)
         except Exception as failure:  # noqa: BLE001 - the strike count is the policy
@@ -857,8 +1043,36 @@ def protect_book(
     return rearmed, flattened
 
 
-def _arm_leg(state: LiveState, symbol: str, holding: Holding, leg: str, log) -> None:
-    client_order_id = f"{holding.decision_id}{LEG_SUFFIX[leg]}"
+def _next_arming(orders: Sequence[BrokerOrder], decision_id: str) -> int:
+    """The next unused arming number for a position's protective legs.
+
+    **Measured against the paper account, 18 Aug 2026: Alpaca refuses a
+    ``client_order_id`` it has seen before, including after the original was cancelled or
+    expired** (``40010001 client_order_id must be unique``). The legs are submitted
+    ``TimeInForce.DAY``, so they expire at every close; re-arming them the next morning
+    under yesterday's id would be refused, that refusal counts as an arming failure, and
+    :data:`ARMING_STRIKES` of them flatten the position at market. A position held
+    overnight would have been liquidated two cycles into the next session for a reason
+    that has nothing to do with the strategy.
+
+    The number is derived from **the broker's own order history** rather than from a
+    counter in memory, so a restart cannot reset it into a collision.
+    """
+    used = 0
+    for order in orders:
+        client_id = records.client_order_id(order)
+        if not client_id.startswith(f"{decision_id}#"):
+            continue
+        number = client_id[len(decision_id) + 1 :].split("-")[0]
+        if number.isdigit():
+            used = max(used, int(number))
+    return used + 1
+
+
+def _arm_leg(
+    state: LiveState, symbol: str, holding: Holding, leg: str, log, attempt: int = 1
+) -> None:
+    client_order_id = f"{holding.decision_id}#{attempt}{LEG_SUFFIX[leg]}"
     if leg == STOP_LEG:
         order = state.broker.submit_stop_order(
             symbol=symbol,
@@ -1144,7 +1358,7 @@ def _cycle_logger(cycle_id: str):
 
 
 def _leg_of(order: BrokerOrder) -> str | None:
-    client_id = records._client_order_id(order)
+    client_id = records.client_order_id(order)
     for leg, suffix in LEG_SUFFIX.items():
         if client_id.endswith(suffix):
             return leg

@@ -92,6 +92,17 @@ ANY_PROVENANCE = "*"
 PENDING_FILE = "pending.json"
 
 
+class DuplicateDecision(ValueError):
+    """A second decision record for a bar that has already been decided.
+
+    Raised on the way in by :func:`save_decision` and on the way out by
+    :func:`load_decisions`, because a duplicate that reaches the store by a route neither
+    of them owns - a hand edit, a crashed process re-run, a second loop pointed at the
+    same directory - must still surface rather than silently double every metric read
+    from it.
+    """
+
+
 def replay_provenance(fold: int) -> str:
     """The provenance string a replayed decision carries. Names the fold, not a boolean."""
     return f"{REPLAY_PREFIX}{fold}"
@@ -104,13 +115,90 @@ def is_replay(provenance: str) -> bool:
 # ── decision records ─────────────────────────────────────────────────────────
 
 
+def decision_key(record: DecisionRecord) -> tuple[str, str, str, str]:
+    """What makes a decision unique: the bar, the symbol, the config, and the run.
+
+    A decision is a function of one completed daily bar under one configuration, so
+    ``(as_of, symbol, config_hash)`` names it - that is the ruling of 19 Aug 2026, and the
+    duplication it forbids is the loop re-deciding the same bar on every 60-second poll.
+
+    **``provenance`` is a fourth element, and it widens the key rather than narrowing it.**
+    Live trading and a replay of fold 13 are two runs of the world; a record from each,
+    landing on the same bar under the same config, is two facts rather than one fact
+    written twice. Leaving provenance out would refuse the second as a duplicate, which is
+    a false refusal in the one direction that loses data. Everything the ruling is aimed
+    at - the 390 identical re-decisions a session would otherwise record - shares a
+    provenance, so the widening costs nothing it was meant to catch.
+    """
+    return (_iso(record.as_of), record.symbol, record.config_hash, record.provenance)
+
+
 def save_decision(record: DecisionRecord, root: str | Path) -> Path:
-    """Append one record to ``root/decisions/YYYY-MM.jsonl``. Returns the file written."""
+    """Append one record to ``root/decisions/YYYY-MM.jsonl``. Returns the file written.
+
+    Raises:
+        DuplicateDecision: this bar has already been decided for this symbol under this
+            config. The loop keeps its own guard, so this should be unreachable - which is
+            exactly how a doubled metric gets written, and why the store checks too.
+    """
     path = month_file(root, pd.Timestamp(record.as_of))
     path.parent.mkdir(parents=True, exist_ok=True)
+    key = decision_key(record)
+    if key in _keys_in(path):
+        raise DuplicateDecision(
+            f"{path} already holds a decision for {key[1]} at {key[0]} under config "
+            f"{key[2][:12]} ({key[3]}). A decision is a function of one completed daily "
+            "bar, so a second record for that bar is the same decision written twice and "
+            "would double every count, mean and rate taken over this log"
+        )
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(_encode(record), separators=(",", ":")) + "\n")
     return path
+
+
+def amend_decision(record: DecisionRecord, root: str | Path) -> Path:
+    """Replace the stored record for this decision. The one writer here that is not an append.
+
+    **An operator's answer is not a second decision.** GB-37 records a Co-Pilot
+    recommendation when the loop makes it, and again with the answer attached when a human
+    approves or rejects it - and under the ruling of 19 Aug 2026 those are one decision at
+    one bar, so the second write updates the first rather than adding a row. Written as an
+    append it would have doubled exactly the count the ruling exists to protect, and the
+    approval rate computed over the log would have been the operator's answers divided by
+    twice the recommendations.
+
+    The rewrite goes through a temporary file and one atomic replace, because losing a
+    month of decisions to a process killed halfway through a rewrite would be a far worse
+    failure than the duplicate this prevents.
+
+    Raises:
+        KeyError: no record with this decision's key is stored. Amending something that
+            was never recorded means the caller is working from a stale view, and writing
+            it as a new record would hide that.
+    """
+    path = month_file(root, pd.Timestamp(record.as_of))
+    key = decision_key(record)
+    lines, replaced = [], False
+    for stored in _read_month(path):
+        if decision_key(stored) == key:
+            lines.append(json.dumps(_encode(record), separators=(",", ":")))
+            replaced = True
+        else:
+            lines.append(json.dumps(_encode(stored), separators=(",", ":")))
+    if not replaced:
+        raise KeyError(
+            f"{path} holds no decision for {key[1]} at {key[0]} under config "
+            f"{key[2][:12]} ({key[3]}), so there is nothing to amend"
+        )
+    temporary = path.with_suffix(".jsonl.amending")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
+def _keys_in(path: Path) -> set[tuple[str, str, str, str]]:
+    """Every decision key already in one month file."""
+    return {decision_key(record) for record in _read_month(path)}
 
 
 def load_decisions(
@@ -130,6 +218,14 @@ def load_decisions(
     one as though it were live. Pass :data:`ANY_PROVENANCE` to see everything, or a
     specific ``"replay:fold-13"`` to see one replay.
 
+    **Uniqueness is asserted on load**, over every record in the month files the range
+    touches rather than only over the ones the filters keep - a duplicate hiding two days
+    outside the window is still a duplicate, and a reader who cannot see it will trust the
+    numbers it corrupts. This raises where :func:`_read_month` merely logs, and the
+    difference is deliberate: a malformed line is what a process killed mid-write leaves
+    behind and skipping it costs one record, while a duplicate is a defect in whatever
+    wrote it and costs the correctness of everything computed downstream.
+
     Reads only the month files the range touches, so a year of decisions does not have to
     be parsed to answer a question about one week.
 
@@ -141,13 +237,24 @@ def load_decisions(
     """
     first = _as_utc(start)
     last = _as_utc(end, end_of_day=True)
-    records = [
-        record
-        for month in _months_between(first, last)
-        for record in _read_month(month_file(root, month))
-        if first <= record.as_of <= last
-        and (provenance == ANY_PROVENANCE or record.provenance == provenance)
-    ]
+    seen: set[tuple[str, str, str, str]] = set()
+    records: list[DecisionRecord] = []
+    for month in _months_between(first, last):
+        path = month_file(root, month)
+        for record in _read_month(path):
+            key = decision_key(record)
+            if key in seen:
+                raise DuplicateDecision(
+                    f"{path} holds more than one decision for {key[1]} at {key[0]} under "
+                    f"config {key[2][:12]} ({key[3]}). Every count, mean and rate taken "
+                    "over this log is wrong by an unknown factor until the extra records "
+                    "are removed"
+                )
+            seen.add(key)
+            if first <= record.as_of <= last and (
+                provenance == ANY_PROVENANCE or record.provenance == provenance
+            ):
+                records.append(record)
     return sorted(records, key=lambda record: (record.as_of, record.symbol))
 
 
@@ -425,7 +532,7 @@ def exit_reason_for(order: BrokerOrder, stop_loss: float, take_profit: float) ->
     ``stop`` and ``stop_gap`` is exactly what GB-57 needs to separate rule cost from gap
     cost, and it is the same distinction the backtester records.
     """
-    client_id = _client_order_id(order)
+    client_id = client_order_id(order)
     fill = float(order.filled_price or 0.0)
 
     if client_id.endswith(STOP_SUFFIX):
@@ -469,7 +576,7 @@ def _exit_cost(
     measurement rather than an assumption. A signal exit has no level to measure against, so
     it contributes nothing here - its cost is already inside the fill price.
     """
-    client_id = _client_order_id(order)
+    client_id = client_order_id(order)
     if client_id.endswith(STOP_SUFFIX):
         return max(0.0, holding.stop_loss - exit_price) * size
     if client_id.endswith(TARGET_SUFFIX):
@@ -477,7 +584,13 @@ def _exit_cost(
     return 0.0
 
 
-def _client_order_id(order: BrokerOrder) -> str:
+def client_order_id(order: BrokerOrder) -> str:
+    """The id the submitter gave this order, however the broker chose to carry it.
+
+    Public because it is how the live loop asks the broker "have you already got this
+    order?" - the only question that survives a restart, where a flag in memory would
+    answer no and cause a second submission.
+    """
     raw = order.raw
     if isinstance(raw, dict):
         return str(raw.get("client_order_id", ""))
@@ -506,6 +619,10 @@ __all__ = [
     "STOP_GAP",
     "TARGET",
     "TARGET_GAP",
+    "DuplicateDecision",
+    "amend_decision",
+    "client_order_id",
+    "decision_key",
     "decode_decision",
     "emit_trades",
     "encode_decision",

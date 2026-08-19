@@ -76,6 +76,13 @@ REJECTED = "rejected"
 # to be able to tell them apart.
 DECLINED = "declined_by_operator"
 
+# Alpaca's own maximum page size, for `AlpacaBroker.get_orders`. A module constant rather
+# than a setting, and flagged rather than buried: rule 5 is config over constants, and the
+# justification is that a key here could only ever ask for *less* than everything the
+# broker will tell us about. "Reconcile over fewer orders than are available" is not a
+# policy anyone wants to be able to set.
+ORDER_HISTORY = 500
+
 
 @dataclass(frozen=True)
 class BrokerOrder:
@@ -444,7 +451,30 @@ class AlpacaBroker:
         self._client.cancel_order_by_id(order_id)
 
     def get_orders(self) -> list[BrokerOrder]:
-        return [self._wrap(order) for order in self._client.get_orders()]
+        """Recent orders in **every** status, newest first.
+
+        ``TradingClient.get_orders()`` with no filter returns *open* orders only, which is
+        the Alpaca default and was the bug: every caller of this method that matters asks
+        about orders that have **finished**. ``records.emit_trades`` builds the live trade
+        log from filled sells, so with an open-only list the live trade log was
+        structurally empty and GB-19 had nothing to measure; ``live_loop.protect_book``
+        detects a filled leg in order to cancel its sibling, so rule 4 of the protection
+        policy could never fire and a filled stop would have left its take-profit working
+        as a naked sell. Both failures are silent - an empty list is a valid answer to the
+        wrong question.
+
+        Callers that want only working orders filter on status themselves, and did so
+        already; nothing needed the broker to do the filtering.
+        """
+        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
+
+        return [
+            self._wrap(order)
+            for order in self._client.get_orders(
+                GetOrdersRequest(status=QueryOrderStatus.ALL, limit=ORDER_HISTORY)
+            )
+        ]
 
     def get_positions(self) -> dict[str, float]:
         return {

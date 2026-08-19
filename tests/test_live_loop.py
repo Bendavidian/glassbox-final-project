@@ -38,6 +38,8 @@ PRICE = 100.0
 
 # A Wednesday inside the NYSE session: 2026-08-12 14:00 UTC is 10:00 in New York.
 NOW = pd.Timestamp("2026-08-12 14:00", tz="UTC")
+# A decision is stamped with the bar it was made from, which is the session before.
+MONTH = pd.Timestamp("2026-08-01", tz="UTC")
 
 
 # ── a forecaster whose forecast is whatever the test needs ───────────────────
@@ -313,7 +315,10 @@ def test_the_first_cycle_submits_no_entry(
 
     assert first.entries_allowed is False
     assert "market" not in broker.submitted_kinds
-    assert first.decisions  # it still decided, explained and recorded
+    # And the bar is left UNDECIDED rather than recorded-and-stranded. Recording it here
+    # would collide with the ruling of 19 Aug 2026: the next cycle would decline to
+    # re-decide, and the entry would never be submitted at all.
+    assert first.decisions == ()
 
 
 def test_the_second_cycle_does_submit_an_entry(
@@ -327,6 +332,10 @@ def test_the_second_cycle_does_submit_an_entry(
 
     assert second.entries_allowed is True
     assert "market" in broker.submitted_kinds
+    # Recorded exactly once, by the cycle that could act on it - so the record carries the
+    # order and a narrative written in the knowledge of it.
+    assert second.decisions
+    assert len(records.load_decisions(MONTH, NOW, tmp_path)) == len(second.decisions)
 
 
 def test_the_first_cycle_still_exits(
@@ -353,7 +362,7 @@ def test_the_first_cycle_still_exits(
 
     assert report.entries_allowed is False
     sells = [order for order in broker.orders if order.side == SELL]
-    assert any(records._client_order_id(order).endswith("-AAPL") for order in sells)
+    assert any(records.client_order_id(order).endswith("-AAPL-exit") for order in sells)
 
 
 # ── protection: rules 2, 3 and 4 ─────────────────────────────────────────────
@@ -380,9 +389,9 @@ def test_a_missing_leg_is_rearmed(
     report = live_loop.run_cycle(state, NOW)
 
     assert report.rearmed == ("AAPL",)
-    armed = [records._client_order_id(o) for o in broker.orders if o.side == SELL]
-    assert "d1-stop" in armed
-    assert "d1-target" in armed
+    armed = [records.client_order_id(o) for o in broker.orders if o.side == SELL]
+    assert "d1#1-stop" in armed
+    assert "d1#1-target" in armed
 
 
 def test_two_consecutive_arming_failures_flatten_the_position(
@@ -415,7 +424,7 @@ def test_two_consecutive_arming_failures_flatten_the_position(
 
     assert flattened == ["AAPL"]
     assert any(
-        order.side == SELL and records._client_order_id(order).endswith("-flatten")
+        order.side == SELL and records.client_order_id(order).endswith("-flatten")
         for order in broker.orders
     )
 
@@ -666,3 +675,246 @@ def test_the_leg_suffixes_match_the_executors(cfg: Config) -> None:
     readers of one convention, so the convention is asserted rather than assumed."""
     assert live_loop.LEG_SUFFIX[live_loop.STOP_LEG] == records.STOP_SUFFIX
     assert live_loop.LEG_SUFFIX[live_loop.TARGET_LEG] == records.TARGET_SUFFIX
+
+
+# ── decide once per completed bar, manage every cycle (ruling, 19 Aug 2026) ──
+
+
+def stored_decisions(root: Path) -> list:
+    return records.load_decisions(MONTH, NOW, root)
+
+
+def test_n_cycles_in_one_session_decide_each_bar_once_and_protect_every_time(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_bars: dict,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ruling, as one assertion in each direction.
+
+    A decision is a function of one completed daily bar, and that bar does not change
+    during a session - so at 60-second polling the loop used to re-derive the identical
+    verdict on every one of a session's 390 cycles and record 390 identical rows per
+    symbol, 1,950 a day over the real five-symbol universe. Risk management is explicitly
+    outside the rule and still runs on every cycle, because prices move intraday and the
+    risk already taken moves with them.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    state = a_state(auto, tmp_path, broker, total=0.05)
+
+    verified: list[int] = []
+    real_protect = live_loop.protect_book
+    monkeypatch.setattr(
+        live_loop,
+        "protect_book",
+        lambda *args, **kwargs: (verified.append(1), real_protect(*args, **kwargs))[1],
+    )
+
+    cycles = 8
+    for _ in range(cycles):
+        live_loop.run_cycle(state, NOW)
+
+    stored = stored_decisions(tmp_path)
+    assert len(verified) == cycles
+    assert sorted(record.symbol for record in stored) == sorted(UNIVERSE)
+    assert len({(record.as_of, record.symbol) for record in stored}) == len(UNIVERSE)
+
+
+def test_a_repeated_entry_is_never_submitted_when_the_fill_has_not_appeared(
+    cfg: Config, stub_bars: dict, tmp_path: Path
+) -> None:
+    """The race the ruling closes, made to happen rather than argued about.
+
+    ``fill=False`` is the case that matters: the entry is accepted and no position appears.
+    Reconciliation therefore cannot see it, the book does not hold the symbol, and the book
+    was the only thing standing between the loop and a second identical entry - which makes
+    it a race rather than a guard. At 60-second polling a market order can be sent many
+    times over before the first fill lands.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    broker = FakeBroker(prices=dict.fromkeys(UNIVERSE, PRICE), fill=False)
+    state = a_state(auto, tmp_path, broker, total=0.05)
+
+    for _ in range(6):
+        live_loop.run_cycle(state, NOW)
+
+    buys = [order for order in broker.orders if order.side == BUY]
+    assert len(buys) == len(UNIVERSE)
+    assert len({records.client_order_id(order) for order in buys}) == len(UNIVERSE)
+
+
+def test_the_entry_client_order_id_is_the_bar_and_not_the_cycle(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """The second guard, and the only one that can win a race at the broker.
+
+    Measured against the paper account on 18 Aug 2026: Alpaca refuses a repeated
+    ``client_order_id`` with ``40010001 client_order_id must be unique``. Deriving the id
+    from the bar rather than from the polling cycle is what turns that refusal into a
+    guarantee that one bar can produce at most one entry.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    state = a_state(auto, tmp_path, broker, total=0.05)
+
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+
+    bar = live_loop.last_completed_session(cfg, NOW)
+    buys = [records.client_order_id(o) for o in broker.orders if o.side == BUY]
+    assert f"{bar:%Y%m%d}-AAPL" in buys
+
+
+def test_a_restart_mid_session_reads_what_it_has_already_decided(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """A new process starts with an empty cache; the log on disk is what it reads instead.
+
+    Without the seed it would re-decide bars it had already recorded, the store would
+    refuse the duplicate - correctly - and the cycle would fail on that refusal every
+    minute until the close.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    first = a_state(auto, tmp_path, broker, total=0.05)
+    live_loop.run_cycle(first, NOW)
+    live_loop.run_cycle(first, NOW)
+    before = len(stored_decisions(tmp_path))
+
+    restarted = a_state(auto, tmp_path, broker, total=0.05)
+    report = live_loop.run_cycle(restarted, NOW)
+
+    assert report.ok
+    assert report.decisions == ()
+    assert set(report.settled) == set(UNIVERSE)
+    assert len(stored_decisions(tmp_path)) == before
+
+
+def test_an_exit_the_broker_already_has_is_not_sent_again(
+    cfg: Config, stub_bars: dict, tmp_path: Path
+) -> None:
+    """Exits run every cycle. Running is not the same as re-sending."""
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    broker = FakeBroker(prices=dict.fromkeys(UNIVERSE, PRICE), fill=False)
+    broker.positions["AAPL"] = 4.0
+    state = a_state(auto, tmp_path, broker, total=-0.05)
+    state.book = Book(
+        managed={
+            "AAPL": Holding(
+                symbol="AAPL",
+                quantity=4.0,
+                decision_id="d1",
+                entry_price=PRICE,
+                stop_loss=97.0,
+                take_profit=106.0,
+            )
+        }
+    )
+
+    for _ in range(4):
+        live_loop.run_cycle(state, NOW)
+
+    sent = [
+        order
+        for order in broker.orders
+        if records.client_order_id(order).endswith("-exit")
+    ]
+    assert len(sent) == 1
+
+
+def test_an_exit_the_broker_refused_is_re_sent_on_the_next_cycle(
+    cfg: Config, stub_bars: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exit is an obligation on capital already committed, so a failure is retried.
+
+    This is the half of "manage every cycle" that an entry does not get: the loop does not
+    re-decide the bar, it re-sends the order that bar decided, until the broker has it.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    broker = FakeBroker(prices=dict.fromkeys(UNIVERSE, PRICE), fill=False)
+    broker.positions["AAPL"] = 4.0
+    state = a_state(auto, tmp_path, broker, total=-0.05)
+    state.book = Book(
+        managed={
+            "AAPL": Holding(
+                symbol="AAPL",
+                quantity=4.0,
+                decision_id="d1",
+                entry_price=PRICE,
+                stop_loss=97.0,
+                take_profit=106.0,
+            )
+        }
+    )
+
+    refusals: list[str] = []
+    real_submit = broker.submit_market_order
+
+    def refuse_once(symbol, quantity, side, client_order_id):
+        if side == SELL and not refusals:
+            refusals.append(client_order_id)
+            raise RuntimeError("the venue rejected it")
+        return real_submit(symbol, quantity, side, client_order_id)
+
+    monkeypatch.setattr(broker, "submit_market_order", refuse_once)
+
+    first = live_loop.run_cycle(state, NOW)
+    second = live_loop.run_cycle(state, NOW)
+
+    assert refusals
+    assert first.ok  # a refused exit does not take the cycle down with it
+    assert second.ok
+    sent = [
+        order
+        for order in broker.orders
+        if records.client_order_id(order).endswith("-exit")
+    ]
+    assert len(sent) == 1
+
+
+def test_re_arming_never_reuses_a_client_order_id(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """Measured against the paper account, 18 Aug 2026.
+
+    Alpaca refuses a ``client_order_id`` it has seen before **including after the original
+    was cancelled or expired**. The protective legs are submitted ``TimeInForce.DAY``, so
+    they expire at every close; re-arming them the next morning under yesterday's id would
+    have been refused, that refusal counts as an arming failure, and ARMING_STRIKES of them
+    flatten the position at market. A position held overnight would have been liquidated
+    two cycles into the next session for a reason unconnected to the strategy.
+    """
+    broker.positions["AAPL"] = 3.0
+    state = a_state(cfg, tmp_path, broker)
+    state.book = Book(
+        managed={
+            "AAPL": Holding(
+                symbol="AAPL",
+                quantity=3.0,
+                decision_id="d1",
+                entry_price=PRICE,
+                stop_loss=97.0,
+                take_profit=106.0,
+            )
+        }
+    )
+
+    live_loop.run_cycle(state, NOW)
+    broker.orders = [
+        (
+            replace(order, status="expired")
+            if records.client_order_id(order).startswith("d1#")
+            else order
+        )
+        for order in broker.orders
+    ]
+    second = live_loop.run_cycle(state, NOW)
+
+    assert second.rearmed == ("AAPL",)
+    armed = [
+        records.client_order_id(order)
+        for order in broker.orders
+        if order.side == SELL and records.client_order_id(order).startswith("d1#")
+    ]
+    assert "d1#1-stop" in armed
+    assert "d1#2-stop" in armed
+    assert len(armed) == len(set(armed))

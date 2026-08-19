@@ -37,6 +37,7 @@ import json
 import math
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -88,12 +89,41 @@ IDLE = "IDLE"
 CLOSED = "OUTSIDE MARKET HOURS"
 ASIDE = "STOOD ASIDE"
 
+# Below this fraction of the gross channel view surviving into the forecast, a decision
+# is flagged in the log and in its expander title. Not "weakly supported" - FRAGILE, which
+# is a different claim: the explanation is a residue of contributions much larger than
+# itself, and reading "which channel drove this" off it is reading rounding.
+#
+# The level comes from the algebra rather than from taste, like `OFFSETTING_BELOW` in
+# `explain/narrate.py`, and it is a stricter bar because it answers a stricter question.
+# Cancellation is `|sum(c)| / sum(|c|)`. Perturb one channel's contribution by `d` and the
+# forecast moves by `d`; as a fraction OF THE FORECAST that is `d / |sum(c)|`, which is
+# `1 / cancellation` times what the same perturbation would do if nothing cancelled. So
+# cancellation is exactly the reciprocal of how much the decomposition amplifies an error
+# in any single channel. At 0.20 the amplification is fivefold: a contribution wrong by
+# one part in a hundred moves the forecast by five.
+#
+# `OFFSETTING_BELOW` at 0.5 says the channels largely offset, which is a fact about the
+# forecast. This says the explanation of it should not be trusted, which is a fact about
+# the decomposition, and it needs to be the rarer of the two flags or it stops being read.
+EXPLANATION_FRAGILE_BELOW = 0.20
+FRAGILE_LABEL = "FRAGILE"
+# Which column of the decision log carries the cancellation, and therefore the flag.
+CANCELLATION_COLUMN = 5
+FRAGILE_MARK = "  FRAGILE"
+
+# A blank cell in a technical table reads as missing data rather than as "none".
+EM_DASH = "\u2014"
+
 HISTORY_BARS = 60
 RELIABILITY_FILE = "reliability.json"
 
 # Hebrew block, for the direction decision. See the module docstring on why `dir="auto"`
 # is the wrong tool here.
 HEBREW = range(0x0590, 0x0600)
+
+# What the fixed left ruler occupies, and therefore what the content is padded past.
+GUTTER = "3.4rem"
 
 
 # ── state ────────────────────────────────────────────────────────────────────
@@ -215,8 +245,17 @@ def position_rows(
 
 
 def _svg(width: int, height: int, body: str, label: str) -> str:
+    """One chart, sized by its container.
+
+    **No ``height`` attribute.** With both ``width="100%"`` and a fixed ``height`` beside a
+    ``viewBox``, the default ``preserveAspectRatio`` scales the drawing to fit *both* and
+    centres it - which is why the charts sat letterboxed in the middle of the page with a
+    third of the viewport empty. Given only a width, the ``viewBox`` supplies the ratio and
+    the chart uses the full content column.
+    """
     return (
-        f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" '
+        f'<svg viewBox="0 0 {width} {height}" width="100%" '
+        f'style="display:block;height:auto" '
         f'role="img" aria-label="{label}" xmlns="http://www.w3.org/2000/svg">'
         f'<rect width="{width}" height="{height}" fill="{PANEL}"/>{body}</svg>'
     )
@@ -258,8 +297,8 @@ def forecast_svg(
     path: pd.Series,
     thresholds: Thresholds,
     symbol: str,
-    width: int = 720,
-    height: int = 240,
+    width: int = 1400,
+    height: int = 250,
 ) -> str:
     """Recent closes with the predicted H-day path continuing past the last bar.
 
@@ -267,15 +306,22 @@ def forecast_svg(
     caller, so the chart shows one quantity on one axis rather than asking a reader to hold
     a log-return scale in their head beside a price one.
 
-    The calibrated entry threshold is drawn as an orange dashed rule — chrome, because it
-    is a decision boundary rather than a measurement. **When the band is ``never()`` the
-    line is not omitted**: the chart says so in words where the rule would have been.
-    Omitting it would make a session that cannot trade look like one that simply had not
-    yet, which is the difference between abstaining and waiting.
+    **Nothing is drawn on top of data.** Every annotation - the NOW marker, the state of
+    the calibrated band - sits in a strip below the plot area, separated from it by a
+    hairline. The only chrome inside the plot is the threshold rule itself and the
+    registration line at the last completed bar, both of which are reference geometry
+    rather than labels competing with the price line for the same pixels.
+
+    The calibrated entry threshold is an orange dashed rule - chrome, because it is a
+    decision boundary rather than a measurement. **When the band is ``never()`` the line is
+    not omitted**: the strip says so in words where the rule would have been. Omitting it
+    would make a session that cannot trade look like one that simply had not yet, which is
+    the difference between abstaining and waiting.
     """
-    left, right, top, bottom = 46, 12, 22, 26
+    left, right, top = 58, 14, 26
+    strip = 30
+    plot_h = height - top - strip
     plot_w = width - left - right
-    plot_h = height - top - bottom
 
     values = [float(v) for v in list(history) + list(path)]
     finite = [v for v in values if math.isfinite(v)]
@@ -293,9 +339,9 @@ def forecast_svg(
     body = [
         _rule(left, top, left, top + plot_h, HAIRLINE),
         _rule(left, top + plot_h, left + plot_w, top + plot_h, HAIRLINE),
-        _text(4, top + 8, f"{high:,.2f}", MUTED),
-        _text(4, top + plot_h, f"{low:,.2f}", MUTED),
-        _text(left, 12, f"{symbol}  CLOSE / FORECAST", ORANGE),
+        _text(6, top + 8, f"{high:,.2f}", MUTED),
+        _text(6, top + plot_h, f"{low:,.2f}", MUTED),
+        _text(left, 14, f"{symbol}  CLOSE / FORECAST", ORANGE),
     ]
 
     history_points = " ".join(
@@ -320,7 +366,14 @@ def forecast_svg(
         f'fill="{RAMP[5]}"/>'
     )
     body.append(_rule(x_at(offset), top, x_at(offset), top + plot_h, ORANGE_DIM, "2 3"))
-    body.append(_text(x_at(offset) + 4, top + plot_h + 14, "NOW", ORANGE_DIM))
+
+    # The strip. A hairline, then the annotations, none of them over the plot.
+    baseline = top + plot_h
+    body.append(_rule(0, baseline + 10, width, baseline + 10, HAIRLINE, "2 4"))
+    note_y = baseline + 24
+    # NOW sits under the rule it names rather than at the edge of the strip: a marker whose
+    # label is a screen away from it is a label for something else.
+    body.append(_text(x_at(offset), note_y, "NOW", ORANGE_DIM, anchor="middle"))
 
     if thresholds.fires:
         entry = float(history.iloc[-1]) * math.exp(thresholds.lower)
@@ -328,35 +381,12 @@ def forecast_svg(
             body.append(
                 _rule(left, y_at(entry), left + plot_w, y_at(entry), ORANGE, "5 4")
             )
-            body.append(
-                _text(
-                    left + plot_w,
-                    y_at(entry) - 4,
-                    "ENTRY THRESHOLD",
-                    ORANGE,
-                    anchor="end",
-                )
-            )
+            note = f"ENTRY THRESHOLD {entry:,.2f}"
         else:
-            body.append(
-                _text(
-                    left + plot_w,
-                    top + plot_h + 14,
-                    "ENTRY THRESHOLD OFF SCALE",
-                    ORANGE,
-                    anchor="end",
-                )
-            )
+            note = f"ENTRY THRESHOLD {entry:,.2f} — OFF SCALE"
     else:
-        body.append(
-            _text(
-                left + plot_w,
-                top + plot_h + 14,
-                "NO CALIBRATED BAND — STOOD ASIDE",
-                ORANGE,
-                anchor="end",
-            )
-        )
+        note = "NO CALIBRATED BAND — STOOD ASIDE"
+    body.append(_text(left, note_y, note, ORANGE))
 
     return _svg(width, height, "".join(body), f"{symbol} forecast path")
 
@@ -378,7 +408,7 @@ def price_path(last_close: float, forecast_path) -> pd.Series:
 
 
 def contributions_svg(
-    attribution: Attribution, width: int = 720, row_height: int = 26
+    attribution: Attribution, width: int = 1400, row_height: int = 24
 ) -> str:
     """Per-channel contributions as a diverging bar chart around a zero rule.
 
@@ -424,14 +454,10 @@ def contributions_svg(
         )
 
     survived = cancellation(attribution) * 100.0
-    body.append(
-        _text(
-            12,
-            height - 8,
-            f"CANCELLATION — {survived:.1f}% OF THE GROSS VIEW SURVIVED",
-            ORANGE if survived < 50.0 else MUTED,
-        )
-    )
+    note = f"CANCELLATION — {survived:.1f}% OF THE GROSS VIEW SURVIVED"
+    if survived < EXPLANATION_FRAGILE_BELOW * 100.0:
+        note += " — FRAGILE, THIS DECOMPOSITION IS A RESIDUE"
+    body.append(_text(12, height - 8, note, ORANGE if survived < 50.0 else MUTED))
     return _svg(width, height, "".join(body), "per-channel contributions")
 
 
@@ -470,33 +496,154 @@ def provenance_label(provenance: str) -> str:
     return "LIVE" if provenance == records.LIVE else provenance.upper()
 
 
-def decision_rows(decisions: list[DecisionRecord]) -> pd.DataFrame:
-    """The log as a table: newest first, one row per decision."""
-    return pd.DataFrame(
+def is_fragile(attribution: Attribution) -> bool:
+    """Whether this decomposition is too cancelled to explain the forecast it belongs to."""
+    return cancellation(attribution) < EXPLANATION_FRAGILE_BELOW
+
+
+def escape(value: object) -> str:
+    """Text into a cell. The narratives are ours, but a symbol is not worth trusting."""
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def table_html(
+    headers: Sequence[str],
+    rows: Sequence[Sequence[object]],
+    numeric: Sequence[int] = (),
+    flagged: Sequence[tuple[int, int]] = (),
+) -> str:
+    """A table in the design language, rendered as HTML.
+
+    Streamlit's own dataframe arrives with a white ground, its own typeface and its own
+    sort chrome, which is three design languages on one page. This is the fourth thing the
+    module builds as a pure string returning function - like the SVG builders, it is
+    unit-testable without a browser.
+
+    Args:
+        headers: Column titles. Rendered uppercase, tracked wide, and **the only orange in
+            the table** - the rows are data and data is not chrome.
+        rows: Already-formatted cells. Formatting is the caller's, because the caller knows
+            whether a number is a price, a share or a log return.
+        numeric: Indices of columns to right-align with tabular figures, so digits line up
+            in their columns and a reader can compare magnitudes down a column by eye.
+        flagged: ``(row, column)`` pairs to mark. A marked cell carries the one exception
+            to the orange rule: the mark is an annotation *about* the value rather than a
+            value itself, which is the same category as a header. It is one cell rather
+            than the whole row because a single coloured cell in a grey table is already
+            the only thing on the page the eye goes to, and colouring the row would spend
+            the loudest signal available on emphasis rather than on meaning.
+    """
+    right = set(numeric)
+    marked = set(flagged)
+    head = "".join(
+        f'<th class="{"num" if index in right else ""}">{escape(title)}</th>'
+        for index, title in enumerate(headers)
+    )
+    body = []
+    for number, row in enumerate(rows):
+        cells = []
+        for index, cell in enumerate(row):
+            style = "num " if index in right else ""
+            if (number, index) in marked:
+                style += "gb-flag"
+            cells.append(f'<td class="{style.strip()}">{escape(cell)}</td>')
+        body.append(f"<tr>{''.join(cells)}</tr>")
+    return (
+        f'<table class="gb-table"><thead><tr>{head}</tr></thead>'
+        f'<tbody>{"".join(body)}</tbody></table>'
+    )
+
+
+def position_table(rows: Sequence[PositionRow]) -> str:
+    """The positions panel. A quarantined holding shows em dashes, never zeros."""
+    return table_html(
+        ("SYMBOL", "QTY", "ENTRY", "LAST", "VALUE", "UNREALISED", "STATE"),
         [
-            {
-                "as_of": record.as_of,
-                "symbol": record.symbol,
-                "action": record.signal.action,
-                "trend_strength": record.signal.trend_strength,
-                "forecast_total": record.attribution.forecast_total,
-                "cancellation": cancellation(record.attribution),
-                "order": "yes" if record.order else "",
-                "source": provenance_label(record.provenance),
-            }
-            for record in decisions
+            (
+                row.symbol,
+                f"{row.quantity:.9f}",
+                f"{row.entry_price:,.2f}" if row.managed else EM_DASH,
+                f"{row.price:,.2f}",
+                f"{row.market_value:,.2f}",
+                (
+                    EM_DASH
+                    if not row.managed or math.isnan(row.unrealised)
+                    else f"{'▲' if row.unrealised >= 0 else '▼'} "
+                    f"{row.unrealised:,.2f} ({row.unrealised_pct:+.2f}%)"
+                ),
+                "MANAGED" if row.managed else "QUARANTINED",
+            )
+            for row in rows
         ],
-        columns=[
-            "as_of",
-            "symbol",
-            "action",
-            "trend_strength",
-            "forecast_total",
-            "cancellation",
-            "order",
-            "source",
-        ],
-    ).sort_values(["as_of", "symbol"], ascending=[False, True])
+        numeric=(1, 2, 3, 4, 5),
+    )
+
+
+def decision_rows(decisions: list[DecisionRecord]) -> list[DecisionRecord]:
+    """The log, newest first. One row per decision, and after the ruling of 19 Aug 2026
+    exactly one decision per completed bar per symbol."""
+    return sorted(decisions, key=lambda r: (r.as_of, r.symbol), reverse=True)
+
+
+def decision_table(decisions: list[DecisionRecord]) -> str:
+    """The decision log as a table.
+
+    **A blank cell reads as missing data**, so a decision that produced no order says so
+    with an em dash rather than with nothing. And a decision whose channels almost entirely
+    cancelled is marked ``FRAGILE`` in the cancellation cell: at 0.15 more than four fifths
+    of the gross channel view has offset, the explanation beside it is a residue, and
+    without the mark the row looks exactly like one where the channels agreed.
+    """
+    ordered = decision_rows(decisions)
+    rows, flagged = [], []
+    for number, record in enumerate(ordered):
+        survived = cancellation(record.attribution)
+        fragile = is_fragile(record.attribution)
+        if fragile:
+            flagged.append((number, CANCELLATION_COLUMN))
+        rows.append(
+            (
+                f"{record.as_of:%Y-%m-%d}",
+                record.symbol,
+                record.signal.action.upper(),
+                f"{record.signal.trend_strength:+.4f}",
+                f"{record.attribution.forecast_total:+.4f}",
+                f"{survived:.4f}{FRAGILE_MARK if fragile else ''}",
+                "YES" if record.order else EM_DASH,
+                provenance_label(record.provenance),
+            )
+        )
+    return table_html(
+        (
+            "AS OF",
+            "SYMBOL",
+            "ACTION",
+            "TREND",
+            "FORECAST",
+            "CANCELLATION",
+            "ORDER",
+            "SOURCE",
+        ),
+        rows,
+        numeric=(3, 4, 5),
+        flagged=flagged,
+    )
+
+
+def expander_title(record: DecisionRecord) -> str:
+    """One line that says enough to decide whether to open it.
+
+    The trend strength is what the list is scanned for, so it belongs in the closed title;
+    the cancellation is what says whether the explanation inside is worth reading, so it
+    belongs there too, and its flag with it.
+    """
+    survived = cancellation(record.attribution)
+    title = (
+        f"{record.as_of:%Y-%m-%d}  {record.symbol}  "
+        f"{record.signal.action.upper()}  ·  TREND "
+        f"{record.signal.trend_strength:+.4f}  ·  CANCELLATION {survived:.2f}"
+    )
+    return f"{title}  ·  {FRAGILE_LABEL}" if is_fragile(record.attribution) else title
 
 
 # ── the design language, as CSS ──────────────────────────────────────────────
@@ -511,7 +658,7 @@ def stylesheet() -> str:
   .gb-label {{
       font-family: ui-monospace, Menlo, Consolas, monospace;
       text-transform: uppercase; letter-spacing: .18em; font-size: .68rem;
-      color: {ORANGE};
+      color: {ORANGE}; margin: 1.4rem 0 .5rem;
   }}
   .gb-meta {{
       font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -553,21 +700,100 @@ def stylesheet() -> str:
       padding: .2rem .8rem .2rem 0;
   }}
   .gb-figure {{ color: {PAPER}; font-size: 1.6rem; font-weight: 700; }}
+  .gb-metarow {{ display: flex; gap: .8rem; align-items: baseline; margin-bottom: .18rem; }}
+  .gb-metakey {{
+      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .6rem;
+      letter-spacing: .2em; color: {ORANGE_DIM}; min-width: 5.2rem;
+  }}
+
+  /* Let the content use the column. The left ruler is fixed to the viewport edge, so
+     the container is padded past it rather than pushed by a spacer element. */
+  .stApp .block-container {{
+      max-width: none; padding-left: {GUTTER}; padding-right: 1.4rem;
+      padding-top: 3.4rem;
+  }}
+  .gb-lruler {{
+      position: fixed; left: 0; top: 0; bottom: 0; width: 2.6rem; z-index: 5;
+      border-right: 1px solid {HAIRLINE}; background: {INK};
+      display: flex; flex-direction: column; justify-content: space-between;
+      align-items: center; padding: 4.2rem 0 1.6rem;
+      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .58rem;
+      letter-spacing: .1em; color: {MUTED};
+  }}
+  .gb-lruler span::before {{ content: "— "; color: {ORANGE_DIM}; }}
+
+  .gb-table {{
+      width: 100%; border-collapse: collapse; background: {PANEL};
+      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .72rem;
+      margin-bottom: .9rem; border: 1px dashed {HAIRLINE};
+  }}
+  .gb-table th {{
+      color: {ORANGE}; text-transform: uppercase; letter-spacing: .18em;
+      font-size: .6rem; font-weight: 400; text-align: left;
+      padding: .55rem .7rem; border-bottom: 1px solid {ORANGE_DIM};
+  }}
+  .gb-table td {{
+      color: {PAPER}; padding: .45rem .7rem; border-bottom: 1px dashed {HAIRLINE};
+      white-space: nowrap;
+  }}
+  .gb-table tbody tr:last-child td {{ border-bottom: none; }}
+  .gb-table th.num, .gb-table td.num {{
+      text-align: right; font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum" 1;
+  }}
+  /* The one place a cell carries chrome: the mark is an annotation ABOUT the value, not
+     a value itself, which is the same category as a header. */
+  .gb-table td.gb-flag {{ color: {ORANGE}; }}
+
+  /* The expanders arrive with the same default chrome the tables did - a white ground and
+     a sans face - and there is no HTML equivalent to build instead, because the widget is
+     what holds the disclosure state. So the widget stays and its skin is replaced. */
+  [data-testid="stExpander"] details {{
+      background: {PANEL}; border: 1px dashed {HAIRLINE}; border-radius: 0;
+      margin-bottom: .5rem;
+  }}
+  [data-testid="stExpander"] summary {{
+      background: {PANEL}; color: {PAPER};
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      text-transform: uppercase; letter-spacing: .14em; font-size: .66rem;
+  }}
+  [data-testid="stExpander"] summary:hover {{ color: {ORANGE}; }}
+  [data-testid="stExpander"] summary p {{
+      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .66rem;
+      letter-spacing: .14em;
+  }}
+  [data-testid="stExpander"] summary svg {{ fill: {ORANGE_DIM}; }}
+  [data-testid="stExpander"] details > div {{ background: {PANEL}; border: none; }}
 </style>
 """
 
 
 def ruler_html(marks: int = 4) -> str:
-    """The numbered grid rule along the top edge."""
+    """The numbered grid rule along the top edge. Plain integers, as the references have."""
     ticks = "".join(
-        f'<span class="gb-meta">{value:02d}</span>'
+        f'<span class="gb-meta">{value:d}</span>'
         for value in range(0, 25 * marks + 1, 25)
     )
     return f'<div class="gb-ruler">{ticks}</div>'
 
 
+def left_ruler_html(marks: int = 6) -> str:
+    """The numbered rule down the left edge.
+
+    Fixed to the viewport rather than laid out in a column, because a column would only be
+    as tall as its own contents and the ruler in the references runs the height of the
+    page. The content is padded past it by :data:`GUTTER`, so the ruler costs a gutter
+    rather than the third of the viewport the old layout left empty.
+    """
+    ticks = "".join(f"<span>{value * 10:d}</span>" for value in range(marks))
+    return f'<div class="gb-lruler">{ticks}</div>'
+
+
 def header_html(cfg: Config, status: str, reliability: Reliability | None) -> str:
     """Project block, status chip and the reliability panel, in one strip.
+
+    **Stacked** PROJECT / SYSTEM / VERSION, as the references have it: three labelled rows
+    read as a masthead, one run-on row reads as a breadcrumb.
 
     The reliability numbers sit here rather than behind a tab, because the requirement is
     that they are unavoidable rather than available.
@@ -586,15 +812,29 @@ def header_html(cfg: Config, status: str, reliability: Reliability | None) -> st
             f"&nbsp; OVER {reliability.folds} FOLDS &nbsp; MEASURED "
             f"{reliability.measured_on}</span>"
         )
+
+    def line(label: str, value: str) -> str:
+        return (
+            f'<div class="gb-metarow"><span class="gb-metakey">{label}</span>'
+            f'<span class="gb-meta">{value}</span></div>'
+        )
+
     return (
-        f'<div class="gb-panel">'
-        f'<div class="gb-meta">PROJECT: <span style="color:{ORANGE}">GLASSBOX TRADER</span>'
-        f" &nbsp;·&nbsp; MODEL: {cfg.model.active.upper()}"
-        f" &nbsp;·&nbsp; CHANNELS: {cfg.channels.active.upper()}"
-        f" &nbsp;·&nbsp; CONFIG {config_hash(cfg)[:12]}</div>"
-        f'<div style="margin-top:.5rem"><span class="gb-status">{status}</span></div>'
-        f'<div style="margin-top:.6rem">{record}</div>'
-        f"</div>"
+        '<div class="gb-panel">'
+        + line("PROJECT", f'<span style="color:{ORANGE}">GLASSBOX TRADER</span>')
+        + line(
+            "SYSTEM",
+            f"{cfg.model.active.upper()} &nbsp;/&nbsp; {cfg.channels.active.upper()} "
+            f"&nbsp;/&nbsp; {len(cfg.universe)} SYMBOLS &nbsp;/&nbsp; TOP_K "
+            f"{cfg.signal.top_k}",
+        )
+        + line(
+            "VERSION",
+            f"V{cfg.meta.version} &nbsp;·&nbsp; CONFIG {config_hash(cfg)[:12].upper()}",
+        )
+        + f'<div style="margin-top:.7rem"><span class="gb-status">{status}</span></div>'
+        + f'<div style="margin-top:.6rem">{record}</div>'
+        + "</div>"
     )
 
 
@@ -615,6 +855,7 @@ def main(
     cfg = load_config()
     st.set_page_config(page_title="GlassBox Trader", layout="wide")
     st.markdown(stylesheet(), unsafe_allow_html=True)
+    st.markdown(left_ruler_html(), unsafe_allow_html=True)
     st.markdown(ruler_html(), unsafe_allow_html=True)
 
     thresholds = _thresholds(root)
@@ -630,29 +871,12 @@ def main(
 
     st.markdown('<div class="gb-label">POSITIONS</div>', unsafe_allow_html=True)
     rows = position_rows(book, quantities, prices)
-    st.dataframe(
-        pd.DataFrame(
-            [
-                {
-                    "SYMBOL": row.symbol,
-                    "QTY": f"{row.quantity:.9f}",
-                    "ENTRY": f"{row.entry_price:,.2f}" if row.managed else "—",
-                    "LAST": f"{row.price:,.2f}",
-                    "VALUE": f"{row.market_value:,.2f}",
-                    "UNREALISED": (
-                        "—"
-                        if not row.managed or math.isnan(row.unrealised)
-                        else f"{'▲' if row.unrealised >= 0 else '▼'} "
-                        f"{row.unrealised:,.2f} ({row.unrealised_pct:+.2f}%)"
-                    ),
-                    "STATE": "MANAGED" if row.managed else "QUARANTINED",
-                }
-                for row in rows
-            ]
-        ),
-        width="stretch",
-        hide_index=True,
-    )
+    if rows:
+        st.markdown(position_table(rows), unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div class="gb-meta">NO POSITIONS HELD</div>', unsafe_allow_html=True
+        )
     st.markdown(
         f'<div class="gb-meta">EQUITY {account.get("equity", float("nan")):,.2f}'
         f' &nbsp;·&nbsp; CASH {account.get("cash", float("nan")):,.2f}</div>',
@@ -687,12 +911,9 @@ def main(
         )
 
     st.markdown('<div class="gb-label">DECISION LOG</div>', unsafe_allow_html=True)
-    st.dataframe(decision_rows(decisions), width="stretch", hide_index=True)
-    for record in sorted(decisions, key=lambda r: (r.as_of, r.symbol), reverse=True):
-        title = (
-            f"{record.as_of:%Y-%m-%d}  {record.symbol}  {record.signal.action.upper()}"
-        )
-        with st.expander(title):
+    st.markdown(decision_table(decisions), unsafe_allow_html=True)
+    for record in decision_rows(decisions):
+        with st.expander(expander_title(record)):
             st.markdown(narrative_html(record.narrative), unsafe_allow_html=True)
             st.markdown(contributions_svg(record.attribution), unsafe_allow_html=True)
 
@@ -836,16 +1057,23 @@ __all__ = [
     "channel_colour",
     "contributions_svg",
     "decision_rows",
+    "decision_table",
+    "escape",
+    "expander_title",
     "forecast_svg",
     "header_html",
+    "is_fragile",
     "is_rtl",
+    "left_ruler_html",
     "load_reliability",
     "main",
     "narrative_html",
     "pending_summary",
     "position_rows",
+    "position_table",
     "price_path",
     "provenance_label",
     "status_of",
     "stylesheet",
+    "table_html",
 ]

@@ -75,8 +75,16 @@ def a_record(provenance: str = records.LIVE) -> DecisionRecord:
 
 
 def queue_one(root: Path, provenance: str = records.LIVE) -> str:
+    """Queue a recommendation the way the loop does - **record first, then queue**.
+
+    The loop writes the decision when it makes it and queues the recommendation beside it,
+    so answering *amends* that record rather than adding a second one at the same bar
+    (ruling, 19 Aug 2026). A fixture that queued without recording would let the answer
+    path append, which is the behaviour the ruling forbids.
+    """
     order = an_order()
     decision_id = "cycle-0001-AAPL"
+    records.save_decision(a_record(provenance), root)
     records.save_pending(
         root,
         {
@@ -159,7 +167,7 @@ def test_both_answers_write_a_decision_record(
         live_loop.answer_pending(cfg, broker, root, decision_id, approved)
 
         written = records.load_decisions(AS_OF, AS_OF, root)
-        assert len(written) == 1
+        assert len(written) == 1  # amended, not appended
         assert ("Approved" if approved else "Declined") in written[0].narrative
 
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -425,3 +427,167 @@ def test_the_fake_broker_still_satisfies_what_records_reads() -> None:
         records.STOP,
         records.STOP_GAP,
     }
+
+
+# ── one decision per completed bar (ruling, 19 Aug 2026) ─────────────────────
+
+
+def a_decision(
+    symbol: str = "AAPL",
+    as_of: str = "2026-08-17",
+    provenance: str = records.LIVE,
+    narrative: str = "AAPL on 2026-08-17: the model predicts a rise.",
+) -> DecisionRecord:
+    stamp = pd.Timestamp(as_of, tz="UTC")
+    return DecisionRecord(
+        as_of=stamp,
+        symbol=symbol,
+        forecast=Forecast(
+            path=np.array([0.01, 0.01, 0.01, 0.01], dtype="float32"),
+            symbol=symbol,
+            as_of=stamp,
+        ),
+        attribution=Attribution(
+            per_channel={"close_logret": 0.03, "rsi14": 0.01},
+            per_lag=None,
+            per_frequency=None,
+            gain_phase=None,
+            forecast_total=0.04,
+        ),
+        signal=Signal(
+            symbol=symbol,
+            action="enter_long",
+            trend_strength=0.04,
+            up_points=4,
+            passed_threshold=True,
+        ),
+        order=None,
+        narrative=narrative,
+        config_hash="cafebabe0000",
+        provenance=provenance,
+    )
+
+
+def test_the_store_refuses_a_second_record_for_the_same_bar(tmp_path: Path) -> None:
+    """The 60-second poll wrote the same decision 390 times a session before the ruling."""
+    records.save_decision(a_decision(), tmp_path)
+
+    with pytest.raises(records.DuplicateDecision, match="written twice"):
+        records.save_decision(a_decision(), tmp_path)
+
+    assert len(records.load_decisions("2026-08-01", "2026-08-31", tmp_path)) == 1
+
+
+def test_a_different_bar_symbol_or_config_is_not_a_duplicate(tmp_path: Path) -> None:
+    records.save_decision(a_decision(), tmp_path)
+    records.save_decision(a_decision(as_of="2026-08-14"), tmp_path)
+    records.save_decision(a_decision(symbol="MSFT"), tmp_path)
+
+    assert len(records.load_decisions("2026-08-01", "2026-08-31", tmp_path)) == 3
+
+
+def test_a_replay_and_a_live_record_at_one_bar_are_two_facts_not_a_duplicate(
+    tmp_path: Path,
+) -> None:
+    """Provenance widens the key, and the widening is the point.
+
+    Live trading and a replay of fold 13 are two runs of the world. Refusing the second as
+    a duplicate would be a false refusal in the one direction that loses data, and nothing
+    the ruling was aimed at shares that shape - the 390 re-decisions were all live.
+    """
+    records.save_decision(a_decision(), tmp_path)
+    records.save_decision(
+        a_decision(provenance=records.replay_provenance(13)), tmp_path
+    )
+
+    everything = records.load_decisions(
+        "2026-08-01", "2026-08-31", tmp_path, records.ANY_PROVENANCE
+    )
+    assert len(everything) == 2
+    assert len(records.load_decisions("2026-08-01", "2026-08-31", tmp_path)) == 1
+
+
+def test_loading_refuses_a_log_that_already_holds_a_duplicate(tmp_path: Path) -> None:
+    """A duplicate that arrives by a route `save_decision` does not own must still surface.
+
+    A hand edit, a crashed process re-run, a second loop pointed at the same directory. The
+    log is what every metric in the report is computed over, so it raises rather than
+    quietly returning both rows.
+    """
+    path = records.month_file(tmp_path, pd.Timestamp("2026-08-17", tz="UTC"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(records.encode_decision(a_decision()))
+    path.write_text(line + chr(10) + line + chr(10), encoding="utf-8")
+
+    with pytest.raises(records.DuplicateDecision, match="wrong by an unknown factor"):
+        records.load_decisions("2026-08-01", "2026-08-31", tmp_path)
+
+
+def test_a_duplicate_outside_the_window_still_surfaces(tmp_path: Path) -> None:
+    """Asserted over the month files the range touches, not over what the filters keep.
+
+    A duplicate hiding two days outside the window is still a duplicate, and a reader who
+    cannot see it will trust the numbers it corrupts.
+    """
+    path = records.month_file(tmp_path, pd.Timestamp("2026-08-17", tz="UTC"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(records.encode_decision(a_decision(as_of="2026-08-17")))
+    path.write_text(line + chr(10) + line + chr(10), encoding="utf-8")
+
+    with pytest.raises(records.DuplicateDecision):
+        records.load_decisions("2026-08-01", "2026-08-05", tmp_path)
+
+
+def test_a_torn_line_is_tolerated_where_a_duplicate_is_not(tmp_path: Path) -> None:
+    """The split is deliberate.
+
+    A malformed line is what a process killed mid-write leaves behind and skipping it costs
+    one record; a duplicate is a defect in whatever wrote it, and costs the correctness of
+    everything computed downstream.
+    """
+    path = records.month_file(tmp_path, pd.Timestamp("2026-08-17", tz="UTC"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    good = json.dumps(records.encode_decision(a_decision()))
+    path.write_text(good + chr(10) + good[:40] + chr(10), encoding="utf-8")
+
+    assert len(records.load_decisions("2026-08-01", "2026-08-31", tmp_path)) == 1
+
+
+def test_an_answer_amends_the_decision_rather_than_adding_one(tmp_path: Path) -> None:
+    """GB-37: an operator's answer is not a second decision at the same bar.
+
+    Appended, it would have doubled exactly the count the ruling protects, and the approval
+    rate computed over the log would have been the answers divided by twice the
+    recommendations.
+    """
+    records.save_decision(a_decision(), tmp_path)
+
+    records.amend_decision(
+        replace(a_decision(), narrative="... Approved by the operator."), tmp_path
+    )
+
+    stored = records.load_decisions("2026-08-01", "2026-08-31", tmp_path)
+    assert len(stored) == 1
+    assert "Approved by the operator." in stored[0].narrative
+
+
+def test_amending_a_decision_that_was_never_recorded_is_refused(tmp_path: Path) -> None:
+    """Writing it as a new record would hide that the caller has a stale view."""
+    records.save_decision(a_decision(), tmp_path)
+
+    with pytest.raises(KeyError, match="nothing to amend"):
+        records.amend_decision(a_decision(symbol="MSFT"), tmp_path)
+
+
+def test_an_amendment_leaves_the_other_records_untouched(tmp_path: Path) -> None:
+    """The rewrite is the one writer here that is not an append, so it is worth pinning."""
+    for symbol in ("AAPL", "MSFT", "NVDA"):
+        records.save_decision(a_decision(symbol=symbol), tmp_path)
+
+    records.amend_decision(
+        replace(a_decision(symbol="MSFT"), narrative="answered"), tmp_path
+    )
+
+    stored = records.load_decisions("2026-08-01", "2026-08-31", tmp_path)
+    assert [record.symbol for record in stored] == ["AAPL", "MSFT", "NVDA"]
+    assert [record.narrative for record in stored].count("answered") == 1
