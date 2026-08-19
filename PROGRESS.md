@@ -11,13 +11,15 @@ Append one line per completed task. Newest at the bottom of each sprint.
 **Sprint 2:** **complete** — GB-17, GB-18, GB-13 on 16 Aug; GB-18 fix, GB-15, the
 `WindowBatch.symbols` contract change, GB-16, GB-19, GB-20, GB-24, GB-21 and GB-25 on
 17 Aug
-**Next task:** GB-39 fault handling and restart safety, then GATE 2. GB-37 and GB-38 are
-complete and were demonstrated together: a replayed fold produced two recommendations, one
-approved (submitted, both protective legs armed) and one declined (broker untouched).
+**Sprint 3:** **complete** — GB-26, GB-32, GB-33, GB-34/35/36, GB-37, GB-38, GB-39 and
+GB-40. **GATE 2 walked on 20 Aug, five weeks early: 3 of 6 green, not passed, FITS not
+cancelled.** See the gate log.
+**Next task:** the two rulings GATE 2 needs before 25 Sep — how criterion 2 is to be
+satisfied when the deployed band stands aside, and DAY versus GTC on the protective legs.
+Then Sprint 4 (GB-41 FITS core onward), and two or three real market sessions whenever the
+market is open.
 **The account is flat** — the quarantined 0.0919 AAPL was sold at 310.394 on 18 Aug on
-instruction, and the following cycle's reconciliation logged the drop. **One item is
-referred to Ben and not adapted around:** the protective legs are `TimeInForce.DAY` and
-expire nightly, so a position held overnight is unprotected overnight. See Open questions. GB-26 is complete and ran a full dry-run cycle
+instruction, and the following cycle's reconciliation logged the drop. GB-26 is complete and ran a full dry-run cycle
 against the live SIP feed on 18 Aug: ten steps, 610 bars a symbol against a floor of 445,
 the 0.01 AAPL probe quarantined, five decisions recorded and narrated, nothing submitted.
 **The session on 18 Aug will not trade, and that is the correct outcome:** the most recent
@@ -187,6 +189,9 @@ depends on nothing in the model layer.
 | Account flattened | 19 Aug 2026 | Ben | **Done, on instruction.** Sold **0.091919619 AAPL at 310.394**, filled 2026-08-18 15:38:59.713802 UTC, 8 ms after submission, `client_order_id=operator-flatten-quarantined-aapl`. The account is flat: equity 100,000.28, cash 100,000.28. The following cycle logged `reconcile: missing_position: AAPL local=0.091919619 broker=0.000000000 — the broker holds nothing; dropping the local holding. A filled stop or target looks exactly like this`, and emitted **no trade**, which is correct twice over: the position was quarantined so `emit_trades` refuses it by design, and defect (1) meant no filled order was visible anyway. |
 | Dashboard notes | 19 Aug 2026 | Noy | **All seven done.** Both tables rendered as HTML in the design language (near-black ground, monospace uppercase headers at wide tracking, thin dashed row rules, orange on the header row only, numerics right-aligned with tabular figures) — and the expanders restyled with them, since they carried the same default chrome; the band note moved to a strip below the plot area; a numbered left ruler added and the content column uncapped (the charts were letterboxed by a fixed `height` beside `width=100%`); em dash for no order; `EXPLANATION_FRAGILE_BELOW = 0.20` flags a nearly-cancelled decomposition in its cell and in the expander title; expander titles carry the trend strength; top ruler reads `0`; masthead stacks PROJECT / SYSTEM / VERSION. 16 new dashboard tests. |
 | Store repaired | 19 Aug 2026 | Ben | **20 lines → 5 unique decisions** in `checkpoints/live`, and 72 → 70 in `checkpoints/replay`. The live duplicates were four copies each of one bar's five decisions, differing only in whether GB-38's `provenance` key was present — every one decodes identically. The two replay duplicates were GB-37's approve/decline records, which now **amend** the decision rather than appending a second at the same bar. |
+| GB-39 | 20 Aug 2026 | Noy | **Complete.** `faults.py` — `retry` with exponential backoff (3 attempts, 1s then 2s, giving up 3s in, well inside one 60s poll) and `Unavailable`, the type that says the outside world did not answer rather than that a defect was found. `executor.RetryingBroker` wraps every broker call; **a write is safe to retry only because the `client_order_id` is bar-derived** — a retry refused as a duplicate is read as the receipt for the attempt that timed out, and the order is recovered rather than reported as a failure. An unreachable cycle is logged loudly, skipped, and the session continues; a run of two or more says so. No circuit breaker and no health endpoint, per scope. 11 new tests. |
+| GB-39 blocker closed | 20 Aug 2026 | Noy | **`adopt_own_positions`.** Confirmed first, as asked: `reconcile` quarantines an unknown position and **never adopts**, and never looks at `client_order_id` — so the loop's own fill, arriving after `_absorb_entry`'s poll window or after a crash, was quarantined and therefore **never protected**. That was the gate blocker. Adoption now runs between reconciliation and protection, and takes a position back only on evidence: a filled buy whose `client_order_id` is a decision id this system mints, naming a decision **on disk in this log under this provenance**, carrying the order it produced. Anything short of that stays quarantined — the reconciler's ruling is untouched. **The ordering that makes it possible: the decision reaches disk before the order reaches the broker.** |
+| GB-40 | 20 Aug 2026 | Ben | **GATE 2 walked: 3 of 6 green. Not passed, and FITS is not cancelled** — the §8 rule fires on the gate's own date of 25 Sep, not on a rehearsal run five weeks early. PASS: exact attribution visible in the dashboard (75 records, worst residual **1.248e-08** against 1e-5); replay reproduces a recorded day **with `load_live_bars` and `AlpacaBroker` replaced by hard failures**; Co-Pilot approve and reject, replayed. FAIL: no full unattended session; no order placed by the loop; one live session, not two or three. **The finding that matters: criterion 2 is structurally unreachable, not merely unmet** — a band that stands aside can never place an order, so it will read FAIL on 25 Sep exactly as it does today. Three ways out are in DECISIONS; the choice is Ben's. |
 
 ## Sprint 4 — FITS, Study, Report · 26 Sep – 10 Oct 2026 → GATE 3
 
@@ -199,8 +204,36 @@ _not started_
 | Gate | Date | Result | Notes |
 |---|---|---|---|
 | GATE 1 | 17 Aug 2026 (commitment 11 Sep) | **PASS** | Four checklist items green, four leakage checks green, one qualified. Detail below. |
-| GATE 2 | ~1–3 Sep (commitment 25 Sep) | pending | Needs 2–3 real market sessions; see `SOLO_BUILD_PLAN.md` §4.1 |
+| GATE 2 | walked 20 Aug 2026 (commitment 25 Sep) | **3 of 6 — not passed** | Rehearsed five weeks early, so the §8 cancellation is armed rather than fired. Detail below. |
 | GATE 3 | 10 Oct 2026 | pending | **Unchanged.** The submission date does not move. |
+
+### GATE 2 — walked 20 Aug 2026 · 3 of 6 · GB-40
+
+Run five weeks before its commitment date, so this is a **status, not a verdict**. Every
+line is answered by running something; nothing here is asserted.
+
+| Item | Result | Evidence |
+|---|---|---|
+| Live loop runs a full session unattended | **FAIL** | A dry-run cycle and three real cycles on 18 Aug. No open-to-close session. Outside the window `run_session` returns `stopped_by='outside the session'` after 0 cycles — the guard working, not a session. |
+| At least one order placed, filled and reconciled | **FAIL** | 0 live decisions produced an order. The loop **reconciled** two real Alpaca fills — GB-22's entry (quarantined, correctly) and the operator flatten (dropped, `missing_position`) — but has never **placed** one. |
+| Every decision carries an exact attribution, visible in the dashboard | **PASS** | 75 records live + replay; worst `abs(sum(per_channel) − forecast_total)` = **1.248e-08** against a 1e-5 tolerance. Every record has channels, every one renders, all visible in the table, the bars and the expander titles. |
+| Replay reproduces a recorded day offline | **PASS** | Fold 13, 14 bars → 14 cycles, 0 failed, 70 decisions, with `load_live_bars` and `AlpacaBroker` **replaced by functions that raise**. Offline is measured, not assumed. |
+| Co-Pilot approve and reject | **PASS, replayed** | 2 queued by the loop; one approved → submitted, both legs armed; one declined → broker order count unchanged. 70 records after, not 72, because an answer amends. Never exercised against Alpaca. |
+| Two or three separate live sessions (`SOLO_BUILD_PLAN` §4.1) | **FAIL** | One completed bar decided live: 2026-08-17. |
+
+**The three failures reduce to two causes, and neither is a defect:** the deployed band
+stands aside, so no order and no recommendation can exist; and the plan's own floor of two
+or three evenings at the desk has not been met.
+
+**Criterion 2 is structurally unreachable, not merely unmet.** The honest deployment choice
+is the most recent complete fold, that fold stands aside, and a band that stands aside can
+never place an order — so no amount of session time changes it. Three ways out are recorded
+in DECISIONS.md, 20 Aug; the choice is Ben's, and it is needed before 25 Sep.
+
+**Condition, recorded and NOT exercised.** *The loop must not hold a position overnight
+while protective legs are DAY.* No position has been held overnight by the loop, and the
+deployed band stands aside, so the condition has never been tested. An untested guarantee is
+not a satisfied one.
 
 ### GATE 1 — 17 Aug 2026 · PASS · GB-25
 
@@ -345,7 +378,13 @@ _Claude Code: write blocking questions here rather than guessing._
   reintroduces the price-level discretisation GB-18 chose fractional sizing to avoid. This
   needs a ruling before GB-26 wires the loop.
 
-  **Sharpened 19 Aug, and still open — the overnight half is now measured, not inferred.**
+  **Promoted 20 Aug to a GATE 2 condition** (DECISIONS.md): *the loop must not hold a
+  position overnight while protective legs are DAY — either the policy moves to GTC before
+  any overnight hold occurs, or the loop flattens at the close.* As of 20 Aug the condition
+  is recorded as **never exercised**, because no position has been held overnight and the
+  deployed band stands aside.
+
+  **The overnight half is measured, not inferred.**
   Alpaca refuses a `client_order_id` it has seen before **including after the original was
   cancelled or expired** (`40010001`, measured against the paper account). So the DAY legs
   expire at the close, the next morning's re-arm was submitted under yesterday's id, that

@@ -183,6 +183,8 @@ class LiveConfig:
     mode: str
     market_open_il: str
     market_close_il: str
+    retry_attempts: int
+    retry_backoff_seconds: float
 
 
 @dataclass(frozen=True)
@@ -517,6 +519,10 @@ def _build_live(raw: Mapping[str, Any]) -> LiveConfig:
         mode=_as_choice(section, "live", "mode", VALID_LIVE_MODES),
         market_open_il=_as_str(section, "live", "market_open_il"),
         market_close_il=_as_str(section, "live", "market_close_il"),
+        retry_attempts=_as_positive_int(section, "live", "retry_attempts"),
+        retry_backoff_seconds=_as_positive_float(
+            section, "live", "retry_backoff_seconds"
+        ),
     )
 
 

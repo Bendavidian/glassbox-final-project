@@ -18,12 +18,12 @@ import numpy as np
 import pandas as pd
 import pandas_market_calendars as mcal
 import pytest
-from fake_broker import FakeBroker
+from fake_broker import FakeBroker, FakeBrokerError
 
-from glassbox import live_loop, records
+from glassbox import faults, live_loop, records
 from glassbox.config.loader import Config, load_config
 from glassbox.contracts.schemas import ChannelStats
-from glassbox.engine.executor import BUY, SELL, BrokerOrder
+from glassbox.engine.executor import BUY, SELL, BrokerOrder, RetryingBroker
 from glassbox.engine.reconcile import Book, Holding
 from glassbox.engine.signal import Thresholds
 from glassbox.features import builder
@@ -178,12 +178,22 @@ def stub_bars(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> dict:
     asked: dict = {}
     frames = {symbol: make_bars(cfg, NOW) for symbol in UNIVERSE}
 
-    def fake_fetch(symbols, min_bars, *, requirement="", lookback_days=None):
+    def fake_fetch(
+        symbols,
+        min_bars,
+        *,
+        requirement="",
+        lookback_days=None,
+        attempts=1,
+        backoff=0.0,
+    ):
         asked.update(
             symbols=list(symbols),
             min_bars=min_bars,
             requirement=requirement,
             lookback_days=lookback_days,
+            attempts=attempts,
+            backoff=backoff,
         )
         return {symbol: frames[symbol].copy() for symbol in symbols}
 
@@ -240,6 +250,11 @@ def test_the_fetch_asks_for_min_history_bars(
     assert stub_bars["min_bars"] == builder.min_history_bars(cfg)
     assert stub_bars["min_bars"] != cfg.window.input_len
     assert "rsi14 warm-up" in stub_bars["requirement"]
+    # GB-39: the retry policy is the deployment's, not the data module's. `load_live_bars`
+    # defaults to no retry, so a loop that forgot to pass it would silently lose the
+    # policy rather than fail.
+    assert stub_bars["attempts"] == cfg.live.retry_attempts
+    assert stub_bars["backoff"] == cfg.live.retry_backoff_seconds
 
 
 # ── stale data: dropped from entries, never from protection ──────────────────
@@ -571,10 +586,11 @@ def test_a_failing_step_ends_the_cycle_and_not_the_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def explode(*args, **kwargs):
-        raise RuntimeError("the data vendor fell over")
+    def unreachable(*args, **kwargs):
+        # What the real `load_live_bars` raises once its own attempts are spent.
+        raise faults.Unavailable("the daily bar fetch failed after 3 attempts")
 
-    monkeypatch.setattr(live_loop, "load_live_bars", explode)
+    monkeypatch.setattr(live_loop, "load_live_bars", unreachable)
 
     report = live_loop.run_session(
         cfg,
@@ -587,8 +603,44 @@ def test_a_failing_step_ends_the_cycle_and_not_the_session(
 
     assert len(report.cycles) == 2
     assert all(not cycle.ok for cycle in report.cycles)
-    assert "the data vendor fell over" in report.cycles[0].error
-    assert "RuntimeError" in report.summary()
+    assert "after 3 attempts" in report.cycles[0].error
+    # GB-39: the feed is unreachable, which is a skipped cycle rather than a defect, and
+    # the session says so rather than reporting the raw exception type.
+    assert all(cycle.unreachable for cycle in report.cycles)
+    assert "cycles skipped       : 2" in report.summary()
+
+
+def test_a_defect_is_not_dressed_up_as_a_connectivity_problem(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_predictor: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two share one `except`, and telling them apart is the point of separating them.
+
+    An unreachable broker costs one poll and is expected on a domestic connection. A
+    `ValueError` in the same slot is a bug, and a report that called it a connectivity
+    problem would be the loop hiding its own defect behind the network.
+    """
+
+    def a_real_bug(*args, **kwargs):
+        raise ValueError("the window came back the wrong shape")
+
+    monkeypatch.setattr(live_loop, "load_live_bars", a_real_bug)
+
+    report = live_loop.run_session(
+        cfg,
+        tmp_path,
+        broker=broker,
+        clock=lambda: NOW,
+        sleep=lambda s: None,
+        max_cycles=1,
+    )
+
+    assert report.cycles[0].failed_step == "ValueError"
+    assert report.cycles[0].unreachable is False
+    assert "cycles skipped       : 0" in report.summary()
 
 
 def test_dry_run_submits_nothing_but_still_decides(
@@ -918,3 +970,299 @@ def test_re_arming_never_reuses_a_client_order_id(
     assert "d1#1-stop" in armed
     assert "d1#2-stop" in armed
     assert len(armed) == len(set(armed))
+
+
+# ── GB-39: faults, and the restart that must not orphan or double ───────────
+
+
+def test_retry_gives_up_after_the_configured_attempts(cfg: Config) -> None:
+    """Three attempts, and the exhaustion is a distinct type rather than the raw error."""
+    calls, waits = [], []
+
+    def always_fails():
+        calls.append(1)
+        raise ConnectionError("the socket went away")
+
+    with pytest.raises(faults.Unavailable, match="after 3 attempts"):
+        faults.retry(
+            always_fails,
+            description="a call",
+            attempts=cfg.live.retry_attempts,
+            backoff=cfg.live.retry_backoff_seconds,
+            sleep=waits.append,
+        )
+
+    assert len(calls) == cfg.live.retry_attempts
+    assert waits == [1.0, 2.0]  # exponential, and it gives up inside one poll
+
+
+def test_retry_returns_the_first_success_without_waiting() -> None:
+    waits = []
+    calls = []
+
+    def fails_once():
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError("slow")
+        return "the answer"
+
+    assert (
+        faults.retry(
+            fails_once,
+            description="a call",
+            attempts=3,
+            backoff=1.0,
+            sleep=waits.append,
+        )
+        == "the answer"
+    )
+    assert waits == [1.0]
+
+
+def test_the_original_error_is_chained_not_swallowed() -> None:
+    """The thing that broke is more useful than the fact that it broke three times."""
+    with pytest.raises(faults.Unavailable) as caught:
+        faults.retry(
+            lambda: (_ for _ in ()).throw(ConnectionError("DNS")),
+            description="a call",
+            attempts=2,
+            backoff=0.0,
+            sleep=lambda _: None,
+        )
+
+    assert isinstance(caught.value.__cause__, ConnectionError)
+
+
+def test_a_read_that_recovers_is_not_reported_as_a_failure(cfg: Config) -> None:
+    inner = FakeBroker(prices={"AAPL": PRICE})
+    inner.positions["AAPL"] = 2.0
+    failures = []
+    real = inner.get_positions
+
+    def flaky():
+        if not failures:
+            failures.append(1)
+            raise ConnectionError("reset by peer")
+        return real()
+
+    inner.get_positions = flaky
+    quick = replace(cfg, live=replace(cfg.live, retry_backoff_seconds=0.0))
+
+    assert RetryingBroker(inner, quick).get_positions() == {"AAPL": 2.0}
+
+
+def test_a_write_refused_as_a_duplicate_on_retry_is_read_as_a_receipt(
+    cfg: Config,
+) -> None:
+    """The measurement of 18 Aug 2026 turned into a guarantee.
+
+    A submission that times out without a response either did not reach the broker or did.
+    Retrying tells the two apart: absent, the retry places it; present, the retry is
+    refused because the ``client_order_id`` is taken - and that refusal is the receipt for
+    the attempt that appeared to fail. Without this the loop would report a failure for an
+    order it actually has, and the position would go unbooked and unprotected.
+    """
+    inner = FakeBroker(prices={"AAPL": PRICE})
+    quick = replace(cfg, live=replace(cfg.live, retry_backoff_seconds=0.0))
+    broker = RetryingBroker(inner, quick)
+    attempts = []
+    real = inner.submit_market_order
+
+    def lands_then_pretends_to_fail(symbol, quantity, side, client_order_id):
+        attempts.append(client_order_id)
+        if len(attempts) == 1:
+            real(symbol, quantity, side, client_order_id)  # it DID reach the broker
+            raise TimeoutError("no response")
+        raise FakeBrokerError("client_order_id must be unique")
+
+    inner.submit_market_order = lands_then_pretends_to_fail
+
+    order = broker.submit_market_order("AAPL", 1.0, BUY, "20260819-AAPL")
+
+    assert len(attempts) == 2
+    assert records.client_order_id(order) == "20260819-AAPL"
+    assert len([o for o in inner.orders if o.side == BUY]) == 1  # not doubled
+
+
+def test_a_duplicate_refusal_on_the_FIRST_attempt_is_still_an_error(
+    cfg: Config,
+) -> None:
+    """Only a retry can be a receipt. A first attempt refused as a duplicate means
+    something else already used the id, and swallowing that would hide it."""
+    inner = FakeBroker(prices={"AAPL": PRICE})
+    quick = replace(cfg, live=replace(cfg.live, retry_backoff_seconds=0.0))
+
+    def refuse(symbol, quantity, side, client_order_id):
+        raise FakeBrokerError("client_order_id must be unique")
+
+    inner.submit_market_order = refuse
+
+    with pytest.raises(faults.Unavailable):
+        RetryingBroker(inner, quick).submit_market_order("AAPL", 1.0, BUY, "d1")
+
+
+# ── adoption: the loop's own fill is never left quarantined ─────────────────
+
+
+def a_filled_entry(broker: FakeBroker, symbol: str, decision_id: str, quantity: float):
+    """Put a filled buy at the broker under one of our decision ids, as a crash would."""
+    return broker.submit_market_order(symbol, quantity, BUY, decision_id)
+
+
+def test_a_position_the_loop_opened_is_adopted_not_quarantined(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """Reconciliation quarantines what it cannot explain, which is right at that layer.
+    Adoption is the case where the loop CAN explain it - with a record it wrote itself
+    before it sent the order."""
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    state = a_state(auto, tmp_path, broker, total=0.05)
+
+    live_loop.run_cycle(state, NOW)  # decides nothing; withholds the entries
+    second = live_loop.run_cycle(state, NOW)  # decides, submits, books
+
+    assert second.decisions
+    assert "AAPL" in state.book.managed
+
+    # Now lose the book, as a kill -9 between submission and the book write would.
+    restarted = a_state(auto, tmp_path, broker, total=0.05)
+    report = live_loop.run_cycle(restarted, NOW)
+
+    assert "AAPL" in report.adopted
+    assert "AAPL" in restarted.book.managed
+    assert "AAPL" not in restarted.book.unmanaged
+    holding = restarted.book.managed["AAPL"]
+    assert holding.stop_loss > 0 and holding.take_profit > holding.stop_loss
+
+
+def test_an_adopted_position_is_protected_in_the_cycle_that_adopts_it(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """The whole reason adoption runs before step 4. A position adopted and left unarmed
+    until the next poll is the failure adoption exists to remove, one cycle later."""
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    state = a_state(auto, tmp_path, broker, total=0.05)
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+
+    # The legs die overnight, as DAY orders do, so the restarted process finds the
+    # position bare - which is the case that has to end protected.
+    for order in list(broker.orders):
+        if order.side == SELL:
+            broker.orders.remove(order)
+
+    restarted = a_state(auto, tmp_path, broker, total=0.05)
+    report = live_loop.run_cycle(restarted, NOW)
+
+    assert "AAPL" in report.adopted
+    assert "AAPL" in report.rearmed
+    armed = [
+        records.client_order_id(o)
+        for o in broker.orders
+        if o.side == SELL and o.symbol == "AAPL"
+    ]
+    assert any(name.endswith("-stop") for name in armed)
+    assert any(name.endswith("-target") for name in armed)
+
+
+def test_a_position_with_no_decision_behind_it_stays_quarantined(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """Bought by hand in the Alpaca console. The reconciler's ruling is untouched: the
+    system still refuses to manage what it cannot explain."""
+    broker.prices["NVDA"] = PRICE
+    a_filled_entry(broker, "NVDA", "bought-by-hand", 3.0)
+    state = a_state(cfg, tmp_path, broker)
+
+    report = live_loop.run_cycle(state, NOW)
+
+    assert report.adopted == ()
+    assert "NVDA" in state.book.unmanaged
+    assert "NVDA" not in state.book.managed
+
+
+def test_a_decision_id_shaped_order_with_no_record_stays_quarantined(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """The id is evidence only because the record is. A well-formed id naming nothing in
+    this log is somebody else's order, or ours under a different config."""
+    broker.prices["NVDA"] = PRICE
+    a_filled_entry(broker, "NVDA", "20260811-NVDA", 3.0)
+    state = a_state(cfg, tmp_path, broker)
+
+    report = live_loop.run_cycle(state, NOW)
+
+    assert report.adopted == ()
+    assert "NVDA" in state.book.unmanaged
+
+
+def test_the_decision_reaches_disk_before_the_order_reaches_the_broker(
+    cfg: Config, stub_bars: dict, tmp_path: Path
+) -> None:
+    """GB-39's restart rule, asserted as an ordering rather than as an outcome.
+
+    Written the other way round, a crash between the two leaves a position at the broker
+    with nothing on disk that explains it - unadoptable by construction, quarantined for
+    ever, and never protected.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    broker = FakeBroker(prices=dict.fromkeys(UNIVERSE, PRICE))
+    state = a_state(auto, tmp_path, broker, total=0.05)
+    live_loop.run_cycle(state, NOW)
+
+    on_disk_at_submission = {}
+    real = broker.submit_market_order
+
+    def note_the_log(symbol, quantity, side, client_order_id):
+        on_disk_at_submission[client_order_id] = [
+            r.symbol for r in stored_decisions(tmp_path)
+        ]
+        return real(symbol, quantity, side, client_order_id)
+
+    broker.submit_market_order = note_the_log
+    live_loop.run_cycle(state, NOW)
+
+    assert on_disk_at_submission
+    for decision_id, symbols in on_disk_at_submission.items():
+        assert decision_id.split("-")[1] in symbols
+
+
+def test_a_kill_between_submission_and_fill_ends_booked_and_protected(
+    cfg: Config, stub_bars: dict, tmp_path: Path
+) -> None:
+    """The restart-safety test GB-39 exists for, run as the sequence it models.
+
+    The process submits an entry, the fill has not appeared, and the process dies before
+    anything is booked - which is exactly what the poll window expiring leaves behind too.
+    A new process starts against the same state directory and the same broker. It must
+    not resubmit, and the position must end up managed and protected rather than
+    quarantined and naked.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    unfilled = FakeBroker(prices=dict.fromkeys(UNIVERSE, PRICE), fill=False)
+    dying = a_state(auto, tmp_path, unfilled, total=0.05)
+
+    live_loop.run_cycle(dying, NOW)
+    live_loop.run_cycle(dying, NOW)  # submits; nothing fills; nothing is booked
+    submitted = [o for o in unfilled.orders if o.side == BUY]
+    assert submitted
+    assert dying.book.managed == {}  # the process dies here
+
+    # The fills land while nobody is watching, and a new process starts.
+    filled = FakeBroker(prices=dict.fromkeys(UNIVERSE, PRICE))
+    for order in submitted:
+        filled.submit_market_order(
+            order.symbol, order.quantity, BUY, records.client_order_id(order)
+        )
+    restarted = a_state(auto, tmp_path, filled, total=0.05)
+
+    report = live_loop.run_cycle(restarted, NOW)
+
+    assert set(report.adopted) == {o.symbol for o in submitted}
+    for order in submitted:
+        assert order.symbol in restarted.book.managed
+        assert order.symbol not in restarted.book.unmanaged
+    assert report.rearmed == report.adopted  # protected in the cycle that adopted them
+    # And no duplicate: the bar is decided and the client_order_id is spent.
+    assert len([o for o in filled.orders if o.side == BUY]) == len(submitted)
+    assert len(stored_decisions(tmp_path)) == len(UNIVERSE)

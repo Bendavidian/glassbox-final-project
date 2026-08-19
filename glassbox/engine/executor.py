@@ -58,6 +58,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from glassbox.config.loader import Config, alpaca_credentials, require_paper_endpoint
 from glassbox.engine.risk import Order, shares_for
+from glassbox.faults import retry
 
 LOGGER = logging.getLogger(__name__)
 
@@ -82,6 +83,13 @@ DECLINED = "declined_by_operator"
 # broker will tell us about. "Reconcile over fewer orders than are available" is not a
 # policy anyone wants to be able to set.
 ORDER_HISTORY = 500
+
+# What Alpaca says when a `client_order_id` has been used before. Measured against the
+# paper account on 18 Aug 2026, and it is returned whether the original is working,
+# filled or cancelled - an id is consumed permanently. `RetryingBroker` reads it as
+# confirmation that an earlier attempt landed, which is the whole reason a write can be
+# retried here at all.
+DUPLICATE_CLIENT_ORDER_ID = "client_order_id must be unique"
 
 
 @dataclass(frozen=True)
@@ -163,6 +171,159 @@ class Submission:
     @property
     def submitted(self) -> bool:
         return self.status == SUBMITTED
+
+
+class RetryingBroker:
+    """Any :class:`Broker`, with GB-39's retry policy around every call.
+
+    A wrapper rather than retries inside :class:`AlpacaBroker`, for the reason
+    :class:`live_loop.DryRunBroker` is a wrapper: the policy is a decision about how this
+    deployment treats a flaky network, and burying it inside the one implementation that
+    talks to Alpaca would make it untestable without Alpaca.
+
+    **Reads retry because they are idempotent. Writes retry because of GB-26's ruling.**
+    ``get_orders``, ``get_positions`` and ``get_account`` ask questions and change nothing,
+    so a repeat is free. A repeated *submission* would normally be the worst thing a
+    trading system can do - but every order here carries a ``client_order_id`` derived from
+    the decision, and Alpaca refuses a repeat of one. So an attempt that timed out without
+    a response leaves exactly two possibilities, and the retry distinguishes them: the
+    order is absent and the retry places it, or the order is present and the retry is
+    refused with :data:`DUPLICATE_CLIENT_ORDER_ID` - **and that refusal is the receipt for
+    the attempt that timed out.** The order is then fetched by its id and returned, so the
+    caller sees the success it actually had.
+
+    Without the deterministic id this class could not exist: a retry would either
+    double the position or have to give up on the first timeout.
+    """
+
+    def __init__(self, broker: Broker, cfg: Config) -> None:
+        self._broker = broker
+        self._attempts = cfg.live.retry_attempts
+        self._backoff = cfg.live.retry_backoff_seconds
+
+    # ── reads ────────────────────────────────────────────────────────────────
+
+    def get_orders(self) -> list[BrokerOrder]:
+        return self._read(self._broker.get_orders, "get_orders")
+
+    def get_positions(self) -> dict[str, float]:
+        return self._read(self._broker.get_positions, "get_positions")
+
+    def get_account(self) -> dict[str, float]:
+        return self._read(self._broker.get_account, "get_account")
+
+    # ── writes ───────────────────────────────────────────────────────────────
+
+    def submit_market_order(
+        self, symbol: str, quantity: float, side: str, client_order_id: str
+    ) -> BrokerOrder:
+        return self._write(
+            lambda: self._broker.submit_market_order(
+                symbol, quantity, side, client_order_id
+            ),
+            f"submit_market_order {side} {symbol}",
+            client_order_id,
+        )
+
+    def submit_stop_order(
+        self, symbol: str, quantity: float, stop_price: float, client_order_id: str
+    ) -> BrokerOrder:
+        return self._write(
+            lambda: self._broker.submit_stop_order(
+                symbol, quantity, stop_price, client_order_id
+            ),
+            f"submit_stop_order {symbol}",
+            client_order_id,
+        )
+
+    def submit_limit_order(
+        self, symbol: str, quantity: float, limit_price: float, client_order_id: str
+    ) -> BrokerOrder:
+        return self._write(
+            lambda: self._broker.submit_limit_order(
+                symbol, quantity, limit_price, client_order_id
+            ),
+            f"submit_limit_order {symbol}",
+            client_order_id,
+        )
+
+    def cancel_order(self, order_id: str) -> None:
+        # Cancelling twice is not an error worth distinguishing: the second call asks the
+        # broker to make true something that is already true.
+        self._read(
+            lambda: self._broker.cancel_order(order_id), f"cancel_order {order_id}"
+        )
+
+    # ── the two policies ─────────────────────────────────────────────────────
+
+    def _read(self, call, description: str):
+        return retry(
+            call,
+            description=description,
+            attempts=self._attempts,
+            backoff=self._backoff,
+            log=LOGGER,
+        )
+
+    def _write(self, call, description: str, client_order_id: str) -> BrokerOrder:
+        attempt = {"n": 0}
+
+        def once() -> BrokerOrder:
+            attempt["n"] += 1
+            try:
+                return call()
+            except Exception as failure:
+                if attempt["n"] == 1 or DUPLICATE_CLIENT_ORDER_ID not in str(failure):
+                    raise
+                # A repeat of an id we minted, on a retry: the attempt that appeared to
+                # fail had in fact reached the broker. Recover the order rather than
+                # reporting a failure that did not happen.
+                existing = self._find(client_order_id)
+                if existing is None:
+                    raise
+                LOGGER.warning(
+                    "%s was refused as a duplicate on retry, which means the earlier "
+                    "attempt landed; recovered order %s rather than reporting a failure",
+                    description,
+                    existing.id,
+                )
+                return existing
+
+        return retry(
+            once,
+            description=description,
+            attempts=self._attempts,
+            backoff=self._backoff,
+            log=LOGGER,
+        )
+
+    def _find(self, wanted: str) -> BrokerOrder | None:
+        try:
+            orders = self._broker.get_orders()
+        except Exception:  # noqa: BLE001 - the caller is already handling a failure
+            return None
+        for order in orders:
+            if client_order_id(order) == wanted:
+                return order
+        return None
+
+
+def client_order_id(order: BrokerOrder) -> str:
+    """The id the submitter gave this order, however the broker chose to carry it.
+
+    Here rather than in ``records`` because it reads a :class:`BrokerOrder`, which is
+    defined here, and because :class:`RetryingBroker` needs it - a top-level module cannot
+    be reached from L5 without inverting the layer stack. ``records`` re-exports it, so
+    ``records.client_order_id`` still resolves for its own callers.
+
+    It is the question that survives a restart. "Have you already got this order?" asked
+    of the broker is answerable after a crash; the same question asked of a flag in memory
+    answers no, and a second submission follows.
+    """
+    raw = order.raw
+    if isinstance(raw, dict):
+        return str(raw.get("client_order_id", ""))
+    return str(getattr(raw, "client_order_id", "") or "")
 
 
 def execute(broker: Broker, order: Order, decision_id: str, cfg: Config) -> Submission:
@@ -521,8 +682,10 @@ __all__ = [
     "AlpacaBroker",
     "Broker",
     "BrokerOrder",
+    "RetryingBroker",
     "Submission",
     "approve",
+    "client_order_id",
     "decline",
     "execute",
     "protect",

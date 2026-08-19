@@ -57,7 +57,7 @@ from glassbox.contracts.schemas import (
     Signal,
     Trade,
 )
-from glassbox.engine.executor import BrokerOrder
+from glassbox.engine.executor import BrokerOrder, client_order_id
 from glassbox.engine.reconcile import Book, Holding
 
 LOGGER = logging.getLogger(__name__)
@@ -582,19 +582,6 @@ def _exit_cost(
     if client_id.endswith(TARGET_SUFFIX):
         return max(0.0, holding.take_profit - exit_price) * size
     return 0.0
-
-
-def client_order_id(order: BrokerOrder) -> str:
-    """The id the submitter gave this order, however the broker chose to carry it.
-
-    Public because it is how the live loop asks the broker "have you already got this
-    order?" - the only question that survives a restart, where a flag in memory would
-    answer no and cause a second submission.
-    """
-    raw = order.raw
-    if isinstance(raw, dict):
-        return str(raw.get("client_order_id", ""))
-    return str(getattr(raw, "client_order_id", "") or "")
 
 
 def _filled_at(order: BrokerOrder) -> pd.Timestamp:

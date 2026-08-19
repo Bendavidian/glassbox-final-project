@@ -51,6 +51,11 @@ SPEC_MODULES = (
     "backtest/calibrate.py",
     "experiments/study.py",
     "experiments/report.py",
+    # GB-39: the retry policy. Its own module because its callers sit at opposite ends of
+    # the layer stack - `data/live.py` is L1 and `engine/executor.py` is L5 - so neither
+    # can import it from the other without inverting the stack, and a backoff written
+    # twice is a backoff that drifts.
+    "faults.py",
     # GB-29: decision records and the live trade log. Top-level beside `live_loop.py`
     # because the live loop and the dashboard both read it and neither may reach the
     # harness - it is named in the forbidden-import contract for that reason.

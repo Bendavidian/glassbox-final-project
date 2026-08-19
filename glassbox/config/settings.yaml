@@ -66,3 +66,8 @@ live:
   mode: co_pilot        # auto | co_pilot
   market_open_il: "16:30"
   market_close_il: "23:00"
+  # GB-39. Attempts include the first, and the backoff doubles: 3 and 1.0 waits 1s then
+  # 2s and gives up 3s in, which has to stay well inside one poll_seconds or a retrying
+  # cycle would still be retrying when the next one is due.
+  retry_attempts: 3
+  retry_backoff_seconds: 1.0

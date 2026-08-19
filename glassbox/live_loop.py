@@ -60,8 +60,10 @@ from glassbox.engine.executor import (
     AlpacaBroker,
     Broker,
     BrokerOrder,
+    RetryingBroker,
     Submission,
     approve,
+    client_order_id,
     decline,
     execute,
 )
@@ -70,6 +72,7 @@ from glassbox.engine.reconcile import Book, Holding, reconcile
 from glassbox.engine.signal import ENTER_LONG, EXIT, Thresholds, decide
 from glassbox.explain.channel import attribute
 from glassbox.explain.narrate import EN, narrate
+from glassbox.faults import Unavailable
 from glassbox.features.builder import (
     build_feature_frame,
     history_requirement,
@@ -136,12 +139,20 @@ class CycleReport:
     stale: tuple[str, ...] = ()
     divergences: tuple[str, ...] = ()
     rearmed: tuple[str, ...] = ()
+    adopted: tuple[str, ...] = ()
     flattened: tuple[str, ...] = ()
     decisions: tuple[str, ...] = ()
     submissions: tuple[Submission, ...] = ()
     trades: tuple[Trade, ...] = ()
     failed_step: str | None = None
     error: str | None = None
+    unreachable: bool = False
+    """The cycle failed because the outside world did not answer, not because of a defect.
+
+    Worth separating in the report: an unreachable broker costs one poll and is expected
+    on a domestic connection, while a ``ValueError`` in the same slot is a bug that has
+    been swallowed by the same ``except``.
+    """
 
     @property
     def ok(self) -> bool:
@@ -172,6 +183,12 @@ class SessionReport:
             f"  orders submitted     : {sum(len(c.submissions) for c in self.cycles)}",
             f"  trades emitted       : {sum(len(c.trades) for c in self.cycles)}",
             f"  positions re-armed   : {sum(len(c.rearmed) for c in self.cycles)}",
+            f"  positions adopted    : {sum(len(c.adopted) for c in self.cycles)}",
+            (
+                "  cycles skipped       : "
+                f"{sum(1 for c in self.cycles if c.unreachable)}"
+                " on an unreachable broker or feed"
+            ),
             f"  positions flattened  : {sum(len(c.flattened) for c in self.cycles)}",
         ]
         for cycle in failed:
@@ -565,6 +582,8 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 state.entry_fills.pop(symbol)
         divergences = tuple(str(divergence) for divergence in result.divergences)
 
+        adopted = adopt_own_positions(state, orders, log)
+
         log(
             "step 4/10 protection: verify both legs, re-arm, flatten on a second failure"
         )
@@ -579,6 +598,8 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 list(state.cfg.universe),
                 min_history_bars(state.cfg),
                 requirement=history_requirement(state.cfg),
+                attempts=state.cfg.live.retry_attempts,
+                backoff=state.cfg.live.retry_backoff_seconds,
             )
         )
 
@@ -614,6 +635,7 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 stale=tuple(stale),
                 divergences=divergences,
                 rearmed=tuple(rearmed),
+                adopted=tuple(adopted),
                 flattened=tuple(flattened),
                 # An exit decided at an earlier cycle is an obligation, not a forecast, so
                 # it is still owed even on a cycle that can compute nothing new.
@@ -731,6 +753,19 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 provenance=state.provenance,
             )
 
+            # **The decision is on disk before the order is at the broker, always.**
+            # GB-39's restart rule, and the ordering is the whole of it: if the process
+            # dies between the two, a filled position exists whose decision_id names a
+            # record that `adopt_own_positions` can find, so the next start books and
+            # protects it. Written the other way round, a crash in the same instant would
+            # leave a position at the broker with nothing on disk that explains it -
+            # unadoptable by construction, quarantined for ever, and never protected.
+            records.save_decision(record, state.state_dir)
+            state.decided[symbol] = Decision(
+                bar=bars_at[symbol], signal=verdict, decision_id=decision_id
+            )
+            decisions.append(decision_id)
+
             submission = None
             if order is not None:
                 submission = execute(state.broker, order, decision_id, state.cfg)
@@ -760,15 +795,6 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             if submission is not None:
                 submissions.append(submission)
 
-            records.save_decision(record, state.state_dir)
-            # Only once the record is on disk. Marking it decided first and then failing
-            # to write would lose the decision permanently: the loop would refuse to make
-            # it again and the log would never have it.
-            state.decided[symbol] = Decision(
-                bar=bars_at[symbol], signal=verdict, decision_id=decision_id
-            )
-            decisions.append(decision_id)
-
         submissions.extend(_send_exits(state, orders, log))
 
         log("step 10/10 persist: book and entry fills")
@@ -782,12 +808,32 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             stale=tuple(stale),
             divergences=divergences,
             rearmed=tuple(rearmed),
+            adopted=tuple(adopted),
             flattened=tuple(flattened),
             decisions=tuple(decisions),
             submissions=tuple(submissions),
             trades=trades,
         )
 
+    except Unavailable as failure:
+        # GB-39: the outside world did not answer. Loud, skipped, and the session
+        # continues - a dropped connection costs one poll, and crashing on it would cost
+        # every position its protection for the rest of the day.
+        LOGGER.error(
+            "[%s] CYCLE SKIPPED - the broker or the data feed is unreachable: %s. "
+            "Nothing was decided and nothing was submitted; the next poll will try "
+            "again. Protective legs already at the broker are unaffected by this",
+            cycle_id,
+            failure,
+        )
+        return CycleReport(
+            cycle_id=cycle_id,
+            at=when,
+            entries_allowed=entries_allowed,
+            failed_step="Unavailable",
+            error=str(failure),
+            unreachable=True,
+        )
     except Exception as failure:
         LOGGER.exception("[%s] cycle failed", cycle_id)
         return CycleReport(
@@ -797,6 +843,130 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             failed_step=type(failure).__name__,
             error=str(failure),
         )
+
+
+def adopt_own_positions(
+    state: LiveState, orders: Sequence[BrokerOrder], log
+) -> list[str]:
+    """Take back a position this system opened but did not finish booking. **GB-39.**
+
+    **The hole this closes was a gate blocker.** ``engine/reconcile.py`` quarantines any
+    position the book does not know about and never adopts one, and that ruling is right
+    *at that layer*: the reconciler is read-only, it sees quantities rather than reasons,
+    and a position it cannot explain is one it must not pretend to manage. But two ordinary
+    events produce a position the loop genuinely did open and has not yet booked - the
+    entry fill arriving after ``_absorb_entry``'s poll window expires, and the process
+    dying between submission and fill. Quarantined, those are **never protected**, so the
+    loop's own fills would sit at the broker with no stop and no target until a human
+    noticed.
+
+    **What makes adoption safe is evidence, not a guess.** The position is adopted only
+    when all of this holds:
+
+    1. the broker reports a **filled buy** for the symbol,
+    2. whose ``client_order_id`` is a decision id this system mints - ``YYYYMMDD-SYMBOL``,
+    3. naming a decision that is **on disk** in this deployment's own log, under this
+       provenance,
+    4. and that record carries the order it produced, with the stop and target that
+       decision chose.
+
+    Anything short of that stays quarantined. A position bought by hand in the Alpaca web
+    console has no decision record and is not adoptable; nor is one from a different
+    config, because the record is looked up in this store. So the ruling in ``reconcile``
+    is not weakened - the system still refuses to manage what it cannot explain. This is
+    the case where it **can** explain it, and the explanation is a record it wrote itself
+    before it sent the order.
+
+    The stop and target come from the record rather than from the broker, because the
+    broker never knew them: the protective legs may not have been armed at all. The entry
+    price comes from the **fill**, not the record, because the fill is what happened.
+    """
+    adopted: list[str] = []
+    fills = {
+        client_order_id(order): order
+        for order in orders
+        if order.side == BUY and order.status in records.FILLED
+    }
+    for symbol in sorted(state.book.unmanaged):
+        for decision_id, entry in fills.items():
+            if entry.symbol != symbol:
+                continue
+            stored = _decision_named(state, decision_id, symbol)
+            if stored is None or not stored.order:
+                continue
+            quantity = state.book.unmanaged[symbol]
+            filled_price = float(entry.filled_price or stored.order["price"])
+            state.book.managed[symbol] = Holding(
+                symbol=symbol,
+                quantity=quantity,
+                decision_id=decision_id,
+                entry_price=filled_price,
+                stop_loss=float(stored.order["stop_loss"]),
+                take_profit=float(stored.order["take_profit"]),
+            )
+            state.book.unmanaged.pop(symbol)
+            state.entry_fills.setdefault(
+                symbol,
+                [
+                    _iso(_filled_at(entry)),
+                    filled_price,
+                    abs(filled_price - float(stored.order["price"])) * quantity,
+                    entry.id,
+                ],
+            )
+            adopted.append(symbol)
+            LOGGER.warning(
+                "ADOPTED %s: the broker holds %.9f that reconciliation quarantined, and "
+                "%s is a decision in this log with the order it produced. Booked at the "
+                "fill price %.4f with stop %.4f and target %.4f; protection is armed in "
+                "this cycle. This is the loop's own fill catching up with its book, not a "
+                "position of unknown origin",
+                symbol,
+                quantity,
+                decision_id,
+                filled_price,
+                float(stored.order["stop_loss"]),
+                float(stored.order["take_profit"]),
+            )
+            log(f"{symbol}: adopted from quarantine under {decision_id}")
+            break
+    return adopted
+
+
+def _decision_named(
+    state: LiveState, decision_id: str, symbol: str
+) -> DecisionRecord | None:
+    """The stored decision a ``client_order_id`` names, or ``None`` if it names none.
+
+    The id is parsed rather than trusted: ``YYYYMMDD-SYMBOL`` is the only shape this system
+    mints, so anything else is somebody else's order and the lookup is not even attempted.
+    """
+    day, _, tail = decision_id.partition("-")
+    if tail != symbol or len(day) != 8 or not day.isdigit():
+        return None
+    try:
+        as_of = pd.Timestamp(f"{day[:4]}-{day[4:6]}-{day[6:]}", tz="UTC")
+    except ValueError:
+        return None
+    for stored in records.load_decisions(
+        as_of, as_of, state.state_dir, state.provenance
+    ):
+        if (
+            stored.symbol == symbol
+            and decision_id_for(stored.as_of, symbol) == decision_id
+        ):
+            return stored
+    return None
+
+
+def _filled_at(order: BrokerOrder) -> pd.Timestamp:
+    raw = order.raw
+    when = (
+        raw.get("filled_at")
+        if isinstance(raw, dict)
+        else getattr(raw, "filled_at", None)
+    )
+    return pd.Timestamp(when) if when is not None else pd.Timestamp.now(tz="UTC")
 
 
 def _seed_decided(state: LiveState, when: pd.Timestamp) -> None:
@@ -1183,10 +1353,25 @@ def _absorb_entry(
         )
 
     if entry.filled_quantity <= 0.0:
-        log(
-            f"{order.symbol}: entry {entry.id} still unfilled after "
-            f"{FILL_POLL_ATTEMPTS} polls; protection will be armed by the cycle that sees "
-            "the fill (step 4)"
+        # Measured 18 Aug 2026: a liquid market order filled 8 ms after submission, so
+        # 10 x 1.5s is generous for the ordinary case and useless for anything that
+        # queues. What follows when it does expire is the point:
+        #
+        #   the order stays working, the position is NOT in the book, and the next cycle
+        #   cannot resubmit - the bar is decided and the client_order_id is taken. When
+        #   the fill lands, reconciliation quarantines the position and
+        #   `adopt_own_positions` takes it back in the same cycle, before protection.
+        #
+        # So the exposure is bounded by one poll interval, not by a human noticing.
+        LOGGER.warning(
+            "%s: entry %s is still working after %s polls. The position is not yet in the "
+            "book; when it fills, reconciliation will quarantine it and adoption will "
+            "take it back on that cycle and arm both legs. No resubmission is possible - "
+            "the bar is decided and %s is already used at the broker",
+            order.symbol,
+            entry.id,
+            FILL_POLL_ATTEMPTS,
+            submission.decision_id,
         )
         return
 
@@ -1264,7 +1449,10 @@ def run_session(
     predictor = load_predictor(root / CHECKPOINT_DIR, cfg)
     thresholds = load_thresholds(root / THRESHOLDS_FILE)
 
-    live_broker = broker if broker is not None else AlpacaBroker()
+    # GB-39. Outermost so the dry run's refusals are not retried, and so every call the
+    # loop makes - reads and writes alike - goes through one policy rather than each call
+    # site remembering to.
+    live_broker = RetryingBroker(broker if broker is not None else AlpacaBroker(), cfg)
     if dry_run:
         live_broker = DryRunBroker(live_broker)
 
@@ -1314,6 +1502,7 @@ def run_session(
                 stopping["reason"] = "outside the session"
                 break
             cycles.append(run_cycle(state, now))
+            _log_run_of_failures(cycles)
             if stopping["reason"]:
                 break
             sleep(cfg.live.poll_seconds)
@@ -1331,6 +1520,30 @@ def run_session(
         open_orders=open_orders,
         stopped_by=stopping["reason"] or "the market closed",
     )
+
+
+def _log_run_of_failures(cycles: list[CycleReport]) -> None:
+    """Say how long the outside world has been unreachable, loudly, once a cycle.
+
+    Deliberately **not** a circuit breaker (out of GB-39's scope, and rightly): nothing
+    here stops the loop or changes what it attempts. A run of failures is still worth
+    counting out loud, because one skipped cycle and forty skipped cycles read identically
+    in a log that only ever says "skipped", and the second is a session that has silently
+    stopped trading.
+    """
+    run = 0
+    for cycle in reversed(cycles):
+        if cycle.ok:
+            break
+        run += 1
+    if run >= 2:
+        LOGGER.error(
+            "%d cycles in a row have failed (%s). The loop is still polling and every "
+            "protective leg already at the broker is still live, but nothing has been "
+            "decided across those cycles",
+            run,
+            cycles[-1].error,
+        )
 
 
 def _open_orders(state: LiveState) -> tuple[str, ...]:
@@ -1489,6 +1702,7 @@ __all__ = [
     "LiveError",
     "LiveState",
     "SessionReport",
+    "adopt_own_positions",
     "answer_pending",
     "drop_incomplete_bar",
     "in_session",

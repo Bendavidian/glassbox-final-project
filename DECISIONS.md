@@ -7,6 +7,147 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-20 — GB-40, GATE 2 walked: 3 of 6 green, and FITS is not cancelled today
+
+**Decision.** GATE 2 is **not passed**. **FITS proceeds into Sprint 4 as planned**: the §8
+cancellation rule is armed, not fired, and its trigger is the gate's own date of **25 Sep**,
+not a rehearsal of the gate run five weeks early.
+
+**The walk, with evidence rather than assertion.**
+
+| # | Criterion | Verdict | Evidence |
+|---|---|---|---|
+| 1 | Live loop runs a full session unattended | **FAIL** | Cycles have run — a dry-run cycle and three real ones on 18 Aug — but no open-to-close unattended session is recorded. Outside the window `run_session` returns `stopped_by='outside the session'` after 0 cycles, which is the guard working, not a session. |
+| 2 | At least one order placed, filled and reconciled | **FAIL** | 0 of the live log's decisions produced an order. The loop has *reconciled* two real Alpaca fills — GB-22's entry and the operator flatten — but has never *placed* one. |
+| 3 | Every decision carries an exact attribution, visible in the dashboard | **PASS** | 75 records across live and replay; worst `abs(sum(per_channel) - forecast_total)` = **1.248e-08** against a 1e-5 tolerance, an 800x margin. Every record has channels, every one renders, and the dashboard shows the table, the bars and the titles. |
+| 4 | Replay reproduces a recorded day offline | **PASS** | 14 bars of fold 13, 14 cycles, 0 failed, 70 decisions — run with `load_live_bars` and `AlpacaBroker` **replaced by functions that raise**, so "offline" is measured rather than assumed. |
+| 5 | Co-Pilot approve and reject | **PASS, replayed** | The loop queued 2 recommendations; one approved → submitted with both protective legs armed, one declined → broker order count unchanged; 70 records after, not 72, because the answer amends. Never exercised against Alpaca. |
+| 6 | Two or three separate live sessions, not one (`SOLO_BUILD_PLAN` §4.1) | **FAIL** | One completed bar has been decided live: 2026-08-17. |
+
+**Reasoning — the three failures reduce to two causes, and neither is a defect.**
+
+**(a) The deployed band stands aside.** Criteria 2 and 5 are both downstream of it: a band
+that cannot fire cannot produce an order, and therefore cannot produce a recommendation to
+approve. This is the result GB-20 ruled on and Ben ruled is a headline rather than a
+problem — the most recent fold's best calibrated candidate scored a validation Sharpe of
+−3.38 over 7 trades, so the system deployed today does not trade.
+
+**(b) Live session time.** `SOLO_BUILD_PLAN` §4.1 is explicit that a session is an evening
+of the operator's time, and that the gate needs two or three of them. One bar has been
+decided. That is a scheduling fact, not an engineering one.
+
+**Why the §8 rule does not fire today.** The rule exists to stop a research arm starting
+when the system is not yet a product **at the gate date**. Applying it on 20 Aug to a gate
+committed for 25 Sep would cancel FITS on a rehearsal, five weeks before the question it
+answers is due. The rehearsal is worth running early — it is how the blocker below was
+found — but its result is a status, not a verdict.
+
+**Consequence, and this is the part that needs a ruling before 25 Sep.**
+
+**Criterion 2 is structurally unreachable under the deployed configuration, not merely
+unmet.** The honest deployment choice is the most recent complete fold; that fold stands
+aside; a band that stands aside can never place an order. So no amount of session time
+fixes criteria 2 or 5 — they will read FAIL on 25 Sep exactly as they do today, and FITS
+would then be cancelled by a rule aimed at an unfinished product, on a system that is
+finished and has correctly decided not to trade.
+
+Three ways out, and the choice is Ben's:
+
+1. **Deploy a fold whose band fires.** Honest only if the selection rule is stated in
+   advance and is not "the one that trades" — which is the fold-13 discipline applied to
+   deployment.
+2. **Let a labelled rehearsal satisfy it**: run the loop against Alpaca with a firing
+   band, clearly recorded as a rehearsal of the execution path rather than as the deployed
+   system trading. This proves the mechanism, which is what the criterion is for.
+3. **Accept the replay path as satisfying it**, on the grounds that the same `run_cycle`
+   places, fills and reconciles there — and state in the report that the live half was
+   never exercised.
+
+Option 2 is the one that answers the criterion as written without bending the deployment,
+and it interacts with the DAY-legs condition below: a rehearsal that opens a position must
+close it before the session ends.
+
+---
+
+## 2026-08-20 — GATE 2 CONDITION: no overnight hold while the protective legs are DAY
+
+**Decision.** Recorded as a **condition of GATE 2**, not as an open question.
+
+> The loop must not hold a position overnight while protective legs are DAY. Either the
+> policy moves to GTC before any overnight hold occurs, or the loop flattens at the close.
+> Decide it before GATE 2, not during it. If the band stands aside through the gate, note
+> in the gate log that the condition was **never exercised** — an untested guarantee is not
+> the same as a satisfied one.
+
+**Reasoning.** Alpaca expires DAY orders at the close, so a position held overnight is
+unprotected overnight — which the backtest models as protected, making the residual a
+number the study would otherwise state wrongly. The morning half of this is closed: the
+re-arm no longer collides with a consumed `client_order_id`, so the position is no longer
+liquidated at market two cycles into the next session. The overnight gap itself is not, and
+closing it changes the protection policy rather than fixing a bug in it.
+
+**Consequence.** As of 20 Aug 2026 the condition is **not exercised**: no position has been
+held overnight by the loop, and the deployed band stands aside, so none can be. That is
+recorded here so the gate log cannot later read as though the guarantee had been tested.
+
+---
+
+## 2026-08-20 — A stated principle: a decision is recorded when it is COMPLETE, not when it is computed
+
+**Decision.** The general form of the rule GB-39 needed, stated once so it applies beyond
+the case that produced it:
+
+> **A decision is written to the log at the moment it is complete — when the system has
+> both made it and done what it implies. A verdict the system has computed but is
+> forbidden, unable or not yet permitted to act on is not a decision it has made, and
+> recording it as one creates a decision nobody will ever revisit.**
+
+**Reasoning.** Two rulings collided and the collision was silent. "The first cycle may
+reduce risk and may not add any" (GB-26) and "a bar is decided once" (19 Aug) are both
+right, and together they stranded every entry: the first cycle computed an `ENTER_LONG`,
+recorded it, and the second cycle then declined to re-decide a bar that was already in the
+log — so the entry was never submitted. **"The first cycle does not enter" would have
+become "the session never enters", every session, and every test still passed**, because
+each ruling was tested against its own case and neither test asked what the other did.
+
+The resolution generalises. Recording *computation* makes the log a record of what the
+system thought; recording *completion* makes it a record of what the system did, which is
+what this project exists to produce. The same principle decides GB-37's amendment — an
+operator's answer completes a decision rather than starting a new one — and it decides the
+ordering GB-39 depends on, where the record reaches disk before the order reaches the
+broker precisely because the decision is complete at the moment it is *sent*, not at the
+moment it is filled.
+
+**Consequence.** Where a verdict cannot be acted on, the bar is left undecided and the next
+cycle that can act records it once, with the order it produced and a narrative written in
+the knowledge of that order. The cost is a repeated forward pass on the first two cycles of
+a session. The alternative was a class of defect that passes every test.
+
+---
+
+## 2026-08-20 — Measured: an operational config key invalidates every trained checkpoint
+
+**Decision.** Recorded rather than fixed. `config_hash` covers the whole of
+`settings.yaml`, so adding `live.retry_attempts` and `live.retry_backoff_seconds` for GB-39
+changed the hash from `39692e78…` to `421d54ae…`, and `load_checkpoint` refused every
+existing checkpoint with *"refusing to load a model shaped by other settings"*. Both the
+live checkpoint and the replay fold had to be regenerated.
+
+**Reasoning.** The guard is correct and must not be weakened: it cannot know that a polling
+retry count has no bearing on a trained weight, and a hash that tried to know would be a
+hash somebody has to keep right. But the cost is real and asymmetric — a key that cannot
+possibly affect a model forces a retrain of every model, and on a day with a market session
+in it that is an hour that buys nothing.
+
+**Consequence.** Not changed now: narrowing the hash to the model-shaping sections would
+alter what `DecisionRecord.config_hash` means, and that field is a frozen contract (§4.2)
+whose whole value is that a record ties to *the exact settings that produced it*. Stated
+here so that a config change is planned as a retrain, and so GB-59's clean-clone audit
+expects it. If it becomes a real cost, the answer is a second field, not a narrower first
+one.
+
+---
+
 ## 2026-08-19 — RULING: decide once per completed bar, manage every cycle
 
 **Decision.** An entry decision is computed and recorded **once per `(as_of, symbol)`**.

@@ -81,6 +81,7 @@ from alpaca.data.timeframe import TimeFrame
 
 from glassbox.config.loader import alpaca_credentials
 from glassbox.data.historical import normalise_bars
+from glassbox.faults import retry
 
 LOGGER = logging.getLogger(__name__)
 
@@ -132,6 +133,8 @@ def load_live_bars(
     *,
     requirement: str = "",
     lookback_days: int | None = None,
+    attempts: int = 1,
+    backoff: float = 0.0,
 ) -> dict[str, pd.DataFrame]:
     """Fetch recent daily bars for ``symbols``, in the historical loader's schema.
 
@@ -157,8 +160,18 @@ def load_live_bars(
         log_return``, indexed by a sorted, unique, tz-aware UTC DatetimeIndex at
         midnight — the same schema ``historical.load_history`` returns.
 
+        attempts: How many times to ask the vendor before giving up, including the
+            first. **Defaults to 1 - no retry - because the retry policy is a deployment
+            decision and this module has no configuration.** The live loop passes
+            ``cfg.live.retry_attempts``; a caller that has not been given a policy gets
+            the behaviour it asked for rather than a hidden one.
+        backoff: Seconds before the second attempt, doubling thereafter.
+
     Raises:
-        ValueError: A symbol returned no bars, or fewer than ``min_bars`` of them.
+        ValueError: A symbol returned no bars, or fewer than ``min_bars`` of them. **Not
+            retried**: a short history is a true answer about the world, and asking again
+            would return the same true answer three times.
+        faults.Unavailable: the vendor did not answer at all, ``attempts`` times over.
     """
     if min_bars <= 0:
         raise ValueError(f"min_bars must be positive, got {min_bars!r}")
@@ -173,7 +186,15 @@ def load_live_bars(
         min_bars,
         data_source(),
     )
-    raw = _fetch_bars(list(symbols), start)
+    # Only the network call is retried. Everything below it is validation of an answer
+    # that did arrive, and a `ValueError` there is a fact rather than a fault.
+    raw = retry(
+        lambda: _fetch_bars(list(symbols), start),
+        description=f"the daily bar fetch for {', '.join(symbols)}",
+        attempts=attempts,
+        backoff=backoff,
+        log=LOGGER,
+    )
 
     frames: dict[str, pd.DataFrame] = {}
     for symbol in symbols:
