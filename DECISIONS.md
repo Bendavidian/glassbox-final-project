@@ -7,6 +7,40 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-20 — CI red on the fourth instance of one defect class in two days
+
+**Decision.** ``requirements.lock`` gains matplotlib and its five transitive pins, and
+``tests/test_scaffold.py`` gains a test asserting that **every dependency declared in
+``pyproject.toml`` is pinned in the lock**.
+
+**What happened.** Run #17 failed with eight errors in ``tests/test_frequency_response.py``.
+The local suite was green on 1,001 tests. The cause: **CI installs from the lock**, not from
+the manifest — ``pip install -r requirements.lock`` then ``pip install -e . --no-deps`` — so
+adding ``matplotlib`` to ``pyproject.toml`` installed it on the developer's machine and
+nowhere else.
+
+**This is the third-list defect again, and it is the fourth instance in two days.**
+``VALID_MODELS`` against ``ALL_FORECASTERS``; ``smoke_offline``'s argparse ``choices``
+against both; ``smoke_offline``'s ``run()`` default against ``model.active``; and now
+``pyproject.toml`` against ``requirements.lock``. Every one is the same shape: **a fact
+written in two places with nothing making them equal**, each half internally consistent, and
+the disagreement invisible until something downstream reads the wrong copy.
+
+**What worked, and it is worth naming.** The failure arrived as *"run this with the
+project's interpreter"* on stderr rather than as a bare ``ModuleNotFoundError`` — because
+``test_every_script_guards_its_imports`` refused the script until it carried an import
+guard, hours before matplotlib was missing anywhere. **A test written for one reason caught
+a different failure**, which is the argument for property testing GB-57 already carries from
+GB-21, arriving again.
+
+**Consequence.** The guard asserts the **declared** set, not the transitive closure: the
+lock holds the closure and the manifest deliberately does not, so equality in both
+directions would fail on every indirect pin. And it is a test rather than a note, per
+``CLAUDE.md`` §3 — written into that file **the same day**, which is the part that stings:
+the rule was added at 12:00 and the fourth instance shipped at 12:06.
+
+---
+
 ## 2026-08-20 — RULING 2: MAE stays, and the pairing is structural
 
 **Decision.** MAE remains a reported column. **It never appears without ``flatness`` in the

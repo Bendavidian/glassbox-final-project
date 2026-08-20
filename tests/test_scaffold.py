@@ -5,6 +5,7 @@ thing GB-1 actually delivers: that every module named in the spec exists and tha
 nothing extra has been added to the tree.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -124,3 +125,52 @@ def test_tree_has_no_extra_modules(package_root: Path) -> None:
         if path.is_file() and "__pycache__" not in path.parts
     }
     assert found == allowed
+
+
+def test_every_declared_dependency_is_pinned_in_the_lock(repo_root: Path) -> None:
+    """Two lists that must agree, and nothing made them agree until CI went red.
+
+    ``pyproject.toml`` **declares** dependencies; CI **installs** from
+    ``requirements.lock`` and then adds the package with ``--no-deps``. So a dependency
+    added to ``pyproject.toml`` alone is present on the developer's machine and absent in
+    CI — which is exactly how matplotlib produced a green local suite and a red run #17 on
+    20 Aug 2026, and it is the same defect class as ``smoke_offline``'s third copy of the
+    model registry: a fact written in two places with no mechanism keeping them equal.
+
+    What is asserted is the **declared** set, not the transitive closure: the lock holds
+    the closure and ``pyproject.toml`` deliberately does not, so requiring equality in
+    both directions would fail on every indirect pin. Every name the project asks for by
+    name must be pinned somewhere in the lock.
+    """
+    import tomllib
+
+    manifest = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = list(manifest["project"]["dependencies"])
+    for extra in manifest["project"].get("optional-dependencies", {}).values():
+        declared.extend(extra)
+
+    locked = {
+        _normalised(line.split("==")[0])
+        for line in (repo_root / "requirements.lock")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+
+    missing = sorted(
+        {
+            _normalised(re.split(r"[<>=!~\[; ]", requirement, maxsplit=1)[0])
+            for requirement in declared
+        }
+        - locked
+    )
+
+    assert not missing, (
+        f"declared in pyproject.toml and not pinned in requirements.lock: {missing}. "
+        "CI installs from the lock, so these would be missing there and present here"
+    )
+
+
+def _normalised(name: str) -> str:
+    """PEP 503 normalisation, so ``python_dotenv`` and ``python-dotenv`` compare equal."""
+    return re.sub(r"[-_.]+", "-", name.strip()).lower()
