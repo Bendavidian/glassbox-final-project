@@ -78,6 +78,7 @@ from glassbox.data.historical import load_history
 from glassbox.engine import risk
 from glassbox.engine.signal import ENTER_LONG, Thresholds, decide_all
 from glassbox.features.builder import build_feature_frame, build_windows
+from glassbox.model import ALL_FORECASTERS
 from glassbox.model import train as trainer
 
 BASELINE = "persistence"
@@ -155,7 +156,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def run(
     cfg: Config,
-    model: str = "dlinear",
+    model: str | None = None,
     n_folds: int = 1,
     log=lambda message: None,
 ) -> tuple[pd.DataFrame, str]:
@@ -163,8 +164,16 @@ def run(
 
     Args:
         cfg: Resolved configuration.
-        model: The arm to run. The persistence baseline is always run beside it, on the
-            same folds, through the same code.
+        model: The arm to run, or ``None`` to run the one ``model.active`` names. The
+            persistence baseline is always run beside it, on the same folds, through the
+            same code.
+
+            **The default is the configuration, not a literal** (GB-44). A hardcoded
+            ``"dlinear"`` here meant that setting ``model.active: fits`` changed the live
+            checkpoint - ``prepare_live`` reads the config - and changed *nothing* about
+            the study numbers this function produces, silently. The switch spec 4.3
+            promises has to reach the runner that produces the results, or it is not the
+            switch.
         n_folds: How many folds, taken from the **start** of the fold list in chronological
             order, so ``--folds 1`` names the same fold on every run.
         log: Progress sink. ``print`` from the CLI, silent from tests.
@@ -176,8 +185,11 @@ def run(
         SmokeError: the cache is incomplete, the arm is unknown, or the data yields no
             fold. Each names what is wrong and what to do about it.
     """
-    if model not in {BASELINE, "dlinear"}:
-        raise SmokeError(f"unknown model {model!r}; choose persistence or dlinear")
+    model = cfg.model.active if model is None else model
+    if model not in ALL_FORECASTERS:
+        raise SmokeError(
+            f"unknown model {model!r}; the registry holds {sorted(ALL_FORECASTERS)}"
+        )
     if n_folds < 1:
         raise SmokeError(f"--folds must be at least 1, got {n_folds}")
 
@@ -786,9 +798,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        choices=(BASELINE, "dlinear"),
-        default="dlinear",
-        help="which arm to run; persistence is always run beside it (default: dlinear)",
+        choices=tuple(sorted(ALL_FORECASTERS)),
+        default=None,
+        help=(
+            "which arm to run; persistence is always run beside it "
+            "(default: whatever model.active names)"
+        ),
     )
     parser.add_argument(
         "--prepare-live",

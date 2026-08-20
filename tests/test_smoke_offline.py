@@ -24,6 +24,7 @@ from glassbox.backtest import metrics
 from glassbox.config.loader import Config, load_config
 from glassbox.engine import risk
 from glassbox.engine.signal import Thresholds
+from glassbox.model import ALL_FORECASTERS
 
 
 @pytest.fixture
@@ -103,16 +104,44 @@ def test_a_missing_cache_exits_two_without_a_traceback(
 # ── the arguments ────────────────────────────────────────────────────────────
 
 
-def test_the_defaults_are_one_fold_of_dlinear() -> None:
+def test_the_default_arm_is_whatever_the_configuration_names() -> None:
+    """The CLI defaults to **no** arm, so ``model.active`` decides (GB-44).
+
+    It used to default to the literal ``"dlinear"``, which meant setting
+    ``model.active: fits`` changed the live checkpoint — ``prepare_live`` reads the config
+    — and changed **nothing** about the study numbers this command produces. A switch that
+    reaches one half of the system is worse than one reaching neither, because the two
+    halves then disagree without saying so.
+    """
     args = smoke_offline._parse_args([])
 
     assert args.folds == 1
-    assert args.model == "dlinear"
+    assert args.model is None
+
+
+def test_every_registered_model_is_selectable_from_the_command_line() -> None:
+    """The third copy of the registry, and the one that was stale (GB-44).
+
+    ``VALID_MODELS`` in the config layer and ``ALL_FORECASTERS`` in the model layer must
+    agree, and ``tests/model/test_fits_integration.py`` asserts that. This command held a
+    **third** list, an argparse ``choices`` literal, and it still read
+    ``(persistence, dlinear)`` after GB-41 registered FITS — so the one runner that
+    produces every study number could not select the model the study is about. The choices
+    now come from the registry, so there is no list left to go stale.
+    """
+    for name in ALL_FORECASTERS:
+        assert smoke_offline._parse_args(["--model", name]).model == name
 
 
 def test_an_unknown_model_is_refused_by_the_parser() -> None:
     with pytest.raises(SystemExit):
-        smoke_offline._parse_args(["--model", "fits"])  # GB-41 adds it, not GB-24
+        smoke_offline._parse_args(["--model", "no-such-model"])
+
+
+def test_an_unknown_model_is_refused_by_run_naming_the_registry(cfg: Config) -> None:
+    """``run`` is a second door in — the sweeps and the tests call it directly."""
+    with pytest.raises(smoke_offline.SmokeError, match="the registry holds"):
+        smoke_offline.run(cfg, model="no-such-model", n_folds=1)
 
 
 def test_zero_folds_is_refused(cfg: Config) -> None:
@@ -249,6 +278,26 @@ def test_one_command_runs_the_whole_offline_path(cfg: Config, repo_root: Path) -
     assert table["fold"].nunique() == 1
     assert "dlinear over 1 fold(s)" in summary
     assert "persistence over 1 fold(s)" in summary
+
+
+def test_the_configured_model_reaches_the_runner_end_to_end(
+    cfg: Config, repo_root: Path
+) -> None:
+    """GB-44's claim at system level: ``model.active: fits`` and **no other change**.
+
+    Not a parser test. This is cache → features → folds → train → calibrate → backtest →
+    metrics with FITS in it, selected by configuration alone and with no ``model=``
+    argument anywhere, which is the only form of the claim that is worth making.
+    """
+    if not cache_ready(cfg, repo_root):
+        pytest.skip("no cached history; this test needs data_cache/")
+
+    spectral = replace(cfg, model=replace(cfg.model, active="fits"))
+
+    table, summary = smoke_offline.run(spectral, n_folds=1)
+
+    assert set(table["arm"]) == {"fits", "persistence", smoke_offline.BUY_AND_HOLD}
+    assert "fits over 1 fold(s)" in summary
 
 
 def test_persistence_stands_aside_because_the_pipeline_gave_it_nothing_to_trade(

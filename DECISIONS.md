@@ -175,6 +175,24 @@ Two consequences follow, and neither is a preference:
   alone would train it per symbol while DLinear pooled — exactly the handicap that ruling
   exists to prevent, and the study would report the handicap as architecture.
 
+**The defect the switch test was written for, and it was in a third place.**
+``smoke_offline`` — the one command that runs the whole offline path and produces every
+number the study reports — held its own list: ``--model``'s argparse ``choices`` literal
+still read ``(persistence, dlinear)`` after GB-41 registered FITS, and ``run``'s signature
+defaulted to the **string** ``"dlinear"`` rather than to ``cfg.model.active``. So setting
+``model.active: fits`` changed the live checkpoint (``prepare_live`` reads the config) and
+changed **nothing** about the study numbers, silently. A switch that reaches one half of a
+system is worse than one that reaches neither, because the two halves then disagree without
+saying so. Both literals are gone: the choices come from ``ALL_FORECASTERS`` and the default
+is ``None``, meaning *whatever the configuration names*. The test that proves it is not a
+parser test — it is one fold of cache → features → folds → train → calibrate → backtest with
+FITS selected by configuration alone and no ``model=`` argument anywhere.
+
+The codebase had anticipated this and still missed it: ``test_an_unknown_model_is_refused_by_the_parser``
+carried the comment *"GB-41 adds it, not GB-24"*, and GB-41 did not. **A note saying a later
+task will do something is not a mechanism**, which is the same lesson as §4.4's tautology in a
+different costume.
+
 **A second defect this closed, found while asserting the switch.** ``config/loader.py``
 validates ``model.active`` against ``VALID_MODELS`` and **may not import the model layer** —
 the layer contract forbids it — so ``ALL_FORECASTERS``'s keys are copied there by hand, and

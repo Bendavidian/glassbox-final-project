@@ -106,6 +106,14 @@ def test_the_registry_and_the_config_layer_name_the_same_models() -> None:
     in ``train``; a name in the registry alone is a model no configuration can select.
     Either way "``model.active`` is the only change needed" would be false, and no other
     test in this suite would notice.
+
+    **There was a third copy, and it was the stale one.** ``smoke_offline``'s ``--model``
+    held an argparse ``choices`` literal reading ``(persistence, dlinear)`` after GB-41
+    registered FITS, and its ``run`` defaulted to the string ``"dlinear"`` rather than to
+    ``model.active`` — so the one runner that produces every study number could not select
+    the model the study is about, and setting ``model.active: fits`` changed the live
+    checkpoint while changing nothing about the results. Both literals are gone;
+    ``test_smoke_offline.py`` covers that end.
     """
     assert set(VALID_MODELS) == set(ALL_FORECASTERS)
 
