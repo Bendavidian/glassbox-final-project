@@ -21,13 +21,14 @@ shared weight.
 **The first head-to-head is measured and it is negative.** Over 16 folds neither model beats
 persistence on MAE (16/16 against both) and neither beats the always-long bar on direction —
 DLinear **0.5182**, FITS **0.5098**, bar **0.5560**, each above it in 4 folds of 16.
-**Two open rulings for Ben, both from today's conditioning measurement:** whether to
-standardise `y` as well as `X` — the only arm that fixes both models at the learning rate in
-force — and what to do about MAE comparisons that track flatness at Spearman +0.81 and
-direction at +0.01.
+**Both conditioning rulings are implemented.** The target is scaled (ruling 1) and MAE now
+travels with `flatness` (ruling 2). **One new ruling is open**, and it is a consequence of
+the first: the deployed fold no longer stands aside, so §7's required "the deployed system
+declines to trade" finding is true of the 18–20 Aug deployment and not of the current one.
+**GB-45 and GB-46 are done**, so §6.5's deliverables exist: the per-frequency view, gain and
+phase in days, and the frequency-response figure at `figures/frequency_response.png`.
 **Next task:** run the GATE 2 rehearsal in a live session — `python -m glassbox.live_loop
---rehearsal gate2-execution-path` — then GB-45 (spectral attribution), which
-`fits.forecast_matrix` and the complex weight are in place for.
+--rehearsal gate2-execution-path` — then GB-47 onward.
 **Criterion 6 needs two or three separate sessions and only Wednesday to Friday are
 available.** Still open for Ben: DAY versus GTC on the protective legs, outside a
 rehearsal.
@@ -35,17 +36,34 @@ rehearsal.
 instruction, and the following cycle's reconciliation logged the drop. GB-26 is complete and ran a full dry-run cycle
 against the live SIP feed on 18 Aug: ten steps, 610 bars a symbol against a floor of 445,
 the 0.01 AAPL probe quarantined, five decisions recorded and narrated, nothing submitted.
-**The session on 18 Aug will not trade, and that is the correct outcome:** the most recent
-complete fold **stands aside** — its best calibrated candidate scored a validation Sharpe of
-**−3.38** over 7 trades — so `Thresholds.never()` is in force and no entry can fire. **One
+**The session on 18–20 Aug would not trade, and that was the correct outcome:** the most
+recent complete fold **stood aside** — its best calibrated candidate scored a validation
+Sharpe of **−3.38** over 7 trades — so `Thresholds.never()` was in force and no entry could
+fire. **This changed on 20 Aug and needs Ben's ruling.** After ruling 1's target scaling the
+same fold calibrates to `lower=0.026076` on a validation Sharpe of **+0.483 over 8 trades**,
+so **the deployed system now trades**. Spec §7's required finding — *"the deployed system
+declines to trade, and that is a result", which must not be softened* — remains exactly true
+of the deployment as it stood on 18–20 Aug and is **no longer true of the current one**.
+Whether the report keeps it as a dated finding about a past deployment or replaces it is
+Ben's call. **One
 live constraint GB-26 designs around:** the account refuses **recent** SIP data, so anything
 reaching for a live quote rather than a completed daily bar meets a wall.
 **Last gate passed:** **GATE 1, 17 Aug 2026**, 25 days before its commitment date
-**Blockers:** none. Standing note for GB-57, re-measured on the fold grid as it stands after
-GB-27's warm-up unification: the strategy beats **neither** reference it should be read
-against. Direction **0.5182** against an always-long bar of **0.5560**; return **+0.40% per
-fold against buy-and-hold's +7.73%**, Sharpe **0.62** against **1.39**. The whole chain runs
-end to end in one command, so these are measurements rather than expectations.
+**Blockers:** none. Standing note for GB-57, **re-measured 20 Aug after the target scaling
+(ruling 1) and these numbers replace the ones before it**: the strategy beats **neither**
+reference it should be read against. Direction **0.4959** against an always-long bar of
+**0.5564**; return **−0.31% per fold** against buy-and-hold's **+7.73%**, Sharpe **−0.33**
+(9 folds) against **+1.39**; **5 of 16 folds stand aside**. The whole chain runs end to end
+in one command, so these are measurements rather than expectations.
+
+**What moved and why, because the direction of the change matters.** The previous figures
+were 0.5182 / +0.40% / Sharpe 0.62 / 3 folds aside. DLinear has **no backcast term**, so
+none of ruling 1's B+F argument applies to it — what changed for DLinear is its
+**conditioning**, the median learned weight going from **0.54× Adam's step to 2.50×**. The
+0.5182 was the score of the arm in which **71% of the weights sat below the optimiser's step
+size**: a model too under-trained to move its weights, not a directional edge. **The null
+headline is strengthened by this, not weakened** — a result that survives only while the
+optimiser cannot resolve the weights was never a result.
 
 ---
 
@@ -224,6 +242,12 @@ depends on nothing in the model layer.
 | GB-44 | 20 Aug 2026 | Ben | **The switch and the sharing, tested as two claims.** `model.active: fits` selects FITS with no other change — and that rests on `VALID_MODELS` (config layer, which **may not import** the model layer) agreeing with `ALL_FORECASTERS`, which nothing checked; a test now asserts the two sets are equal. **A third list was the stale one** — `smoke_offline`'s `--model` choices still read `(persistence, dlinear)` and its `run` defaulted to the string `"dlinear"`, so `model.active: fits` changed the live checkpoint and **nothing** about the study numbers. Both now come from the registry and the config; the proof is one fold end to end with FITS selected by configuration alone. Sharing is asserted by **breaking** it: perturbing the single weight matrix must move *every* symbol's forecast. `fits.individual_weights` stops being decorative — declared in §5, documented in §6.4, read by the loader since GB-2 and **consulted by nothing** until now. Under `true` a pooled universe is **refused** naming the remedy, because `Forecaster.predict` takes no symbol and one model cannot hold five weight sets; per-symbol weights are one call and one checkpoint per symbol. The manifest records the regime. 9 new tests. |
 | The dead DC row | 20 Aug 2026 | Ben | **Found by the sharing test failing.** Its first perturbation was row 0 of the weight matrix and **nothing moved for any symbol**: RIN subtracts the window mean, the rFFT's bin 0 *is* that mean, so row 0 multiplies zero on every forward pass. Measured after a full fold: `max abs(w)` row 0 = **2.1e-11** against **0.89** elsewhere, bin 0 after RIN = **3.6e-15** against bin 1's **13.1**, and perturbing every row-0 weight by `1+1j` moves the forecast by **exactly 0.0**. So **1,200 allocated, 1,150 effective — 4.17% dead**. The row **stays** (§6.2 keeps the first `COF` bins; the paper's architecture has the same row); the parameter count is corrected everywhere it appears. |
 | First head-to-head | 20 Aug 2026 | Ben | **FITS against DLinear, persistence and the always-long bar, 16 folds, scored through the project's own metric functions.** MAE: persistence **0.015286**, DLinear 0.031413, FITS 0.096841 — **both models lose to persistence in 16/16 folds**, and at their best conditioning they still only reach 0.015629 and 0.015802. Direction: DLinear **0.5182**, FITS **0.5098**, against an always-long bar of **0.5560** — **each beats the bar in 4 of 16 folds**, and they beat each other in 8 folds each. **The MAE column as configured is not a model comparison** — FITS's number is the B+F unit mismatch and DLinear's is the optimiser-resolution artefact. DLinear's 0.5182/0.5560 reproduces GB-27's re-measured figure to four decimals. Shared-model wall time: FITS **mean 8.29s, median 6.78s, max 17.87s** on fold 15 over 2,480 windows; DLinear mean 2.58s. |
+
+| Ruling 1 | 20 Aug 2026 | Ben | **The forecast target is scaled, on the B+F argument alone.** `loss = mse(forecast, y) + mse(backcast, x)` is an unweighted sum, so it is §6.2's objective only when the terms share a unit — and they did not: **backcast 67× the forecast term, the objective 98.5% backcast**, so FITS was not training what the spec says it trains. `build_windows` now divides the target by the target channel's **own** deviation (the same divisor the input column got, so the two terms are in *identical* units); `restore_targets` is the inverse, applied at every point a number leaves the model layer. **Divided, never centred** — centring makes `predict` affine and `Attribution.from_terms` refuses a decomposition carrying a constant; measured, the two forms are indistinguishable. **Not for the MAE**, and DECISIONS says so explicitly: the evidence the fix is *correct* is that FITS lands at **0.015841 against the raw arm's 0.015822**, which is what scale-equivariance predicts. Two deviations reported: y's statistics are a **derived accessor** on `ChannelStats` rather than a stored duplicate, and the inverse sits at the **model layer's boundary** because `Forecaster.predict` takes no symbol. `CHECKPOINT_VERSION` → 2; both deployed checkpoints regenerated. 9 new tests. |
+| Ruling 2 | 20 Aug 2026 | Ben | **MAE stays, and never appears alone.** `metrics.flatness` = mean\|forecast\| ÷ mean\|actual\|, 1.0 right-sized. `COMPANIONS` builds the summary's columns and `FOLD_COLUMNS` is asserted against the same rule, so the pairing is **structural**: printing MAE without flatness means deleting the pairing rather than forgetting it. §7.3 amended to cite the measurement rather than the argument — Spearman(MAE, flatness) **+0.81 / +0.67** against Spearman(MAE, direction) **+0.01 / −0.13**, and the 16-fold MAE winner is persistence, which forecasts nothing and has flatness **0.0**. GB-49 carries the column in `results.csv`. |
+| GB-45 | 20 Aug 2026 | Ben | **`explain/spectral.py`.** Per-frequency contribution, gain and phase, **keyed by period in days** and phase converted as `φ/2π × period`. The `(H, L)` map behind each frequency is **measured from the model's own forward pass** with one bin unmasked — `forecast_matrix`'s discipline — and the parts sum back to the whole at **4.4e-16**; the contributions go through `Attribution.from_terms`, so there is still exactly one place that adds a decomposition. Two facts share the infinite-period key and the module says so: `per_frequency[inf]` is the **RIN mean**, which bypasses the layer entirely, and `gain_phase[inf]` is the **dead bin-0 row**. Removing the mean term makes the decomposition fail to close, and a test makes that happen rather than trusting the docstring. 15 new tests. |
+| GB-46 | 20 Aug 2026 | Ben | **`scripts/frequency_response.py`** — `\|W\|` against period in days, cutoff annotated, 220 dpi, `figures/frequency_response.png`. In `scripts/` because it reads a checkpoint and writes a file (§3.4), and because matplotlib in `explain` would put a rendering dependency in the live loop's import graph. **Defines no colour of its own** — the palette is the dashboard's, so the green/red ban asserted there covers it, enforced by a test for a hex literal in the source. Adds matplotlib (DECISIONS). 8 new tests. |
+| The response, measured | 20 Aug 2026 | Ben | **The learned response is not flat, and the phase is the finding.** Fold 16, 2,480 training windows: gain runs **0.596 to 0.830**, trough at **8.6 days**, peak at **24 days** — the model suppresses the fastest cycles that survived the low-pass and favours the three-to-six-week band. Across that band the phase shift is a consistent **+1.9 to +2.1 days**: the model **advances** those cycles by about two days, which is **GB-41's momentum finding arriving from the other side**, with no extra experiment. Dominant contributor over 290 test windows: the **RIN mean 37.2%**, the **15-day cycle 22.4%**, 120-day 17.2%, 17.1-day 13.1% — and **no contributor's mean share of the gross exceeds 0.211**, which is GB-30's cancellation story in the frequency domain. |
 
 ---
 

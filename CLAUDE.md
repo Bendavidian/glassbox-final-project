@@ -45,7 +45,9 @@ A task is complete only when **all** of these hold:
 
 **Staging.** Never `git add -A`, `git add .`, or `git commit -a`. Stage the paths you changed, by name, and read `git diff --cached` in full before every commit. On 14 Aug 2026 a blanket `git add -A` swept a real Alpaca key into a commit from a file nobody had touched in the task. Blanket staging commits work you did not write and have not read. `tests/test_no_secrets.py` is the backstop, not the practice.
 
-**Reporting.** Every result is a delta against the persistence baseline. MSE on prices is banned as a headline metric. A backtest Sharpe above 2.0 is a leakage alarm, not a success — stop and audit.
+**Reporting.** Every result is a delta against the persistence baseline. MSE on prices is banned as a headline metric, and **MAE never appears in a table without `flatness` in the adjacent column** (§7.3 — across arms MAE tracks flatness at Spearman +0.81 and direction at +0.01). A backtest Sharpe above 2.0 is a leakage alarm, not a success — stop and audit.
+
+**A note saying a later task will do something is not a mechanism.** If you find a gap you are not closing now, you may not discharge it with a comment, a docstring line or a `PROGRESS.md` sentence. Leave a **failing** guard — an `xfail(strict=True)`, an assertion on the property, a refusal in the code — or close it. On 20 Aug 2026 `test_an_unknown_model_is_refused_by_the_parser` carried the comment *"GB-41 adds it, not GB-24"*; GB-41 did not, and `smoke_offline` could not select the model the entire study is about while `prepare_live` could. Had GB-49 run first, the FITS arm would have been DLinear and the report would have compared a model to itself. A note is a record of an intention; only a test is a record of a requirement.
 
 ## 4. Conventions
 

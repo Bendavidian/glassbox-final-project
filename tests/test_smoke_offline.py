@@ -22,6 +22,7 @@ import pytest
 from glassbox import smoke_offline
 from glassbox.backtest import metrics
 from glassbox.config.loader import Config, load_config
+from glassbox.contracts.schemas import ChannelStats, WindowBatch
 from glassbox.engine import risk
 from glassbox.engine.signal import Thresholds
 from glassbox.model import ALL_FORECASTERS
@@ -430,3 +431,58 @@ def test_the_equal_weight_sizer_cannot_overdraw(cfg: Config) -> None:
 
     assert first == pytest.approx(20_000.0)
     assert last == pytest.approx(5_000.0)  # capped by cash, not by 1/n
+
+
+def test_the_fold_table_never_prints_mae_without_flatness_beside_it() -> None:
+    """§7.3's pairing, asserted on the table a reader actually sees (ruled 20 Aug 2026).
+
+    ``metrics.summarise`` builds its columns from ``COMPANIONS``; this table writes its
+    own, so it is the one that could drift out of step with the rule.
+    """
+    columns = list(smoke_offline.FOLD_COLUMNS)
+
+    assert columns[columns.index("mae") + 1] == "flatness"
+    assert columns[columns.index("flatness") + 1] == "mae_vs_pers"
+
+    table = smoke_offline.fold_table(
+        [fake_run(1, "dlinear", [100.0, 101.0], stood_aside=False)]
+    )
+    assert list(table.columns) == columns
+
+
+def test_the_band_is_calibrated_on_forecasts_in_raw_units(cfg: Config) -> None:
+    """Ruling of 20 Aug 2026, asserted rather than argued.
+
+    ``build_windows`` scales the target, so a model fitted on those windows forecasts in
+    that unit. GB-20's thresholds are quantiles of the validation forecast distribution
+    and the backtester trades real prices, so a band fitted to scaled forecasts would be
+    numerically fine and would mean nothing. Every ``Forecast`` this module builds is
+    restored first, and the restoration is per row.
+    """
+    channels = cfg.channels.active_channels
+    stats = {
+        symbol: ChannelStats(
+            channels=channels,
+            mean=tuple(0.0 for _ in channels),
+            std=tuple(deviation for _ in channels),
+            fitted_start=pd.Timestamp("2024-01-01", tz="UTC"),
+            fitted_end=pd.Timestamp("2024-02-01", tz="UTC"),
+            n_rows=20,
+        )
+        for symbol, deviation in (("AAPL", 0.02), ("NVDA", 0.05))
+    }
+    batch = WindowBatch(
+        X=np.zeros((2, cfg.window.input_len, len(channels)), dtype="float32"),
+        y=np.ones((2, cfg.window.horizon), dtype="float32"),
+        channels=channels,
+        timestamps=pd.DatetimeIndex(["2024-03-01", "2024-03-01"], tz="UTC", name=None),
+        symbols=("AAPL", "NVDA"),
+        source="test",
+    )
+    scaled = np.ones((2, cfg.window.horizon), dtype="float32")
+
+    forecasts = smoke_offline._forecasts(batch, scaled, stats)
+
+    assert [f.symbol for f in forecasts] == ["AAPL", "NVDA"]
+    np.testing.assert_allclose(forecasts[0].path, 0.02, rtol=1e-6)
+    np.testing.assert_allclose(forecasts[1].path, 0.05, rtol=1e-6)

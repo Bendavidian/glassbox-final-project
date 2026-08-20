@@ -27,6 +27,8 @@ Implemented in GB-9. Train/live parity is asserted in GB-27.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import numpy as np
 import pandas as pd
 
@@ -288,6 +290,12 @@ def build_windows(
         mean = np.asarray(stats.mean, dtype="float32")
         deviation = np.asarray(stats.std, dtype="float32")
         X = ((X - mean) / deviation).astype("float32")
+        # **The target is scaled too, by the target channel's own deviation** (ruled
+        # 20 Aug 2026). Divided, never centred: see `restore_targets` for why the
+        # difference decides whether attribution can stay exact.
+        y = (y / np.float32(stats.scale_for(_target_channel(channels)))).astype(
+            "float32"
+        )
 
     return WindowBatch(
         X=X,
@@ -330,6 +338,56 @@ def _end_positions(
             f"{input_len} an input window needs"
         )
     return [position]
+
+
+def target_scales(batch: WindowBatch, stats: Mapping[str, ChannelStats]) -> np.ndarray:
+    """``(B,)`` — the number each row's target was divided by, row by row.
+
+    A pooled batch holds several symbols and each was scaled by its own statistics, so the
+    inverse is per row and not per batch. Getting that wrong is the bug this function
+    exists to have one place to get right.
+
+    Raises:
+        ValueError: A symbol in the batch has no statistics.
+    """
+    channel = _target_channel(batch.channels)
+    missing = sorted(set(batch.symbols) - set(stats))
+    if missing:
+        raise ValueError(
+            f"no statistics for {missing}; the batch carries "
+            f"{list(batch.unique_symbols)} and the mapping holds {sorted(stats)}"
+        )
+    return np.array(
+        [stats[symbol].scale_for(channel) for symbol in batch.symbols], dtype="float64"
+    )
+
+
+def restore_targets(
+    values: np.ndarray, batch: WindowBatch, stats: Mapping[str, ChannelStats]
+) -> np.ndarray:
+    """Undo :func:`build_windows`' target scaling. ``(B, H)`` in, ``(B, H)`` out.
+
+    **The inverse lives beside the transform**, in the keystone module, because a
+    transform whose inverse is written somewhere else is a transform that will one day be
+    applied twice or not at all. Every point where a forecast or a realised path leaves
+    the model layer calls this: ``model.predict``'s two entry points, and the offline
+    runner's calibration and backtest paths.
+
+    **Multiplicative, because the transform is.** ``build_windows`` divides the target and
+    does not centre it, and the reason is spec 4.4 rather than convenience: centring makes
+    ``predict`` affine, so the forecast carries a constant belonging to no channel and
+    ``Attribution.from_terms`` refuses the decomposition — its error message names exactly
+    this case. Scaling alone keeps every stage linear, so attribution stays exact and the
+    inverse is one multiplication. Measured over 16 folds, the two forms are
+    indistinguishable anyway: MAE 0.016061 against 0.016068 for DLinear and 0.015841
+    against 0.015802 for FITS.
+    """
+    scales = target_scales(batch, stats)
+    if values.shape[0] != len(scales):
+        raise ValueError(
+            f"cannot restore {values.shape[0]} rows against a batch of {len(scales)}"
+        )
+    return np.asarray(values, dtype="float64") * scales[:, None]
 
 
 def _target_channel(channels: tuple[str, ...]) -> str:

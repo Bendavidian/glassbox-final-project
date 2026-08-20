@@ -208,6 +208,16 @@ class ChannelStats:
     ``fitted_start`` and ``fitted_end`` record which rows produced these numbers. They
     are what make "were these fitted on training data only?" an answerable question:
     GB-25's leakage audit intersects that range against the fold's test range.
+
+    **These are y's statistics too** (ruled 20 Aug 2026). The forecast target *is* the
+    ``close_logret`` channel, one horizon ahead, so the number ``build_windows`` divides
+    the target by is :meth:`scale_for` of that channel — the same number the input column
+    was divided by, from the same fitted range, subject to the same leakage audit.
+    Storing a separately fitted target scale beside it would be two numbers for one
+    statistic and a slightly *different* one, which would reintroduce the mismatch
+    scaling ``y`` exists to remove: FITS's backcast is supervised against the scaled input
+    column and its forecast against the scaled target, and those two are in identical
+    units only when the divisor is identical.
     """
 
     channels: tuple[str, ...]  # ordered, matches WindowBatch's channel axis
@@ -216,6 +226,25 @@ class ChannelStats:
     fitted_start: pd.Timestamp  # first row the statistics were fitted on
     fitted_end: pd.Timestamp  # last row — with fitted_start, identifies the split
     n_rows: int
+
+    def scale_for(self, channel: str) -> float:
+        """The standard deviation ``channel`` was divided by.
+
+        A derived accessor rather than a stored field, for ``WindowBatch.unique_symbols``'s
+        reason: it cannot fall out of step with ``std``. This is the number
+        ``build_windows`` applies to the target column and ``features.builder.
+        restore_targets`` undoes, so a stored duplicate is a second copy of a value that
+        must be identical to the first.
+
+        Raises:
+            ValueError: These statistics do not describe ``channel``.
+        """
+        if channel not in self.channels:
+            raise ValueError(
+                f"these statistics describe {list(self.channels)} and were asked for "
+                f"{channel!r}"
+            )
+        return self.std[self.channels.index(channel)]
 
     def __post_init__(self) -> None:
         if len(self.mean) != len(self.channels):

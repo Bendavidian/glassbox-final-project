@@ -631,3 +631,71 @@ def test_every_metric_declares_which_direction_is_better() -> None:
     assert better_higher["sharpe"] is True
     assert better_higher["mae"] is False
     assert better_higher["max_drawdown"] is False
+
+
+# ── flatness: MAE's companion, and never optional ───────────────────────────
+
+
+def test_flatness_is_one_when_the_forecast_is_right_sized() -> None:
+    truth = np.array([[0.01, -0.02], [0.03, 0.01]])
+
+    assert metrics.flatness(arm(predicted=truth.copy(), actual=truth)) == pytest.approx(
+        1.0
+    )
+
+
+def test_flatness_is_the_ratio_of_magnitudes_not_of_errors() -> None:
+    """A forecast with the wrong SIGN everywhere is still right-sized.
+
+    That is the point of the column: it measures how big the forecast is, and says nothing
+    at all about whether it is correct. A reader who confuses the two learns it here.
+    """
+    truth = np.array([[0.01, -0.02], [0.03, 0.01]])
+
+    assert metrics.flatness(arm(predicted=-truth, actual=truth)) == pytest.approx(1.0)
+
+
+def test_the_baseline_forecasts_nothing_and_is_perfectly_flat() -> None:
+    """Persistence forecasts zero, so its flatness is 0.0 — and over 16 folds it wins MAE.
+
+    Those two facts together are the whole argument for the column, measured on this
+    project's own data rather than argued from the definition.
+    """
+    truth = np.array([[0.01, -0.02], [0.03, 0.01]])
+    baseline = arm(name="persistence", predicted=np.zeros_like(truth), actual=truth)
+
+    assert metrics.flatness(baseline) == 0.0
+    assert metrics.mae(baseline) < metrics.mae(arm(predicted=truth * 3.0, actual=truth))
+
+
+def test_flatness_is_undefined_rather_than_infinite_against_a_zero_truth() -> None:
+    zero = np.zeros((2, 2))
+
+    assert math.isnan(metrics.flatness(arm(predicted=np.ones((2, 2)), actual=zero)))
+    assert math.isnan(metrics.flatness(arm()))  # nothing forecast at all
+
+
+def test_mae_never_appears_in_a_summary_without_flatness_beside_it() -> None:
+    """The pairing made structural rather than editorial (ruled 20 Aug 2026).
+
+    Spec §7.3 requires MAE to be reported with its pathology attached, and a rule that
+    lives only in prose is a rule a later table will break. ``COMPANIONS`` builds the
+    columns, so the only way to print MAE without flatness is to delete the pairing.
+    """
+    truth = np.array([[0.01, -0.02], [0.03, 0.01]])
+    scored = arm(predicted=truth * 0.5, actual=truth)
+
+    columns = list(metrics.summarise([scored], scored).columns)
+
+    assert "mae" in columns
+    assert columns[columns.index("mae") + 1] == "flatness"
+    assert columns[columns.index("flatness") + 1] == "mae_delta"
+
+
+def test_every_companion_named_is_a_metric_the_summary_computes() -> None:
+    """A companion naming a column nobody fills would print an empty pairing."""
+    table = metrics.summarise([arm()], arm())
+
+    for metric, companion in metrics.COMPANIONS.items():
+        assert metric in table.columns
+        assert companion in table.columns

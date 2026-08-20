@@ -30,6 +30,13 @@ an error. Fitting a scaler for the new symbol at prediction time is worse: the o
 available to fit it on includes the period being predicted. Refusing keeps "what the model
 saw" the same question at inference time as it is in GB-25's audit.
 
+**Both entry points return RAW log returns** (ruled 20 Aug 2026). ``build_windows``
+divides the target by the symbol's own deviation, so a model fitted on those windows
+forecasts in that scaled unit; this module is the boundary where the model layer publishes
+a number, so it is where the scaling is undone. Nothing above ``model`` ever sees a
+standardised forecast, and ``features.builder.restore_targets`` is the one place the
+inverse is written.
+
 Implemented in GB-16.
 """
 
@@ -45,7 +52,7 @@ import pandas as pd
 
 from glassbox.config.loader import Config, config_hash
 from glassbox.contracts.schemas import ChannelStats, Forecast, WindowBatch
-from glassbox.features.builder import build_windows
+from glassbox.features.builder import build_windows, restore_targets
 from glassbox.model.train import load_checkpoint
 
 
@@ -117,7 +124,8 @@ def predict_batch(predictor: Predictor, batch: WindowBatch) -> np.ndarray:
         batch: Windows to score.
 
     Returns:
-        ``(B, H)`` float32 log-return paths, in the batch's own row order.
+        ``(B, H)`` float32 **raw** log-return paths, in the batch's own row order - each
+        row rescaled by its own symbol's target deviation, never by another's.
 
     Raises:
         ValueError: The batch's channels differ from the checkpoint's, or it carries a
@@ -126,7 +134,8 @@ def predict_batch(predictor: Predictor, batch: WindowBatch) -> np.ndarray:
     _require_channels(predictor, batch.channels)
     for symbol in batch.unique_symbols:
         predictor.stats_for(symbol)
-    return predictor.model.predict(batch.X)
+    scaled = predictor.model.predict(batch.X)
+    return restore_targets(scaled, batch, predictor.stats).astype("float32")
 
 
 def predict_window(
@@ -161,7 +170,8 @@ def predict_window(
     _require_channels(predictor, cfg.channels.active_channels)
     stats = predictor.stats_for(symbol)
     window = build_windows(frame, cfg, symbol, stats=stats, as_of=as_of)
-    path = predictor.model.predict(window.X)[0]
+    scaled = predictor.model.predict(window.X)
+    path = restore_targets(scaled, window, predictor.stats)[0]
     return Forecast(
         path=path.astype("float32"), symbol=symbol, as_of=pd.Timestamp(as_of)
     )

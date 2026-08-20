@@ -105,7 +105,12 @@ from glassbox.model.history import EpochLoss, read_history, write_history
 
 LOGGER = logging.getLogger(__name__)
 
-CHECKPOINT_VERSION = 1
+# 2 since 20 Aug 2026: `build_windows` scales the forecast target, so weights fitted
+# before that are fitted against a target roughly 65x larger and a loader that accepted
+# them would return forecasts wrong by that factor - a silent failure of exactly the kind
+# the version guard exists for. Nothing in the config hash covers a change to the data
+# pipeline, so the version is the mechanism.
+CHECKPOINT_VERSION = 2
 
 MANIFEST_FILE = "checkpoint.json"
 MODEL_FILE = "model.json"

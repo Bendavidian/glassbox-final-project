@@ -7,6 +7,206 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-20 — RULING 2: MAE stays, and the pairing is structural
+
+**Decision.** MAE remains a reported column. **It never appears without ``flatness`` in the
+adjacent column**, and every table carrying it carries the rank correlations. §7.3 is
+amended to cite the measurement rather than the argument.
+
+**Reasoning.** Dropping the standard metric of the field, in a project comparing itself to
+two papers that report it, reads as hiding a result rather than as methodological care. The
+stronger move is to report it with its pathology attached, and the pathology is now this
+project's own measurement: **Spearman(MAE, flatness) = +0.811 (DLinear) and +0.668 (FITS)
+against Spearman(MAE, direction) = +0.009 and −0.128**, over 80 fold × arm cells each, and
+**the 16-fold MAE winner is persistence, which forecasts exactly nothing and has a flatness
+of 0.0.** A reader given MAE alone cannot tell an arm that got better from one that got
+flatter.
+
+**Structural, not editorial.** ``metrics.COMPANIONS`` builds the summary's columns and
+``smoke_offline.FOLD_COLUMNS`` is asserted against the same rule, so printing MAE without
+flatness means deleting the pairing rather than forgetting it — the ``dir_ref``-beside-
+``direction`` precedent, applied to the metric that needed it more. GB-49 carries
+``flatness`` in ``results.csv`` beside ``mae``.
+
+**Consequence.** §7.3 used to ban MAE as a headline on a general argument about flattened
+forecasts. It now bans it on a number measured here, which is a different kind of claim and
+a stronger one — and the same move as GB-30's exactness correction: *"we assert X" and "we
+assert X in a way capable of failing" are different claims.*
+
+---
+
+## 2026-08-20 — GB-45 and GB-46: the frequency view, and the figure that is the model
+
+**Decision.** ``explain/spectral.py`` produces the per-frequency decomposition, gain and
+phase; ``scripts/frequency_response.py`` draws it.
+
+**Three design points, each following an existing ruling rather than inventing one.**
+
+- **The matrices are measured, not derived.** ``FITSForecaster._extend`` gained an optional
+  bin mask, so each frequency's ``(H, L)`` map is produced by running the **real forward
+  pass** with one bin unmasked — ``forecast_matrix``'s discipline, for the same reason: a
+  second copy of the pipeline written for the explanation is a second copy that can drift
+  from the one that forecasts. The parts sum back to the whole at **4.4e-16**.
+- **The sum goes through ``Attribution.from_terms``**, the one function in the codebase
+  allowed to add a decomposition and refuse a residual (GB-30). The frequency view keys on
+  periods and ``from_terms`` keys on strings, so labels are mapped out and back — a small
+  indirection bought to avoid a second place that adds contributions and compares them to a
+  total.
+- **Days, not bin indices**, everywhere, including the plot's axis. "The 17-day cycle" means
+  something to a supervisor; "bin 7" does not. Phase converts as ``φ/2π × period``, positive
+  meaning the model advances that cycle.
+
+**Two facts share the infinite-period key, and the module says so rather than letting a
+reader guess.** ``per_frequency[inf]`` is the **RIN mean's** contribution — it bypasses the
+complex layer entirely and is the largest single contributor in **37.2%** of test windows.
+``gain_phase[inf]`` is the **learned bin-0 row**, which is dead (GB-44). Reporting bin 0 as a
+measured zero rather than dropping it is the same choice as attributing 0.0 to a channel FITS
+does not read: an absent entry and a zero entry say different things.
+
+**Measured on fold 16, and the response is not flat.** Gain runs **0.596 to 0.830**, with a
+trough at **8.6 days** and a peak at **24 days**: the model suppresses the fastest cycles that
+survived the low-pass and favours the three-to-six-week band. The phase is the more striking
+half — a consistent **+1.9 to +2.1 days** across that band, meaning the model **advances**
+those cycles by about two days. **That is the momentum finding of GB-41 arriving from the
+other side**, in a quantity the explanation layer produces anyway and with no extra
+experiment.
+
+The dominant contributor per window: the RIN mean **37.2%**, the 15-day cycle **22.4%**,
+120-day 17.2%, 17.1-day 13.1%. **No contributor's mean share of the gross exceeds 0.211** —
+24 contributors, none dominant, which is GB-30's cancellation story in the frequency domain.
+
+**Consequence.** GB-46 lives in ``scripts/`` because it reads a checkpoint and writes a file,
+which is §3.4's definition of an operational entry point — and because putting matplotlib in
+``explain`` would let a rendering dependency into the live loop's import graph. It defines no
+colour of its own, so the dashboard's green/red ban covers it, enforced by a test for a hex
+literal in the source rather than by a repeated list of banned words.
+
+---
+
+## 2026-08-20 — RULING 1: the forecast target is scaled, and it is NOT for the MAE
+
+**Decision.** ``build_windows`` divides the forecast target by the target channel's own
+standard deviation. ``features.builder.restore_targets`` is the inverse, applied wherever a
+forecast leaves the model layer. ``CHECKPOINT_VERSION`` goes to **2**.
+
+**The reason is B+F, and only B+F. Say so, because a later reader will assume otherwise.**
+``loss = mse(forecast, y) + mse(backcast, x)`` is an unweighted sum, so it is the objective
+§6.2 describes only when the two terms are in one unit. They were not: the backcast was
+supervised at unit variance and the forecast at ``0.015²``, making the objective **98.5%
+backcast** — measured, 67× — so **FITS has not been training the objective the spec says it
+trains**. That is a correctness defect, and it was invisible in the way that matters: the
+loss fell, every test passed, nothing complained.
+
+**The MAE improvement is a side effect and is not the motive.** It will look like the motive
+— the number moves a lot — and §7.3 bans MAE as a headline precisely because it tracks
+flatness at Spearman +0.81. The evidence that the fix is *correct* rather than merely better
+is elsewhere: FITS lands at **0.015841 against the raw arm's 0.015822**, a difference of
+0.12%, which is what scale-equivariance predicts for a linear model behind RIN. **A fix that
+lands where the algebra says it should is a fix; one that merely improves a metric is a
+tuning choice.**
+
+**Scaled, never centred.** Centring makes ``predict`` affine, so the forecast carries a
+constant belonging to no channel and ``Attribution.from_terms`` refuses the decomposition —
+its error message names this exact case. Measured, the two forms are indistinguishable
+(DLinear 0.016061 against 0.016068; FITS 0.015841 against 0.015802), so §4.4's exactness
+decides it at no cost.
+
+**y's statistics are the target channel's own, and are a derived accessor rather than a
+stored field.** The ruling asked for ``ChannelStats`` to carry them beside ``X``'s, and it
+does — but as ``scale_for(channel)`` rather than as a new number. The forecast target *is*
+``close_logret`` one horizon ahead, so a separately fitted target scale would be a second
+copy of one statistic and a **slightly different** one, which would reintroduce exactly the
+mismatch the scaling exists to remove: the two B+F terms are in identical units only when
+the divisor is identical. It inherits the training-split range and the GB-10 isolation
+assertion for free, because it is the same object.
+
+**Where the inversion had to go, and why it is not inside ``predict``.** The ruling asked
+for ``predict`` to invert before returning. It cannot: ``Forecaster.predict`` (§4.3, frozen)
+takes ``(B, L, C)`` and **no symbol**, and the scale is per symbol, so one fitted model has
+nothing to route on — the same obstacle ``individual_weights`` met in GB-44. The inverse
+therefore sits at the **model layer's boundary**, in one named function beside the transform
+it undoes, applied at every point a number leaves: both entry points of ``model/predict.py``,
+and the calibration and backtest paths of ``smoke_offline``. The requirement behind the
+ruling holds — nothing above ``model`` sees a standardised value — and it is asserted
+rather than asserted-about: the band is calibrated on restored forecasts, the metrics
+compare restored predictions against restored truths, and a pooled batch is restored **row
+by row** by each row's own symbol's number.
+
+**The attribution carries the same factor**, or the dashboard would render contributions in
+one unit beside a forecast in another, ~65× apart, with every exactness check still passing
+because each side is internally consistent. ``attribute(..., scale=...)`` multiplies the
+**weights**, so the sum still closes inside ``from_terms`` and no second summation exists.
+
+**Consequence: every reported number changed, and not all of them improved.** See the next
+entry. ``CHECKPOINT_VERSION`` is the mechanism that stops an old checkpoint being loaded and
+forecasting ~65× wrong — nothing in the config hash covers a change to the data pipeline, so
+the version guard is what is left.
+
+---
+
+## 2026-08-20 — What the target scaling did to every headline, measured and not softened
+
+**Decision.** The pre-scaling numbers are retired and the new ones stand. They are worse on
+every metric the study reports, and that is recorded here rather than absorbed quietly.
+
+**Measured, 16 folds, before and after** (DLinear, the deployed arm):
+
+| | before | after |
+|---|---|---|
+| folds standing aside | 3/16 | **5/16** |
+| direction accuracy | 0.5182 | **0.4959** |
+| always-long bar | 0.5560 | 0.5564 |
+| total return, mean per fold | +0.40% | **−0.31%** (positive in 5 of 16) |
+| Sharpe, where defined | +0.62 | **−0.33** (9 folds) |
+| buy-and-hold | +7.73%, Sharpe 1.39 | unchanged |
+
+**The honest reading, and it is not "the fix made things worse".** DLinear has **no backcast
+term**, so none of the B+F argument applies to it; what the ruling changed for DLinear is its
+**conditioning** — the median learned weight moves from **0.54× Adam's step to 2.50×**. And
+the conditioning measurement already said what that would do: **the 0.5182 belonged to the
+arm in which 71% of the weights sat below the optimiser's step size.** It was the score of a
+model too under-trained to move its weights, not a directional edge. Training it properly
+removes it.
+
+**So the null headline is strengthened, not weakened.** A result that survives only while the
+optimiser cannot resolve the weights was never a result. The supervisor's own line on this
+was written before the number moved: *an optimiser mismatch could hide a real result — it
+could not manufacture a null one.* This is the other half of that sentence, and it happens to
+cut the other way: the mismatch was manufacturing a small **positive**, and correcting it left
+the null.
+
+**One consequence needs a ruling and is not taken here.** The most recent fold **no longer
+stands aside**: fold 16 calibrates to `lower=0.026076` on a validation Sharpe of **+0.483 over
+8 trades**, where before the fix its best candidate scored **−3.38 over 7**. So the deployed
+system **now trades**, and §7's required finding — *"the deployed system declines to trade,
+and that is a result", which must not be softened* — **is no longer true of the current
+deployment**. It remains exactly true of the system as it stood on 18–20 Aug, and the report
+can say so with dates. Whether the sentence stays as a finding about a past deployment or is
+replaced is the supervisor's call, not this file's.
+
+---
+
+## 2026-08-20 — matplotlib, for one figure, and the alternative was worse
+
+**Decision.** ``matplotlib>=3.11.1`` joins the dependencies. Required by CLAUDE.md §4: a new
+dependency needs a line here.
+
+**Reasoning.** GB-46's frequency response is §6.5's "single strongest visual in the demo" and
+GB-57 needs it as a raster at 200+ dpi. The dashboard hand-writes SVG and will keep doing so —
+Streamlit renders it inline and the geometry is testable as a string — but hand-writing a log
+axis, tick formatting, a shaded cutoff region and a legend for a report figure is roughly 200
+lines of fiddly code that would look worse and be no more testable. The project already
+carries torch, streamlit and pyarrow; matplotlib is the smallest of them and the most
+standard.
+
+**Consequence.** It is imported **inside** ``render`` and only in ``scripts/``, so no package
+module gains a rendering dependency and the live loop's import graph is untouched. The figure
+**defines no colour of its own** — the palette comes from ``dashboard/app.py`` — so the
+green/red ban asserted there covers it, and a test for a hex literal anywhere in the source
+enforces that it stays that way.
+
+---
+
 ## 2026-08-20 — The first head-to-head, and it is negative
 
 **Decision.** The result is recorded as it came out, in the form GB-57 will report it: as a

@@ -61,7 +61,7 @@ import json
 import math
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -73,11 +73,15 @@ from glassbox.backtest.calibrate import Calibration, calibrate_thresholds
 from glassbox.backtest.engine import run_backtest
 from glassbox.backtest.walkforward import Fold, make_folds
 from glassbox.config.loader import Config, config_hash, load_config
-from glassbox.contracts.schemas import Forecast, Signal, WindowBatch
+from glassbox.contracts.schemas import ChannelStats, Forecast, Signal, WindowBatch
 from glassbox.data.historical import load_history
 from glassbox.engine import risk
 from glassbox.engine.signal import ENTER_LONG, Thresholds, decide_all
-from glassbox.features.builder import build_feature_frame, build_windows
+from glassbox.features.builder import (
+    build_feature_frame,
+    build_windows,
+    restore_targets,
+)
 from glassbox.model import ALL_FORECASTERS
 from glassbox.model import train as trainer
 
@@ -97,6 +101,7 @@ FOLD_COLUMNS = (
     "dir_ref",
     "dir_vs_long",
     "mae",
+    "flatness",
     "mae_vs_pers",
     "total_return",
     "ret_vs_bh",
@@ -294,7 +299,7 @@ def prepare_live(cfg: Config, directory: str | Path, log=lambda m: None) -> Path
     run = trainer.train(frames, cfg, fold.train, fold.val, fold.test)
     val_batch = _windows(frames, run, cfg, fold.val)
     calibration = calibrate_thresholds(
-        _forecasts(val_batch, run.model.predict(val_batch.X)),
+        _forecasts(val_batch, run.model.predict(val_batch.X), run.stats),
         _bars_between(bars, fold.val[0], fold.val[-1]),
         risk.position_sizer,
         cfg,
@@ -357,7 +362,7 @@ def prepare_replay(
     run = trainer.train(frames, cfg, fold.train, fold.val, fold.test)
     val_batch = _windows(frames, run, cfg, fold.val)
     calibration = calibrate_thresholds(
-        _forecasts(val_batch, run.model.predict(val_batch.X)),
+        _forecasts(val_batch, run.model.predict(val_batch.X), run.stats),
         _bars_between(bars, fold.val[0], fold.val[-1]),
         risk.position_sizer,
         cfg,
@@ -452,6 +457,10 @@ def fold_table(runs: Sequence[ArmRun]) -> pd.DataFrame:
     Three references, per §7.3: forecast error against persistence, direction against
     always-long, trading against buy-and-hold. Each lives in a column whose header says so,
     so a reader meets the reference at the same moment as the number.
+
+    ``flatness`` sits immediately after ``mae`` and is not optional (ruled 20 Aug 2026):
+    across arms MAE is close to a monotone function of it, so a reader given MAE alone
+    cannot tell an arm that got better from one that got flatter.
     """
     persistence = {run.fold: run.result for run in runs if run.name == BASELINE}
     held = {run.fold: run.result for run in runs if run.name == BUY_AND_HOLD}
@@ -470,6 +479,12 @@ def fold_table(runs: Sequence[ArmRun]) -> pd.DataFrame:
                 "dir_ref": metrics.always_long_accuracy(run.result),
                 "dir_vs_long": direction - metrics.always_long_accuracy(run.result),
                 "mae": metrics.mae(run.result) if run.forecasts else math.nan,
+                # Immediately after `mae`, for `dir_ref`'s reason and a measured one:
+                # MAE tracks flatness at Spearman +0.81 and direction at +0.01, so the
+                # two columns cannot be allowed to be read apart (ruled 20 Aug 2026).
+                "flatness": (
+                    metrics.flatness(run.result) if run.forecasts else math.nan
+                ),
                 "mae_vs_pers": (
                     metrics.mae(run.result, baseline)
                     if run.forecasts and baseline is not None
@@ -578,17 +593,23 @@ def _run_arm(
 
     val_batch = _windows(frames, run, arm_cfg, fold.val)
     calibration = calibrate_thresholds(
-        _forecasts(val_batch, run.model.predict(val_batch.X)),
+        _forecasts(val_batch, run.model.predict(val_batch.X), run.stats),
         _bars_between(bars, fold.val[0], fold.val[-1]),
         risk.position_sizer,
         arm_cfg,
     )
 
     test_batch = _windows(frames, run, arm_cfg, fold.test)
-    predicted = run.model.predict(test_batch.X)
+    # Raw log returns from here down: the band, the backtester and every metric are in the
+    # unit the market is in, not the unit the model was fitted in. The metrics read the
+    # forecasts the backtester traded rather than restoring a second time - one forward
+    # pass, one restoration, so the two cannot disagree.
+    forecasts = _forecasts(test_batch, run.model.predict(test_batch.X), run.stats)
+    predicted = np.stack([forecast.path for forecast in forecasts])
+    actual = restore_targets(test_batch.y, test_batch, run.stats)
     result = run_backtest(
         _bars_between(bars, fold.test[0], fold.test[-1]),
-        decide_all(_forecasts(test_batch, predicted), calibration.thresholds, arm_cfg),
+        decide_all(forecasts, calibration.thresholds, arm_cfg),
         risk.position_sizer,
         arm_cfg,
     )
@@ -601,7 +622,7 @@ def _run_arm(
             equity=result.equity,
             trades=result.trades,
             predicted=predicted,
-            actual=test_batch.y,
+            actual=actual,
         ),
         calibration=calibration,
         seconds=time.perf_counter() - started,
@@ -731,9 +752,22 @@ def _windows(
     )
 
 
-def _forecasts(batch: WindowBatch, predicted: np.ndarray) -> list[Forecast]:
+def _forecasts(
+    batch: WindowBatch,
+    predicted: np.ndarray,
+    stats: Mapping[str, ChannelStats],
+) -> list[Forecast]:
+    """Model output as `Forecast` objects, **in raw log returns**.
+
+    `build_windows` scales the target by each symbol's own deviation, so a model fitted on
+    those windows forecasts in that unit. Every `Forecast` this module produces is
+    restored first, which is what puts the calibrated thresholds of GB-20 on the same
+    scale as the prices the backtester trades - a band fitted to scaled forecasts would be
+    numerically fine and would mean nothing.
+    """
+    raw = restore_targets(predicted, batch, stats).astype("float32")
     return [
-        Forecast(path=predicted[row], symbol=batch.symbols[row], as_of=timestamp)
+        Forecast(path=raw[row], symbol=batch.symbols[row], as_of=timestamp)
         for row, timestamp in enumerate(batch.timestamps)
     ]
 

@@ -410,3 +410,54 @@ def test_the_explain_layer_imports_no_perturbation_library(package_root: Path) -
             ]
 
     assert not offenders
+
+
+# ── publishing in raw units, after the target scaling of 20 Aug 2026 ─────────
+
+
+def test_a_scaled_attribution_is_the_unscaled_one_times_the_scale(
+    model: ChannelLinear, sample_windows: np.ndarray, cfg: Config
+) -> None:
+    """The forecast leaves the model layer in raw log returns, so its explanation must too.
+
+    Otherwise the dashboard renders contributions in the unit the model was fitted in
+    beside a forecast in the unit the market is in, and the two disagree by roughly 65x
+    while every exactness check still passes — each side is internally consistent.
+    """
+    window = sample_windows[0]
+    channels = cfg.channels.active_channels
+    scale = 0.0145
+
+    plain = attribute(model, window, channels)
+    raw = attribute(model, window, channels, scale=scale)
+
+    assert raw.forecast_total == pytest.approx(plain.forecast_total * scale, rel=1e-9)
+    for channel, value in plain.per_channel.items():
+        assert raw.per_channel[channel] == pytest.approx(value * scale, rel=1e-6)
+
+
+def test_a_scaled_attribution_still_closes_against_the_scaled_forecast(
+    model: ChannelLinear, sample_windows: np.ndarray, cfg: Config
+) -> None:
+    """Exactness is not weakened by the scaling — it is re-checked through `from_terms`.
+
+    The scale multiplies the **weights**, so the sum is taken by the one function allowed
+    to take it and a residual would raise there rather than be discovered downstream.
+    """
+    window = sample_windows[0]
+    channels = cfg.channels.active_channels
+    scale = 0.0145
+
+    raw = attribute(model, window, channels, scale=scale)
+    predicted = float(model.predict(window[None, ...])[0].sum()) * scale
+
+    assert sum(raw.per_channel.values()) == pytest.approx(predicted, abs=1e-9)
+    assert raw.forecast_total == pytest.approx(predicted, abs=1e-9)
+
+
+def test_a_scale_that_is_not_positive_is_refused(
+    model: ChannelLinear, sample_windows: np.ndarray, cfg: Config
+) -> None:
+    """A zero scale would silently flatten every explanation to nothing."""
+    with pytest.raises(ValueError, match="must be positive"):
+        attribute(model, sample_windows[0], cfg.channels.active_channels, scale=0.0)

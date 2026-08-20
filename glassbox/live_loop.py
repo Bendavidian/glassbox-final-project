@@ -74,6 +74,7 @@ from glassbox.explain.channel import attribute
 from glassbox.explain.narrate import EN, narrate
 from glassbox.faults import Unavailable
 from glassbox.features.builder import (
+    TARGET_CHANNEL,
     build_feature_frame,
     history_requirement,
     min_history_bars,
@@ -825,6 +826,10 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 state.predictor.model,
                 _window_of(state, frames[symbol], symbol, forecast.as_of),
                 state.cfg.channels.active_channels,
+                # The forecast this explains is in raw log returns (GB-16 restores it), so
+                # the explanation must be too, or the dashboard renders contributions in a
+                # unit the number above them is not in.
+                scale=state.predictor.stats_for(symbol).scale_for(TARGET_CHANNEL),
             )
             order = sized.get(symbol)
             story = narrate(

@@ -417,3 +417,103 @@ def test_fit_stats_refuses_an_empty_frame(cfg: Config) -> None:
 
     with pytest.raises(ValueError, match="empty frame"):
         builder.fit_stats(frame.iloc[0:0], cfg)
+
+
+# ── the target scaling, and its inverse ─────────────────────────────────────
+
+
+def test_the_target_is_scaled_by_the_target_channels_own_deviation(
+    cfg: Config,
+) -> None:
+    """Ruling of 20 Aug 2026, and the divisor is the assertion.
+
+    The forecast target *is* the ``close_logret`` channel one horizon ahead, so scaling it
+    by that channel's own deviation puts FITS's backcast and its forecast in **identical**
+    units. A separately fitted target scale would be a slightly different number and would
+    leave the mismatch the scaling exists to remove.
+    """
+    frame = builder.build_feature_frame(make_bars(), cfg)
+    stats = builder.fit_stats(frame, cfg)
+
+    plain = builder.build_windows(frame, cfg, "TEST")
+    scaled = builder.build_windows(frame, cfg, "TEST", stats=stats)
+
+    divisor = stats.scale_for(builder.TARGET_CHANNEL)
+    assert divisor == stats.std[cfg.channels.active_channels.index("close_logret")]
+    np.testing.assert_allclose(scaled.y, plain.y / divisor, rtol=1e-6)
+
+
+def test_the_target_is_divided_and_never_centred(cfg: Config) -> None:
+    """Centring would make ``predict`` affine, and spec §4.4 would refuse the attribution.
+
+    ``Attribution.from_terms`` names this exact case in its own error message: a constant
+    the model subtracts and adds back belongs to no channel, so the decomposition cannot
+    close. A pure scaling keeps every stage linear, and the two forms are indistinguishable
+    on the fold grid anyway — MAE 0.016061 against 0.016068 for DLinear.
+    """
+    frame = builder.build_feature_frame(make_bars(), cfg)
+    stats = builder.fit_stats(frame, cfg)
+
+    plain = builder.build_windows(frame, cfg, "TEST")
+    scaled = builder.build_windows(frame, cfg, "TEST", stats=stats)
+
+    ratios = scaled.y[np.abs(plain.y) > 1e-9] / plain.y[np.abs(plain.y) > 1e-9]
+    assert np.allclose(ratios, ratios[0], rtol=1e-5), (
+        "the ratio is not constant across the targets, so something was subtracted as "
+        "well as divided"
+    )
+
+
+def test_restoring_the_targets_returns_exactly_what_was_scaled(cfg: Config) -> None:
+    """The round trip Ben asked for: the inverse is a new place a bug can hide."""
+    frame = builder.build_feature_frame(make_bars(), cfg)
+    stats = builder.fit_stats(frame, cfg)
+    scaled = builder.build_windows(frame, cfg, "TEST", stats=stats)
+    plain = builder.build_windows(frame, cfg, "TEST")
+
+    restored = builder.restore_targets(scaled.y, scaled, {"TEST": stats})
+
+    np.testing.assert_allclose(restored, plain.y, rtol=1e-5, atol=1e-12)
+
+
+def test_each_row_is_restored_by_its_own_symbols_scale(cfg: Config) -> None:
+    """The bug worth writing a test for: a pooled batch restored by one symbol's number.
+
+    The two symbols here differ in price scale by 10x, so their deviations differ and a
+    single-scale inverse would be visibly wrong on one of them — which is what makes this
+    an assertion rather than a formality.
+    """
+    frames = {
+        "SMALL": builder.build_feature_frame(make_bars(scale=1.0), cfg),
+        "LARGE": builder.build_feature_frame(make_bars(scale=10.0), cfg),
+    }
+    stats = {name: builder.fit_stats(frame, cfg) for name, frame in frames.items()}
+    parts = [
+        builder.build_windows(frames[name], cfg, name, stats=stats[name])
+        for name in ("SMALL", "LARGE")
+    ]
+    pooled = WindowBatch.concat(parts)
+
+    restored = builder.restore_targets(pooled.y, pooled, stats)
+
+    plain = np.concatenate(
+        [
+            builder.build_windows(frames[name], cfg, name).y
+            for name in ("SMALL", "LARGE")
+        ]
+    )
+    np.testing.assert_allclose(restored, plain, rtol=1e-5, atol=1e-12)
+
+    # And a mapping missing a symbol refuses rather than guessing.
+    with pytest.raises(ValueError, match="no statistics for"):
+        builder.restore_targets(pooled.y, pooled, {"SMALL": stats["SMALL"]})
+
+
+def test_statistics_refuse_a_scale_for_a_channel_they_do_not_describe(
+    cfg: Config,
+) -> None:
+    frame = builder.build_feature_frame(make_bars(), cfg)
+    stats = builder.fit_stats(frame, cfg)
+
+    with pytest.raises(ValueError, match="were asked for"):
+        stats.scale_for("not_a_channel")

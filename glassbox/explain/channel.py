@@ -60,7 +60,10 @@ class ChannelLinear(Protocol):
 
 
 def attribute(
-    forecaster: ChannelLinear, x: np.ndarray, channels: tuple[str, ...]
+    forecaster: ChannelLinear,
+    x: np.ndarray,
+    channels: tuple[str, ...],
+    scale: float = 1.0,
 ) -> Attribution:
     """The exact per-channel decomposition of one window's forecast.
 
@@ -69,6 +72,15 @@ def attribute(
             ``glassbox.model`` does.
         x: One window, ``(L, C)``.
         channels: The channel names, ordered to match ``x``'s last axis.
+        scale: The symbol's target deviation, to publish the decomposition in **raw** log
+            returns rather than in the scaled unit the model was fitted in (ruled
+            20 Aug 2026). ``1.0`` leaves it in the model's own unit, which is what a test
+            comparing against ``predict`` directly wants. It multiplies the **weights**
+            rather than the finished contributions, so the sum still closes inside
+            ``Attribution.from_terms`` and no second summation exists.
+
+            A scaling is exact where a centring would not be: the same argument that keeps
+            ``build_windows`` from centring the target.
 
     Returns:
         An :class:`Attribution` whose ``per_channel`` sums to ``forecast_total`` and whose
@@ -90,6 +102,8 @@ def attribute(
     for five attributions a day in the live loop, and it turns spec 4.4's property 3 from
     a test into a runtime guarantee.
     """
+    if not scale > 0:
+        raise ValueError(f"scale must be positive, got {scale!r}")
     attribution = forecaster.explain(x, channels)
     predicted = float(np.asarray(forecaster.predict(x[None, ...])[0]).sum())
     residual = predicted - attribution.forecast_total
@@ -102,7 +116,17 @@ def attribute(
             "from the one the model made, which is the one failure an exactness check "
             "inside the model cannot see."
         )
-    return attribution
+    if scale == 1.0:
+        return attribution
+
+    # Published in raw log returns. The weights carry the factor, so the sum still closes
+    # inside `from_terms` — the one place contributions are ever added — and the residual
+    # is re-checked against a `predict` that has been scaled by the same number.
+    scaled_terms = {
+        channel: tuple((weight * scale, values) for weight, values in pairs)
+        for channel, pairs in forecaster.linear_terms(x, channels).items()
+    }
+    return Attribution.from_terms(scaled_terms, predicted * scale)
 
 
 def shares(attribution: Attribution) -> dict[str, float]:

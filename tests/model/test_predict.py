@@ -20,7 +20,11 @@ import pytest
 
 from glassbox.config.loader import Config, config_hash, load_config, model_config_hash
 from glassbox.contracts.schemas import Forecast, WindowBatch
-from glassbox.features.builder import build_feature_frame, build_windows
+from glassbox.features.builder import (
+    build_feature_frame,
+    build_windows,
+    restore_targets,
+)
 from glassbox.model import predict as inference
 from glassbox.model import train as trainer
 from tests.model.test_train import synthetic_bars
@@ -357,6 +361,12 @@ def test_inference_reproduces_the_training_runs_own_predictions(
 
     GB-49 trains once and scores many times from the saved artefact; if the two differed,
     every reported number would belong to a model that no longer exists.
+
+    **The training run's raw output is in the scaled target unit and inference's is not**
+    (ruled 20 Aug 2026), so the comparison restores the training side rather than
+    loosening the assertion. That is the point of the boundary: `predict_batch` publishes
+    raw log returns, and the only way to compare against the model's own output is to
+    apply the same inverse — from the same function, not a second one written here.
     """
     train_index, val_index, test_index = splits
     fresh = trainer.train(universe, cfg, train_index, val_index, test_index)
@@ -366,8 +376,10 @@ def test_inference_reproduces_the_training_runs_own_predictions(
         test_index,
     )
 
+    restored = restore_targets(fresh.model.predict(batch.X), batch, fresh.stats)
+
     np.testing.assert_array_equal(
-        fresh.model.predict(batch.X), inference.predict_batch(loaded, batch)
+        restored.astype("float32"), inference.predict_batch(loaded, batch)
     )
 
 

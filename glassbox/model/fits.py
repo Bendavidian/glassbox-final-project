@@ -159,6 +159,8 @@ class FITSForecaster:
 
         self.weight = np.zeros((self.cof, self.out_bins), dtype="complex128")
         self._matrix: np.ndarray | None = None
+        self._mean_matrix: np.ndarray | None = None
+        self._bin_matrices: dict[int, np.ndarray] | None = None
 
     # ── the shape the cutoff decides ─────────────────────────────────────────
 
@@ -319,6 +321,53 @@ class FITSForecaster:
             self._matrix = self._extend(basis)[:, self.input_len :].T.copy()
         return self._matrix
 
+    def mean_matrix(self) -> np.ndarray:
+        """The ``(H, L)`` map the **RIN mean** carries, with every learned bin silenced.
+
+        RIN subtracts the window mean and adds it back, so the mean reaches the forecast
+        without passing through the complex layer at all. It is part of the forecast and
+        belongs to no frequency the layer learned, so a decomposition that omitted it could
+        not close - spec 4.4's tolerance would catch it, and
+        ``Attribution.from_terms``'s error message names this exact case.
+
+        Measured by running the forward pass with a zero mask, so it is whatever the
+        implementation does rather than what the docstring above says it does.
+        """
+        if self._mean_matrix is None:
+            basis = np.eye(self.input_len, dtype="float64")
+            silent = np.zeros(self.cof, dtype="float64")
+            self._mean_matrix = self._extend(basis, keep=silent)[
+                :, self.input_len :
+            ].T.copy()
+        return self._mean_matrix
+
+    def frequency_matrices(self) -> dict[int, np.ndarray]:
+        """``{input bin k: (H, L)}`` - what each retained frequency contributes.
+
+        Together with :meth:`mean_matrix` these sum **exactly** to
+        :meth:`forecast_matrix`, which is the property GB-45's decomposition rests on and
+        the one its acceptance test asserts. Each is measured the same way the total is:
+        push the ``L`` basis windows through the real forward pass with one bin unmasked,
+        and subtract the mean path that every masked pass still carries.
+
+        **Bin 0 is identically zero and is still reported.** RIN has already removed the
+        window mean, so the rFFT's bin 0 - which *is* that mean - is zero on every window,
+        and the weights in row 0 multiply nothing (GB-44). Returning it as a measured zero
+        rather than dropping it is the same choice as attributing 0.0 to a channel FITS
+        does not read: an absent entry and a zero entry say different things.
+        """
+        if self._bin_matrices is None:
+            basis = np.eye(self.input_len, dtype="float64")
+            background = self.mean_matrix()
+            matrices = {}
+            for index in range(self.cof):
+                mask = np.zeros(self.cof, dtype="float64")
+                mask[index] = 1.0
+                alone = self._extend(basis, keep=mask)[:, self.input_len :].T
+                matrices[index] = (alone - background).copy()
+            self._bin_matrices = matrices
+        return self._bin_matrices
+
     def linear_terms(
         self, x: np.ndarray, channels: tuple[str, ...]
     ) -> dict[str, tuple[tuple[np.ndarray, np.ndarray], ...]]:
@@ -416,19 +465,31 @@ class FITSForecaster:
             )
         self.weight = np.asarray(weight, dtype="complex128")
         self._matrix = None
+        self._mean_matrix = None
+        self._bin_matrices = None
 
-    def _extend(self, closes: np.ndarray) -> np.ndarray:
+    def _extend(self, closes: np.ndarray, keep: np.ndarray | None = None) -> np.ndarray:
         """``(B, L)`` -> ``(B, L+H)``: spec 6.2's pipeline, in numpy.
 
         **RIN is per instance.** ``closes.mean(axis=1)`` is each window's own mean; a batch
         mean would pull later windows into earlier predictions, because a batch is ordered
         in time. Spec 4.4's property 6 exists for this exact bug and ``BatchNormForecaster``
         is the model written to prove the property can fail.
+
+        ``keep`` is a ``(COF,)`` mask over the retained input bins, ``None`` meaning all of
+        them - which is every caller but :meth:`frequency_matrices`. It exists so the
+        per-frequency decomposition of GB-45 can be **measured through this function**
+        rather than re-derived beside it, the same discipline as :meth:`forecast_matrix`:
+        a second copy of the pipeline written for the explanation is a second copy that can
+        drift from the one that forecasts.
         """
         total = self.input_len + self.horizon
         mean = closes.mean(axis=1, keepdims=True)
         spectrum = np.fft.rfft(closes - mean, n=self.input_len, axis=1)
-        mapped = spectrum[:, : self.cof] @ self.weight
+        retained = spectrum[:, : self.cof]
+        if keep is not None:
+            retained = retained * np.asarray(keep, dtype="float64")
+        mapped = retained @ self.weight
 
         padded = np.zeros((closes.shape[0], total // 2 + 1), dtype="complex128")
         padded[:, : self.out_bins] = mapped

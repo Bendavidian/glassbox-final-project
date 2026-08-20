@@ -156,6 +156,33 @@ def direction_accuracy(arm: ArmResult, baseline: ArmResult | None = None) -> flo
     return _delta(_direction_of(arm), baseline, _direction_of)
 
 
+def flatness(arm: ArmResult) -> float:
+    """Mean ``abs(forecast)`` over mean ``abs(actual)``. **1.0 is right-sized.**
+
+    MAE's companion, and it is never optional: **MAE across arms is close to a monotone
+    function of this number and carries almost no information about accuracy.** Measured
+    20 Aug 2026 over 80 fold x arm cells per model - Spearman(MAE, flatness) **+0.811**
+    for DLinear and **+0.668** for FITS, against Spearman(MAE, direction) **+0.009** and
+    **-0.128** - and the 16-fold MAE winner is persistence, which forecasts exactly
+    nothing and has a flatness of **0.0**.
+
+    So a reader given MAE alone cannot tell an arm that got *better* from one that got
+    *flatter*, and every table that reports the one reports the other in the adjacent
+    column (ruled 20 Aug 2026). Spec 7.3 used to ban MAE as a headline on an argument;
+    this is the same ban resting on this project's own measurement.
+
+    Below 1.0 the forecast is timid, above it overconfident. NaN when there is nothing to
+    measure, and NaN rather than infinity when the truth is identically zero - a ratio
+    against nothing is undefined, not enormous.
+    """
+    if arm.predicted is None or arm.actual is None or len(arm.actual) == 0:
+        return math.nan
+    truth = float(np.abs(_require_finite(arm.actual, "actual")).mean())
+    if truth == 0.0:
+        return math.nan
+    return float(np.abs(_require_finite(arm.predicted, "predicted")).mean()) / truth
+
+
 def always_long_accuracy(arm: ArmResult) -> float:
     """Accuracy of calling **up** on every window: the fold's realised up rate.
 
@@ -257,6 +284,11 @@ METRICS: tuple[tuple[str, Callable[..., float], bool], ...] = (
     ("average_trade", average_trade, True),
 )
 
+# MAE is never reported without `flatness` beside it (ruled 20 Aug 2026). The pairing is
+# expressed here, in the one place that builds the columns, rather than remembered at each
+# table - the same reason `dir_ref` sits immediately after `direction`.
+COMPANIONS: dict[str, str] = {"mae": "flatness"}
+
 # The direction column's reference is always-long, measured, not persistence.
 # See `direction_accuracy` and `always_long_accuracy`.
 CHANCE_REFERENCED = frozenset({"direction_accuracy"})
@@ -293,6 +325,7 @@ def summarise(results: Sequence[ArmResult], baseline: ArmResult) -> pd.DataFrame
         }
         chance = always_long_accuracy(arm)
         row["direction_reference"] = chance
+        row["flatness"] = flatness(arm)
         for name, metric, _ in METRICS:
             value = metric(arm)
             row[name] = value
@@ -307,9 +340,21 @@ def summarise(results: Sequence[ArmResult], baseline: ArmResult) -> pd.DataFrame
         "n_trades",
         "n_strategy_trades",
         "direction_reference",
-        *(part for name, _, _ in METRICS for part in (name, f"{name}_delta")),
+        *(part for name, _, _ in METRICS for part in _columns_for(name)),
     ]
     return pd.DataFrame(rows, columns=columns)
+
+
+def _columns_for(name: str) -> tuple[str, ...]:
+    """A metric's columns: the value, its companion if it has one, then its delta.
+
+    The companion sits **between** the value and the delta so the two cannot be read
+    apart, which is the whole point of pairing them.
+    """
+    companion = COMPANIONS.get(name)
+    if companion is None:
+        return (name, f"{name}_delta")
+    return (name, companion, f"{name}_delta")
 
 
 # ── primitives, exposed because the report and the tests both want them ──────
@@ -495,6 +540,7 @@ def _require_finite(values: np.ndarray, name: str) -> np.ndarray:
 
 
 __all__ = [
+    "COMPANIONS",
     "DAYS_PER_YEAR",
     "METRICS",
     "MIN_EXPOSED_FRACTION",
@@ -506,6 +552,7 @@ __all__ = [
     "direction_accuracy",
     "drawdown_curve",
     "exposed_fraction",
+    "flatness",
     "hit_rate",
     "mae",
     "max_drawdown",
