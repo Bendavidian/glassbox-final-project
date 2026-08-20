@@ -77,6 +77,11 @@ from glassbox.contracts.schemas import ChannelStats, Forecast, Signal, WindowBat
 from glassbox.data.historical import load_history
 from glassbox.engine import risk
 from glassbox.engine.signal import ENTER_LONG, Thresholds, decide_all
+from glassbox.explain.channel import (
+    attribute,
+    cancellation,
+    cancellation_is_meaningful,
+)
 from glassbox.features.builder import (
     build_feature_frame,
     build_windows,
@@ -125,6 +130,13 @@ class ArmRun:
     result: metrics.ArmResult
     calibration: Calibration
     seconds: float
+    cancellation: float = math.nan
+    """Mean surviving fraction of the gross channel view over the test windows (GB-30).
+
+    Carried here rather than recomputed by GB-49, because it falls out of the explanation
+    layer for free and a second computation is a second thing that can disagree. NaN for
+    an arm that makes no forecast.
+    """
     forecasts: bool = True
     """False for buy-and-hold, which makes a directional call and no magnitude forecast.
 
@@ -214,14 +226,14 @@ def run(
     runs: list[ArmRun] = []
     for fold in folds:
         for arm in dict.fromkeys((model, BASELINE)):  # dedupe, keep order
-            done = _run_arm(arm, fold, frames, bars, cfg)
+            done = run_arm(arm, fold, frames, bars, cfg)
             runs.append(done)
             log(
                 f"fold {fold.number} {arm}: {done.seconds:.1f}s, "
                 f"{len(done.result.strategy_trades)} trades"
                 f"{', stood aside' if done.calibration.stood_aside else ''}"
             )
-        held = _run_buy_and_hold(fold, frames, bars, cfg)
+        held = run_buy_and_hold(fold, frames, bars, cfg)
         runs.append(held)
         log(f"fold {fold.number} {BUY_AND_HOLD}: {held.seconds:.1f}s")
 
@@ -578,7 +590,7 @@ def equal_weight(n_symbols: int):
     return sizer
 
 
-def _run_arm(
+def run_arm(
     name: str,
     fold: Fold,
     frames: dict[str, pd.DataFrame],
@@ -626,10 +638,28 @@ def _run_arm(
         ),
         calibration=calibration,
         seconds=time.perf_counter() - started,
+        cancellation=_mean_cancellation(run.model, test_batch, arm_cfg),
     )
 
 
-def _run_buy_and_hold(
+def _mean_cancellation(model, batch: WindowBatch, cfg: Config) -> float:
+    """Mean ``|sum(c)| / sum(|c|)`` over the batch's windows.
+
+    Spec 7 (1j): high cancellation is the signature of a linear model whose weights are
+    fitting noise that mostly offsets, and it is the mechanism behind the direction result
+    rather than a separate diagnostic. It costs one attribution per window of a linear
+    map, and it falls out of a layer the system runs anyway.
+    """
+    channels = cfg.channels.active_channels
+    found = [attribute(model, window, channels) for window in batch.X]
+    if not found or not any(map(cancellation_is_meaningful, found)):
+        # A univariate model reads exactly 1.0 whatever it did - one channel cannot
+        # disagree with itself - so the cell is empty rather than perfect.
+        return math.nan
+    return float(np.mean([cancellation(one) for one in found]))
+
+
+def run_buy_and_hold(
     fold: Fold,
     frames: dict[str, pd.DataFrame],
     bars: dict[str, pd.DataFrame],

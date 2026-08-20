@@ -4,12 +4,23 @@
 !.env.example
 
 # Data and model artefacts
-# The parquet snapshots stay out of git; the quality report does not. It is a provenance
-# artifact — it records what the data looked like when a result was produced, which a
-# reader of that result needs and cannot reconstruct. Note the pattern: `data_cache/`
-# would exclude the directory itself and make the negation below unreachable.
+# **The parquet snapshots are tracked, reversing the original decision** (20 Aug 2026).
+# They stayed out of git as a matter of habit, and the habit cost more than the 800 KB it
+# saved: every cache-gated test — the train/live parity sweep, the offline smoke path, the
+# whole study grid — was SKIPPED in CI, so a mechanism the project relies on ran nowhere
+# except on one laptop. CLAUDE.md §3: a mechanism that can be skipped by a flag is a
+# mechanism only when the flag is off.
+#
+# It also makes `data_snapshot_last_bar` mean something. §7 requires every result to name
+# the snapshot it ran against; a snapshot nobody else has is a name, not a reference.
+#
+# The quality report stays tracked for the reason it always was: it records what the data
+# looked like when a result was produced, which a reader of that result cannot
+# reconstruct. Note the pattern: `data_cache/` would exclude the directory itself and make
+# the negations below unreachable.
 data_cache/*
 !data_cache/quality_report.json
+!data_cache/*.parquet
 checkpoints/
 
 # Python

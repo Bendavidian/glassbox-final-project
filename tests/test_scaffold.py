@@ -174,3 +174,44 @@ def test_every_declared_dependency_is_pinned_in_the_lock(repo_root: Path) -> Non
 def _normalised(name: str) -> str:
     """PEP 503 normalisation, so ``python_dotenv`` and ``python-dotenv`` compare equal."""
     return re.sub(r"[-_.]+", "-", name.strip()).lower()
+
+
+def test_the_data_snapshot_is_tracked_so_gated_tests_run_in_ci(
+    repo_root: Path,
+) -> None:
+    """A mechanism that can be skipped by a flag is a mechanism only when the flag is off.
+
+    Roughly fourteen tests in this suite are gated on ``data_cache/`` — the train/live
+    parity sweep, the offline smoke path, the whole study grid — and while the snapshot
+    was git-ignored every one of them **skipped in CI**. They ran on one laptop and
+    nowhere else, which is how a defect reached ``results.csv`` past a test that had
+    already been written to catch it (20 Aug 2026, DECISIONS).
+
+    Tracking the snapshot is what makes them run, and this test is what stops it being
+    quietly un-tracked again. It also makes ``data_snapshot_last_bar`` a reference rather
+    than a name: §7 requires every result to say which snapshot produced it.
+    """
+    import subprocess
+
+    from glassbox.config.loader import load_config
+
+    cfg = load_config()
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", cfg.data.cache_dir],
+        cwd=repo_root,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.split("\0")
+    tracked = {Path(name).name for name in listed if name}
+
+    missing = sorted(
+        f"{symbol}.parquet"
+        for symbol in cfg.universe
+        if f"{symbol}.parquet" not in tracked
+    )
+
+    assert not missing, (
+        f"the snapshot for {missing} is not tracked, so every cache-gated test skips in "
+        "CI. See CLAUDE.md §3 and the .gitignore comment"
+    )

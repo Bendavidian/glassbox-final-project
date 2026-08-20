@@ -175,6 +175,33 @@ def shares(attribution: Attribution) -> dict[str, float]:
     }
 
 
+# Below this many contributing channels there is nothing that *could* cancel, so the
+# statistic is arithmetic rather than evidence. See `cancellation_is_meaningful`.
+MEANINGFUL_CHANNELS = 2
+
+
+def contributing_channels(attribution: Attribution) -> int:
+    """How many channels contributed anything at all to this forecast."""
+    return sum(1 for value in attribution.per_channel.values() if value != 0.0)
+
+
+def cancellation_is_meaningful(attribution: Attribution) -> bool:
+    """Whether :func:`cancellation` measures anything for this attribution.
+
+    **A univariate model's cancellation is exactly 1.0 by construction**, and that is
+    arithmetic, not coherence: with one contributing channel ``|Σc| == Σ|c|`` whatever the
+    channel did. FITS reads 1.0000 in every cell of GB-49's grid for this reason, and a
+    reader scanning that column sees perfect agreement where the truth is that there was
+    nobody to disagree with.
+
+    So the number is suppressed rather than printed wherever fewer than
+    :data:`MEANINGFUL_CHANNELS` channels contribute. Suppressed at the point of the number
+    and not only in a caveat: a caveat lives in a paragraph a reader scanning a column
+    never reaches.
+    """
+    return contributing_channels(attribution) >= MEANINGFUL_CHANNELS
+
+
 def cancellation(attribution: Attribution) -> float:
     """How much of the gross channel view survived into the forecast, in ``[0, 1]``.
 
@@ -192,4 +219,12 @@ def cancellation(attribution: Attribution) -> float:
     return 0.0 if gross == 0.0 else abs(sum(values)) / gross
 
 
-__all__ = ["ChannelLinear", "attribute", "cancellation", "shares"]
+__all__ = [
+    "MEANINGFUL_CHANNELS",
+    "ChannelLinear",
+    "attribute",
+    "cancellation",
+    "cancellation_is_meaningful",
+    "contributing_channels",
+    "shares",
+]

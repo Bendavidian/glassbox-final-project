@@ -7,6 +7,36 @@ choice rather than an omission, and so they do not leak into the codebase mid-sp
 
 ---
 
+## Analytic resampling initialisation — learn the residual, not the geometry
+
+**Motivation, measured on real data 20 Aug 2026** (GB-45/GB-46, and the reason this is a
+research idea rather than a hunch): **86% of FITS's learned frequency response is
+reproduced by a model trained on white noise.** The gain curves correlate at **+0.9485**,
+and gain tracks grid misalignment `|η·k − round(η·k)|` at **Spearman −0.9427,
+p = 1.8e-11**. The complex layer is spending most of its 1,150 effective parameters
+learning a **deterministic resampling operator** — how to move bin `k` of a length-`L`
+grid onto a length-`L+H` one — leaving roughly **14%** for anything about the data.
+
+**The idea.** That operator can be written in closed form. Initialise the complex weight
+with it and train only the **residual**, so the capacity goes to the data instead of to
+the geometry. Zero initialisation currently makes the model spend its first epochs
+rediscovering an operator that was never in question.
+
+**What would make it a result rather than a refactor.** The comparison is not "does MAE
+improve" — §7.3 bans that as a headline and the measurement above is exactly why. It is
+whether the *residual* response, once the geometry is subtracted, still correlates with a
+white-noise control. If it does not, the model has learned something about the market and
+the current architecture was hiding it under an operator. If it does, FITS at this
+configuration has nothing to say and that is worth reporting too.
+
+**Why parked.** It changes the architecture, invalidates every checkpoint, and needs its
+own null control and grid sweep to mean anything — which is a task, not an afternoon. It
+also interacts with the horizon: the cost it removes is a function of `η = 1 + H/L` and
+vanishes entirely at `H = L`, so the benefit is configuration-specific and the study would
+have to say at which configurations it exists.
+
+---
+
 ## Regime Guard — reconstruction head as out-of-distribution detector
 
 FITS uses the same architecture for anomaly detection: instead of forecasting forward,

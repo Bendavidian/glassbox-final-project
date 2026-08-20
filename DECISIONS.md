@@ -7,6 +7,270 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-20 — Which claims survive which test: the grid, classified
+
+**Decision.** Every claim the grid can speak to is classified against **both** required
+tests, and the classification is the reportable object rather than any single number.
+35 cells, 560 arm-folds, **15.1 minutes of arm time** against a 36-minute estimate;
+679 rows, 480 reportable.
+
+| claim | grid sensitivity (3 anchors) | null control (white noise) | verdict |
+|---|---|---|---|
+| **No arm beats the always-long bar** | **−4.25 to −6.48 pts** at every anchor for every arm; Wilcoxon p ≤ 0.021 in 7 of 9 cells | the arms sit at their noise level, the bar does not | **survives both** |
+| FITS beats DLinear on direction | sign-stable: +0.96 / +0.83 / +0.88 pts | **+0.18 pts under white noise** | **survives neither** — p = 0.34 / 0.61 / 0.49, never significant |
+| The wavelets help DLinear | **fails**: +0.30 → +1.24 → +1.36 pts, p = 0.46 → 0.103 → **0.039** — significant at exactly one anchor of three | **+0.57 pts under white noise**, a third of the anchor-0 effect | **survives neither** |
+| Any arm extracts signal at all | — | **−0.47 / −0.74 / +0.31 pts** against its own noise twin, p = 0.94 / 0.86 / 0.94 | **survives neither** |
+
+**Only one claim survives both, and it is the negative one.** Every positive claim the grid
+suggests dies to at least one test, and two of them die to both. The wavelet claim is the
+`r = −0.47` pattern exactly: **significant at one anchor of three**, and a third of its
+anchor-0 effect present with no data at all.
+
+**A validation of the control design, and it is worth reporting for its own sake.** The
+always-long bar under the two nulls:
+
+| always-long bar | direction | edge over chance |
+|---|---|---|
+| real data | 0.5560 | **+5.60 pts** |
+| shuffled returns | 0.5418 | +4.18 pts |
+| white noise | 0.5064 | **+0.64 pts** |
+
+**Shuffling preserves the return distribution including its positive mean, so drift
+survives it; zero-mean noise has none, so the bar collapses to chance.** The two controls
+therefore separate **order** from **drift**, and the one that kills the bar is the one that
+should. That is the controls behaving as designed, measured rather than asserted — and it
+is what licenses reading "the arms are at their noise level" as a fact about the arms.
+
+**Determinism confirmed**, not assumed: `test_the_same_grid_twice_gives_the_same_numbers`
+runs the grid twice and compares every column but `seconds`, which is wall time and not a
+result.
+
+**The cancellation column now reports what it can.** `dlinear` 224 of 224 cells filled,
+mean **0.6174**; `fits`, `persistence` and `buy_and_hold` **0 of 112 / 224 / 112** — empty
+rather than 1.0000 or 0.0000, because a model with fewer than two contributing channels has
+nothing that could cancel. Suppressed at the point of the number, per the ruling.
+
+---
+
+## 2026-08-20 — The first grid artefact was wrong, and the test that catches it was already written
+
+**What happened.** `results.csv` reported **MAE 1.0014 and flatness 53.05** for the
+buy-and-hold rows, on a series whose scale is 0.015. Buy-and-hold makes a directional call
+and **no magnitude forecast**: its `predicted` array is that call, not a log-return path.
+`ArmRun.forecasts` exists precisely to say so, and `smoke_offline.fold_table` honours it —
+*"a metric an arm does not produce is reported as absent, not as a number"*. My `_row`
+ignored the flag.
+
+**The order of operations was the error, not the omission.** The test asserting it —
+`market["mae"].isna().all()` — was **already written** when the 40-minute grid was
+launched; it is cache-gated and slow, so it had been deselected from the quick run and had
+never executed. **A test written and not run is a note**, which is the rule in `CLAUDE.md`
+§3 arriving from a direction it had not been stated in: the rule says a *comment* is not a
+mechanism, and this says a *deselected test* is not either.
+
+**Consequence.** `mae`, `rmse` and `flatness` are gated on `arm.forecasts` in the one place
+the row is built; `direction` and `direction_reference` are not, because the always-long
+call is real and is the bar by construction. The grid was re-run rather than patched — a
+results file corrected by hand is a results file nobody can reproduce, and the re-run also
+re-exercises the determinism the study claims. **Rule of thumb worth keeping: run the test
+that validates an artefact before spending forty minutes producing it.**
+
+---
+
+## 2026-08-20 — The first full grid: no arm distinguishes the market from noise
+
+**Decision.** Reported as it came out. 679 rows, 480 reportable, 199 null-control or
+skipped; 7 conditions × 16 folds × 5 live arms plus the market reference.
+
+**The reference condition** (anchor 0, `lr` 1e-3, real data), 16 folds:
+
+| arm | direction | bar | MAE | flatness | cancellation | return | Sharpe | aside |
+|---|---|---|---|---|---|---|---|---|
+| dlinear C0_base | 0.4959 | 0.5564 | 0.0161 | 0.316 | 0.578 | −0.31% | −0.33 | 5/16 |
+| dlinear C2_hybrid | 0.4989 | 0.5564 | 0.0167 | 0.422 | 0.545 | +0.05% | −0.18 | 4/16 |
+| fits C0_base | **0.5055** | 0.5564 | 0.0158 | 0.273 | 1.000 | +0.42% | +0.38 | 2/16 |
+| persistence | — | 0.5564 | **0.0153** | 0.000 | 0.000 | 0.00% | — | 16/16 |
+
+**No arm beats the always-long bar. Persistence still wins MAE.** And the wavelets do not
+rescue DLinear: C2_hybrid moves direction from 0.4959 to 0.4989, both below the bar.
+
+**The null control is the finding, and it is unambiguous.** Direction accuracy:
+
+| arm | real | shuffled | white noise |
+|---|---|---|---|
+| dlinear C0_base | 0.4959 | 0.5021 | 0.5006 |
+| dlinear C2_hybrid | 0.4989 | 0.5071 | 0.5063 |
+| fits C0_base | 0.5055 | 0.5039 | 0.5025 |
+
+**Every arm scores the same on real data as on a market with no temporal structure at
+all**, and DLinear scores *worse* on the real one. Mean total return says it again: FITS
+returns **+0.42% on the real market and +1.32% on shuffled returns**.
+
+**The phrasing is fixed, and the first version of it was too short.** *"There is no
+measurable difference between this market and noise, to these models"* is saved only by
+its last four words, and a reader remembers the first clause. On the same footing:
+
+| | direction accuracy |
+|---|---|
+| always-long, real data | **0.5564** |
+| DLinear, real | 0.4959 |
+| DLinear, white noise | 0.5006 |
+| FITS, real | 0.5055 |
+| FITS, white noise | 0.5025 |
+
+**The models sit at their noise level. The market does not.** Always-long extracts **5.6
+points above chance** from the same windows, scored by the same function, so the structure
+exists and is reachable. The claim is therefore:
+
+> **These models extract nothing from this market that they do not also extract from white
+> noise.** That is a statement about the models, not about the market: over the same
+> period, a constant always-long rule beats chance by 5.6 points, so the structure exists
+> and is reachable — just not by explicit or implicit frequency decomposition at this
+> horizon, on this universe, with these channels.
+
+That answers §1.4 with a **control** rather than only with a baseline, and it is far harder
+to attack than "the market is noise" — which is a claim this data refutes.
+
+**And it survives grid sensitivity**, which is the right direction for a null: direction
+runs 0.4959 / 0.4973 / 0.5006 across the three anchors for DLinear and 0.5055 / 0.5056 /
+0.5095 for FITS, below the bar at every one.
+
+**The learning-rate axis reproduces §7.3's argument in one table.** DLinear C0_base:
+
+| `lr` | flatness | MAE |
+|---|---|---|
+| 1e-3 | 0.316 | 0.0161 |
+| 1e-4 | 0.091 | 0.0153 |
+| 1e-5 | **0.019** | **0.0153** |
+
+At `1e-5` the model forecasts at **1.9% of the truth's magnitude** and its MAE **equals
+persistence's exactly**. The best-MAE model is the one that forecasts nothing, measured on
+this project's own grid rather than argued from the definition.
+
+**One measurement artefact, flagged rather than reported as a result.** FITS's
+`cancellation` is **exactly 1.0000** in every cell, and that is arithmetic rather than
+evidence: FITS is univariate, so one channel contributes and `|Σc| / Σ|c|` is 1 by
+construction. **Cancellation is only meaningful for a multi-channel model**, and GB-57 must
+say so where it presents the column — otherwise FITS reads as the arm whose explanation
+never cancels, which would be a claim about the model rather than about the channel count.
+
+---
+
+## 2026-08-20 — GB-49: two decisions the grid forced, reported rather than assumed
+
+**Decision 1 — the design is a star, not a cross product.**
+
+| | conditions | cells | arm-folds | estimate |
+|---|---|---|---|---|
+| full cross (3 anchors × 3 rates × 3 controls) | 27 | 135 | 2,160 | **~140 min** |
+| star: one centre, one departure per axis | 7 | 35 | 560 | **~36 min** |
+
+The instruction was to report the count and, if it exceeded an hour, say which axes to
+cross fully and why. It does — 2.3 hours — so: **cross nothing fully; depart from one
+centre on each axis.** The 20 extra conditions buy *interactions* (does the learning-rate
+effect differ at anchor 42 under shuffled returns), which nobody asked and which no claim
+in this project rests on. What each axis actually needs is a **common reference to depart
+from**, and that is exactly what a star gives. `--full` runs the cross product for the day
+somebody wants an interaction, and `--plan-only` prints both numbers before anything runs,
+so a 36-minute command is a decision rather than a surprise.
+
+**Decision 2 — the null arms go in the same `results.csv`, gated, not in a second file.**
+
+The requirement is that they are **never averaged with arms that are about the market**.
+The strongest available mechanism is not physical separation — a second file can be read
+alongside the first by anyone, and it can drift out of step in columns or in vintage.
+It is a **single named gate**, which is the shape this project already used for exactly
+this problem: `records.is_reportable` says which provenances may reach a metric, once,
+rather than at each caller. `study.reportable` is the same function for the same reason,
+and a test asserts a null row cannot pass it.
+
+There is a second argument, and it is the one that settles it: **the null rows are only
+meaningful beside their real counterparts.** The whole point is the comparison — real
++1.9640 against noise +1.9309 — and splitting them across files turns that comparison into
+a join, which is a step somebody eventually gets wrong in the other direction.
+
+**Consequence.** Every axis added since §7.4 was written is a column: `anchor`, `lr`,
+`control`, `flatness` (immediately beside `mae`), `cancellation`,
+`data_snapshot_last_bar`. The deliberately empty FITS × C2_hybrid cell is written as a
+**skipped row carrying its reason** — a blank cell reads as a run that failed, and this one
+is a design decision. `run_arm` and `run_buy_and_hold` became public in `smoke_offline`
+rather than being re-implemented here, so there is one path from a fold to an `ArmRun`;
+`cancellation` moved onto `ArmRun` for the same reason, since it falls out of the
+explanation layer for free.
+
+---
+
+## 2026-08-20 — STANDING REQUIREMENT: every headline claim gets both tests
+
+**Decision.** Grid sensitivity **and** a null control, for every headline claim, reported
+beside the real effect size.
+
+**Reasoning, and it is two demonstrations rather than an argument.** The tests catch
+different failures and neither subsumes the other:
+
+| | grid sensitivity | null control |
+|---|---|---|
+| `r = −0.47` timing correlation | **died** (→ −0.0025 under a one-week shift) | would have passed |
+| FITS phase advance | passed, **48 of 48 cells**, sd 0.0203 | **died** (+1.9640 real vs +1.9309 on white noise) |
+
+Either test alone would have let one of these two through, and both were written up as
+findings before the test that killed them was run. The controls are **within-window
+shuffled returns** and **white noise with matched variance**, and the world is rebuilt end
+to end — prices regenerated from the new returns — because perturbing the features alone
+would leave the backtester trading the real market while the model forecast a synthetic
+one, and every trading metric would compare two different universes.
+
+**And a heuristic for when to reach for the control first**, now in `CLAUDE.md` §3: on
+financial data a **coefficient of variation near 1%** across independently trained models
+is evidence the measurement is about the machine. The phase advance was **1.04%**. Four
+years of equity returns do not produce agreement that tight; a deterministic operator does.
+**Suspicious stability calls for a control, not a larger sweep** — a larger sweep would
+have made the claim look stronger.
+
+---
+
+## 2026-08-20 — A result about FITS, not only about our measurement
+
+**Decision.** The 86% figure is reported in GB-57 as a **result about the architecture as
+published**, not as a caveat on the figure.
+
+**The claim.** If **86% of the learned frequency response is reproduced by a model trained
+on white noise** — gain curves correlating at **+0.9485**, gain against
+`|η·k − round(η·k)|` at **Spearman −0.9427, p = 1.8e-11** — then the complex layer is
+spending most of its 1,150 effective parameters on a **deterministic resampling operator
+that could be written in closed form**, leaving roughly **14%** for anything about the
+data. Any implementation faithful to the paper has this; it is not an artefact of ours.
+
+**It is configuration-specific, and the cost is a function of `η = 1 + H/L`.** Measured
+over the `COF = 24` retained bins at `L = 120`:
+
+| H | η | bins aligned | mean misalignment |
+|---|---|---|---|
+| 1 | 121/120 | 1/24 | 0.0958 |
+| **4 (configured)** | **31/30** | **1/24** | **0.2833** |
+| 12 | 11/10 | 3/24 | 0.2333 |
+| 60 | 3/2 | 12/24 | 0.2500 |
+| 120 | 2 | **24/24** | **0.0000** |
+
+**Correcting the natural framing, which was mine and the supervisor's both:** the cost is
+**not monotone in `H/L`**, and "short horizons are the worst case" is only half right.
+`H = 120` (`η = 2`) is free, and `H = 1` is *better* than `H = 4` — because at `η − 1 =
+1/120` even the highest retained bin is barely displaced. **The worst case is the middle,
+and this project's configuration sits in it.**
+
+**Consequence.** The implication is **parked, not chased**: initialise the complex layer
+with the analytic resampling operator and learn only the residual, so the capacity goes to
+the data — `IDEAS_PARKED.md`, with this measurement as its motivation and with the note
+that the interesting test is not whether MAE improves but whether the *residual* response
+still correlates with a white-noise control.
+
+**And the sentence that makes it land stays:** the *trough* is stable across all 48 models
+(median 8.00 days, range 8.00–9.23) and the *peak* is not (median 40, range 17.1–120).
+**The geometry is the stable half and the data is the unstable half**, which is the
+opposite of the natural guess.
+
+---
+
 ## 2026-08-20 — The phase finding is withdrawn, and the sweep would have confirmed it
 
 **Decision.** The claim that FITS advances 15–30 day cycles by about two days — recorded

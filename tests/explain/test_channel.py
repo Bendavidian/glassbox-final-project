@@ -27,7 +27,14 @@ from glassbox.contracts.schemas import (
     ChannelStats,
     WindowBatch,
 )
-from glassbox.explain.channel import ChannelLinear, attribute, cancellation, shares
+from glassbox.explain.channel import (
+    ChannelLinear,
+    attribute,
+    cancellation,
+    cancellation_is_meaningful,
+    contributing_channels,
+    shares,
+)
 from glassbox.features.builder import build_feature_frame, build_windows
 from glassbox.model import ALL_FORECASTERS
 
@@ -461,3 +468,39 @@ def test_a_scale_that_is_not_positive_is_refused(
     """A zero scale would silently flatten every explanation to nothing."""
     with pytest.raises(ValueError, match="must be positive"):
         attribute(model, sample_windows[0], cfg.channels.active_channels, scale=0.0)
+
+
+# ── when cancellation is arithmetic rather than evidence ────────────────────
+
+
+def test_a_single_contributing_channel_cannot_cancel(cfg: Config) -> None:
+    """FITS reads exactly 1.0000 in every cell of GB-49's grid, and it means nothing.
+
+    With one contributing channel ``|Σc| == Σ|c|`` whatever that channel did, so the
+    statistic is arithmetic. A reader scanning the column sees perfect agreement where the
+    truth is that there was nobody to disagree with — which is the opposite reading.
+    """
+    univariate = an_attribution(close_logret=0.02, rsi14=0.0, vol_z=0.0)
+
+    assert cancellation(univariate) == pytest.approx(1.0)
+    assert contributing_channels(univariate) == 1
+    assert not cancellation_is_meaningful(univariate)
+
+
+def test_two_contributing_channels_make_it_a_measurement(cfg: Config) -> None:
+    offsetting = an_attribution(close_logret=0.08, rsi14=-0.06)
+
+    assert contributing_channels(offsetting) == 2
+    assert cancellation_is_meaningful(offsetting)
+    assert cancellation(offsetting) == pytest.approx((0.08 - 0.06) / 0.14)
+
+
+def test_the_baseline_contributes_nothing_and_is_not_meaningful_either(
+    cfg: Config,
+) -> None:
+    """Persistence: no terms at all, so there is nothing to cancel and nothing to report."""
+    nothing = an_attribution(close_logret=0.0, rsi14=0.0)
+
+    assert contributing_channels(nothing) == 0
+    assert not cancellation_is_meaningful(nothing)
+    assert cancellation(nothing) == 0.0
