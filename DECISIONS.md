@@ -7,6 +7,144 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-20 — Spec §6.3 corrected: the amplitude trap is a comparison bug, not a performance one
+
+**Decision.** §6.3's symptom paragraph is rewritten. It claimed that omitting the
+``(L+H)/L`` scaling leaves "direction accuracy quietly degraded". **It cannot.**
+
+**Reasoning.** Omitting the scale multiplies every sample by exactly ``L/(L+H)`` — a
+uniform, *positive* factor, 0.9677 at ``L=120, H=4``. A positive scaling cannot change a
+sign, so the cumulative forecast scales, its sign is identical, and direction accuracy is
+unchanged to the last decimal. The per-fold trend thresholds are calibrated on forecasts
+carrying the same factor, so the band adapts and the signals barely move either.
+
+What it does damage is narrower and worse:
+
+- **MAE and MSE improve**, because a flatter forecast sits closer to zero.
+- **Cross-model comparison is corrupted.** FITS would beat DLinear on MAE by being flatter
+  rather than by being better, on the one axis where the two are compared directly.
+
+So the bug is real and GB-42 earns its place, for a different reason than the spec gave.
+Its damage is **muted by §7.3 banning MAE as a headline**, adopted for an unrelated reason.
+
+**Consequence.** The wrong line is kept in the spec with its correction beside it, the same
+standard as the "unprotected overnight" correction: a document that reads better than its
+history is a document nobody can check. And the correction is now a **measurement** rather
+than an argument — ``test_the_amplitude_scale_changes_mae_and_cannot_change_direction``
+asserts identical direction and differing MAE on real windows, which is the check that
+would have caught the line when it was written.
+
+---
+
+## 2026-08-20 — GB-42's grid was wrong, and no correct FITS could have passed it
+
+**Decision.** ``tests/model/test_fits_amplitude.py`` moves from the configured ``H=4`` to
+``H=12``, and the choice of grid is stated in the test as part of what it tests.
+
+**Reasoning, measured.** Bin ``k`` of a length-``L`` transform is the frequency ``k/L``;
+the same physical frequency sits at bin ``k·η`` of a length-``L+H`` transform. Two things
+follow, and the test as committed knew neither:
+
+| | 12-day cycle, L=120 | naive zero-pad | frequency-preserving |
+|---|---|---|---|
+| **H=4** (configured) | ``η·k = 10.333`` | err **4.97** | err **4.97** |
+| H=12 | ``η·k = 11.000`` | err 5.97 | err **2.2e-14** |
+
+**Naive zero-padding never reconstructs** — leaving a coefficient at its old index changes
+its frequency, which stretches the signal in time. And **frequency-preserving mapping
+reconstructs only when ``η·k`` is an integer**, which at ``H=4`` it is not. So the
+committed test asserted something no correct implementation could satisfy, and being
+``xfail(strict=True)`` it would have turned the suite red the moment GB-41 landed and
+worked.
+
+**This is the same error as asserting a recovered amplitude of 3.0 where only the ratio is
+exact**: measuring two effects and attributing both to one. An amplitude test at ``H=4``
+measures interpolation error and blames the amplitude.
+
+**Consequence.** The gap at ``H=4`` is not a defect to fix — **it is the reason FITS has a
+learned complex layer at all.** The layer is what interpolates between bins that do not
+line up. A second test now measures the ``H=4`` failure explicitly, so the grid choice is
+justified in the file rather than in a commit message.
+
+---
+
+## 2026-08-20 — GB-41: the four measurements
+
+**1. Parameter count: 1,200 reals, measured.** ``COF = 120 // 5 = 24`` input bins mapped to
+``ceil(1.0333 × 24) = 25`` output bins, ``24 × 25 = 600`` complex weights. The prediction in
+§6.1 was exactly right and is now a measurement. **Counted in reals deliberately** — a
+complex weight is two learnable numbers, and reporting 600 against DLinear's 4,800 would
+flatter FITS by a factor of two on the very axis §6.1 warns the report not to borrow a
+framing from.
+
+**2. RIN is instance normalisation, and the contract test catches the alternative.** Broken
+deliberately once — ``closes.mean()`` instead of ``closes.mean(axis=1, keepdims=True)``,
+one keyword:
+
+```
+FITS (per-window RIN)        max change in window 0 = 0.0            HOLDS
+BatchRINFITS (batch mean)    max change in window 0 = 4.849950e+00   LEAKS
+FITS           contract property 6: PASSED
+BatchRINFITS   contract property 6: FAILED -> fits.predict LOOKS AHEAD: perturbing rows
+               after 2024-01-09 (scale) changed its value at 2024-01-01
+```
+
+Spec §4.4's note — *"property 6 is what catches instance normalisation implemented as batch
+normalisation... a live risk for FITS's RIN stage in GB-41"* — was written before FITS
+existed and is now confirmed against it.
+
+**3. The mean-reversion hypothesis is rejected for FITS. It is a momentum model.**
+Agreement between ``sign(forecast)`` and ``sign(trailing H-day return)``, over 16 folds and
+4,690 test windows:
+
+| model | agreement | sd | above 0.50 |
+|---|---|---|---|
+| dlinear | **0.4991** | 0.0630 | 8/16 |
+| fits | **0.5725** | 0.0733 | **13/16** |
+
+Above 0.50 means the forecast *continues* the recent move. **FITS leans with the trailing
+return in 13 of 16 folds; DLinear is indistinguishable from a coin flip.** A low-pass filter
+that keeps only cycles of five days and longer is a smoother, and a smoothed extrapolation
+continues a trend — so the result is what the architecture implies, but it was hypothesised
+the other way and is now measured.
+
+*Corrected mid-measurement:* the first run took the trailing return from the **scaled**
+window. ``build_windows`` applies ``(x - mean)/std``, and the mean shift can flip the sign
+of a small return, so that measured the scaler as much as the model. On raw returns FITS
+moved 0.5906 → **0.5725** and DLinear 0.5006 → **0.4991**. The conclusion held; the numbers
+did not.
+
+**4. The per-symbol scaler does not earn its place under FITS.** Over the same 16 folds,
+each model fitted twice — once with the fitted per-symbol statistics and once with identity
+statistics. ``y`` is **not** scaled by ``build_windows`` (only ``X`` is), so the MAE
+comparison is in one unit and is like-for-like:
+
+| model | MAE with scaler | without | scaler better | direction with | without | scaler better |
+|---|---|---|---|---|---|---|
+| dlinear | 0.031413 | **0.020060** | 0/16 | **0.5182** | 0.4657 | **12/16** |
+| fits | 0.096841 | **0.015846** | 0/16 | 0.5098 | **0.5133** | 9/16 |
+
+**The two axes disagree, and the disagreement is the answer.** On MAE the scaler is worse
+in 16 of 16 folds for both models — because ``X`` is standardised to unit variance while
+``y`` stays in raw log returns near 0.015, so the model must learn a gain of about 1/65 and
+a zero start with a fixed epoch budget does not get there. On direction the scaler **earns
+its place under DLinear** (0.5182 against 0.4657, better in 12 of 16) and **does not under
+FITS** (0.5098 against 0.5133, better in only 9 of 16 and worse on the mean).
+
+**Nothing is changed on the strength of this.** It is one training budget and one
+initialisation, MAE is banned as a headline by §7.3, and the scaler also serves the four
+channels FITS does not read but DLinear does. It is recorded as a measured asymmetry between
+the arms for GB-49 to sweep and GB-57 to report, not as a configuration change.
+
+**Consequence.** FITS is registered in ``ALL_FORECASTERS`` and passes the §4.4 contract test
+**with no edit to that test**, which was the integration claim. Attribution names every
+active channel with 0.0 for the four it does not read (GB-33's ruling), and is exact because
+the whole pipeline is linear in the window — the ``(H, L)`` matrix is built by pushing the
+``L`` basis vectors through the **actual forward pass**, so it is a measurement of the
+implementation rather than a second derivation that could drift from it.
+
+---
+
 ## 2026-08-20 — GATE 2 criterion 2 amended, because the system behaved correctly
 
 **Decision.** Spec §8's GATE 2 criterion 2 is replaced. It read *"at least one order

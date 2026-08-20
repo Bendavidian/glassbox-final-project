@@ -14,11 +14,14 @@ Append one line per completed task. Newest at the bottom of each sprint.
 **Sprint 3:** **complete** — GB-26, GB-32, GB-33, GB-34/35/36, GB-37, GB-38, GB-39 and
 GB-40. **GATE 2 walked on 20 Aug, five weeks early: 3 of 6 green, not passed, FITS not
 cancelled.** See the gate log.
-**Sprint 4 has started** with GB-42, written before GB-41 as §6.3 requires.
+**Sprint 4 is under way:** GB-42 then GB-41, in that order, as §6.3 requires. FITS is
+registered and passes the contract test with no edit to it.
 **Next task:** run the GATE 2 rehearsal in a live session — `python -m glassbox.live_loop
---rehearsal gate2-execution-path` — then GB-41, the FITS core. **Criterion 6 needs two or
-three separate sessions and only Wednesday to Friday are available.** Still open for Ben:
-DAY versus GTC on the protective legs, outside a rehearsal.
+--rehearsal gate2-execution-path` — then GB-44 (shared weights) and GB-45 (spectral
+attribution), which `fits.forecast_matrix` and the complex weight are now in place for.
+**Criterion 6 needs two or three separate sessions and only Wednesday to Friday are
+available.** Still open for Ben: DAY versus GTC on the protective legs, outside a
+rehearsal.
 **The account is flat** — the quarantined 0.0919 AAPL was sold at 310.394 on 18 Aug on
 instruction, and the following cycle's reconciliation logged the drop. GB-26 is complete and ran a full dry-run cycle
 against the live SIP feed on 18 Aug: ten steps, 610 bars a symbol against a floor of 445,
@@ -200,7 +203,13 @@ depends on nothing in the model layer.
 
 ## Sprint 4 — FITS, Study, Report · 26 Sep – 10 Oct 2026 → GATE 3
 
-_not started_
+| Task | Date | Owner | What was built |
+|---|---|---|---|
+| GB-42 | 20 Aug 2026 | Ben | **Written before GB-41, per §6.3.** Sinusoid reconstruction within 1e-4, plus a companion measuring the trap on the FFT libraries themselves and a third saying why it costs a day. |
+| GB-42 corrected | 20 Aug 2026 | Ben | **The grid was wrong and no correct FITS could have passed it.** Bin `k` is frequency `k/L` on the input grid and `k/(L+H)` on the output grid, so naive zero-padding **never** reconstructs (err 4.97, the amplitude itself) and frequency-preserving mapping reconstructs only when `η·k` is an integer — which at the configured `H=4` it is not (`η·k = 10.333`). Moved to `H=12` (`η·k = 11`, err **2.2e-14**), with the grid choice stated in the test and a second test measuring the `H=4` failure. Same error as asserting amplitude where only the ratio is exact. **The gap at `H=4` is not a defect — it is why FITS has a learned layer.** |
+| Spec §6.3 corrected | 20 Aug 2026 | Ben | The symptom paragraph claimed direction accuracy degrades. **A uniform positive scaling cannot change a sign.** It is a **comparison bug**: MAE and MSE *improve*, and FITS would beat DLinear on MAE by being flatter rather than better. Wrong line kept beside its correction, and converted into a test. |
+| GB-41 | 20 Aug 2026 | Ben | **`model/fits.py`.** RIN → rFFT → LPF → one complex linear layer → zero-pad → irFFT → `(L+H)/L` → inverse RIN → split, per §6.2. Univariate (§6.4) and **attributing to every active channel** with 0.0 for the four it does not read (GB-33). The pipeline is linear in the window, so the model **is** an `(H, L)` matrix — built by pushing the `L` basis vectors through the *actual forward pass*, so attribution is a measurement of the implementation rather than a second derivation. Torch fits, numpy predicts. B+F supervision hardcoded, zero init. Registered in `ALL_FORECASTERS`; **passes the §4.4 contract test with no edit to that test**. 18 new tests. |
+| GB-41 measurements | 20 Aug 2026 | Ben | **1,200 parameters measured** (24×25 complex, counted as reals — 600 against DLinear's 4,800 would flatter FITS twofold). **RIN is per-instance and property 6 catches the alternative**: a batch-mean variant moves window 0 by 4.85 and fails with *"LOOKS AHEAD"*. **Mean reversion rejected — FITS is a momentum model**: agreement with the trailing move **0.5725**, above 0.50 in **13/16** folds, against DLinear's **0.4991** in 8/16. **The per-symbol scaler does not earn its place under FITS** — MAE worse in 16/16 for both models, but direction better with the scaler for DLinear (0.5182 vs 0.4657, 12/16) and not for FITS (0.5098 vs 0.5133, 9/16). Nothing changed on the strength of it. |
 
 ---
 
