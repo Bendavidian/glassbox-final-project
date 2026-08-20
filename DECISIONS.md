@@ -7,6 +7,268 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-20 — The first head-to-head, and it is negative
+
+**Decision.** The result is recorded as it came out, in the form GB-57 will report it: as a
+delta against persistence on MAE and against the **always-long bar** on direction, per §7.3
+and GB-19's ruling that persistence cannot be the reference for a direction column.
+
+**Measured.** 16 folds, the shared model of GB-44 per arm per fold, scored through
+``backtest/metrics.py`` rather than a re-implementation of it — which matters, because
+``direction_accuracy`` excludes windows whose forecast is exactly zero from the denominator
+and a report-side redefinition is how two ends of a study start disagreeing about a number.
+
+| arm | MAE | persistence delta | better in | direction | above the bar in |
+|---|---|---|---|---|---|
+| persistence | **0.015286** | — | — | NaN (forecasts zero) | — |
+| dlinear | 0.031413 | +0.016127 | **0/16** | **0.5182** (sd 0.0559) | **4/16** |
+| fits | 0.096841 | +0.081555 | **0/16** | **0.5098** (sd 0.0735) | **4/16** |
+| always-long | — | — | — | **0.5560** (sd 0.0927) | — |
+
+**Neither model beats persistence on MAE in a single fold, and neither beats the achievable
+constant strategy on direction.** They beat *each other* in 8 folds each, which is the
+cleanest way to say that at this configuration the architectures are indistinguishable.
+
+**Two things a reader must be told beside that table, both measured today.** First, **the
+MAE column as configured is not a model comparison**: FITS's 0.0968 is the B+F unit mismatch
+and DLinear's 0.0314 is the optimiser-resolution artefact, and at their best conditioning the
+two land at 0.015629 and 0.015802 — **still behind persistence's 0.015286**, so the
+conclusion survives its own correction. Second, DLinear's **0.5182 against a bar of 0.5560**
+reproduces GB-27's independently re-measured figure to four decimals, which is the check that
+this pipeline and GB-19's agree.
+
+**Wall time, shared model, one fold**: FITS **mean 8.29s, median 6.78s, max 17.87s** (fold 15,
+2,480 training windows); DLinear mean 2.58s. FITS is ~3× slower with 4× fewer parameters,
+because it runs 60 epochs to DLinear's 23 before early stopping and pays for two FFTs a step.
+
+**Consequence.** Reported as an outcome, not a shortfall, and in the same register as
+GB-26's stood-aside band: **a study that reports a null result it measured is worth more than
+one that reports an effect it hoped for.** GB-57 carries it with the conditioning caveat
+attached to the MAE column and explicitly *not* attached to the direction column.
+
+---
+
+## 2026-08-20 — The scaler finding was two mechanisms under one label, and neither is the scaler
+
+**Decision.** Nothing in the configuration changes. Yesterday's conclusion — *"the per-symbol
+scaler does not earn its place"* — is **withdrawn as stated**: it was one label over two
+unrelated mechanisms, and the third instance of the failure mode named above, arriving the
+same day it was named and from my own report.
+
+**The hypothesis under test** (the supervisor's, and it is arithmetic rather than opinion).
+With the scaler ``X`` is unit variance, so a forecast near 0.015 out of a summed linear map
+wants a single weight around **6.1e-4** — while **Adam's step at ``lr=1e-3`` is 1.0e-3, larger
+than the weight it is looking for**. Without the scaler the wanted weight is roughly 41× the
+step. If that is what drove the MAE result, then every MAE number in this project measures a
+learning-rate choice as much as it measures a model.
+
+**Measured: 16 folds × 2 models × 5 arms, 160 fits, MAE and direction always in raw
+log-return units** (the ``y``-standardised arm's forecasts are inverted before scoring).
+
+**1. DLinear — the hypothesis is confirmed, and the predicted number is nearly exact.**
+
+| arm | median abs(w) | ×step | max abs(w) | below step | MAE | direction | flatness |
+|---|---|---|---|---|---|---|---|
+| scaled X, lr 1e-3 | 5.435e-04 | **0.54×** | 6.34e-03 | **71.1%** | 0.031413 | 0.5182 | 1.637 |
+| raw X, lr 1e-3 | 7.067e-04 | 0.71× | 1.44e-02 | 60.8% | 0.020439 | 0.4688 | 0.733 |
+| scaled X, lr 1e-4 | 1.571e-04 | 1.57× | 2.37e-03 | 36.3% | 0.018940 | 0.4888 | 0.616 |
+| scaled X, lr 1e-5 | 3.332e-05 | 3.33× | 2.74e-04 | 17.6% | **0.015629** | 0.4935 | 0.191 |
+| scaled X **and y**, lr 1e-3 | 2.496e-03 | **2.50×** | 2.51e-02 | 23.5% | 0.016068 | 0.4947 | 0.297 |
+
+The predicted 6.1e-4 against a measured **5.4e-4**, and **71% of the learned weights sit below
+the optimiser's step**. The MAE gap closes and reverses exactly as predicted: the scaled arm
+loses to raw on MAE in **0 of 16** folds at ``lr=1e-3``, wins **14 of 16** at ``1e-4`` and
+**16 of 16** at ``1e-5``. Standardising ``y`` moves the median weight to **2.50× the step** and
+wins 16 of 16 at the unchanged learning rate, which is the predicted fix landing where it was
+predicted to land.
+
+**2. FITS — the hypothesis is refuted, and the real mechanism is a different one.** FITS's
+weights are nowhere near the optimiser's floor: median **1.88e-2, nearly 19× the step**, with
+only 7% below it. Lowering the learning rate closes nothing — the scaled arm loses on MAE in
+**0 of 16 folds at every learning rate tried**. What is actually wrong is in the objective:
+
+| FITS arm | forecast MSE | backcast MSE | backcast ÷ forecast |
+|---|---|---|---|
+| raw X, lr 1e-3 | 5.039e-04 | 3.428e-04 | **0.68×** |
+| scaled X, lr 1e-3 | 1.017e-02 | 6.649e-01 | **67.0×** |
+| scaled X, lr 1e-5 | 7.331e-03 | 9.701e-01 | **137.2×** |
+| scaled X **and y**, lr 1e-3 | 9.656e-01 | 6.672e-01 | **0.69×** |
+
+**B+F supervision requires ``X`` and ``y`` to be in the same unit.** With ``X`` standardised
+and ``y`` left in raw log returns, the backcast term is supervised at unit variance and the
+forecast term at 0.015², so the sum is **98.5% backcast** and the objective silently stops
+being B+F. The model reconstructs a unit-variance window and emits a forecast **4.8× too
+large** — measured flatness 4.83 against a right-sized 1.0 — and its MAE is 6× DLinear's for
+that reason and no other. Standardising ``y`` puts the two terms back in one unit (0.69×) and
+the MAE returns to **0.015802**, the best FITS number of the five arms and identical to the
+raw arm to four decimals, which is what scale-equivariance predicts for a linear model behind
+RIN.
+
+**3. And a third thing, which says the whole MAE column is measuring something else.**
+``flatness`` = mean abs(forecast) ÷ mean abs(y). Over all 80 fold × arm cells per model,
+**Spearman(MAE, flatness) = +0.811 for DLinear and +0.668 for FITS**, while
+**Spearman(MAE, direction) = +0.009 and −0.128**. The best-MAE DLinear arm forecasts at
+**19%** of the truth's magnitude. So lowering the learning rate "fixes" MAE by flattening the
+forecast — which is **precisely what §7.3 bans MAE as a headline for**, arriving here as a
+correction to the fix rather than to the bug.
+
+**4. The scaler does not remove the conditioning problem. It moves it.** Per channel, one
+fold, DLinear:
+
+| | mean abs(x) with scaler | median abs(w) | mean abs(x) without | median abs(w) |
+|---|---|---|---|---|
+| close_logret | 0.700 | 5.73e-04 (0.57×) | **0.0145** | 1.61e-03 (**1.61×**) |
+| rsi14 | 0.820 | 4.01e-04 (0.40×) | **55.0** | 4.44e-05 (**0.04×**) |
+| vol_z | 0.735 | 7.66e-04 (0.77×) | 0.770 | 6.17e-04 (0.62×) |
+| mom10 | 0.780 | 2.79e-04 (0.28×) | 0.049 | 1.08e-03 (1.08×) |
+| ma_dist20 | 0.781 | 2.87e-04 (0.29×) | 0.038 | 1.10e-03 (1.10×) |
+
+With the scaler **every channel sits below the step**, 0.28× to 0.77×. Without it the inputs
+span a factor of **3,800** — `rsi14` runs 0..100 while `close_logret` is 0.015 — and the
+weights split: the target channel climbs to 1.61× the step and becomes resolvable, while
+`rsi14`'s falls to **0.04×, twenty-two times below the step**. "Without the scaler ``X`` is
+around 0.015" is true of one channel of five.
+
+**5. What does not move, in any arm.** Direction accuracy: FITS **0.5056 to 0.5098 across all
+five arms, a spread of 0.0041**; DLinear 0.4688 to 0.5182. An optimiser mismatch could hide a
+real result; it could not manufacture a null one, and there is nothing in the direction
+numbers to hide. **The headline is unchanged and is not conditional on any of this.**
+
+**Consequence.** Configuration untouched, per the instruction. Awaiting a ruling on the ``y``
+standardisation, which is the only arm that fixes both models at the learning rate in force.
+Two things follow whatever is ruled: **GB-49 sweeps learning rate alongside its other axes**,
+because a fixed ``lr`` is a hidden arm of the study; and **GB-57 states that every MAE
+comparison is conditional on the learning rate and on the flatness it buys**, with the
+Spearman figures above as the evidence. The direction column carries no such condition.
+
+---
+
+## 2026-08-20 — GB-44: `fits.individual_weights` stops being decorative, and what that cost
+
+**Decision.** ``model/train.py`` consults ``fits.individual_weights`` (spec §5, §6.4). Under
+``false`` — the default and the 2026-08-17 ruling — one model is fitted across the universe,
+as it already was. Under ``true`` a **pooled universe is refused**, naming the remedy, and the
+checkpoint manifest records the regime it was trained under as ``training.weight_sharing``.
+
+**Reasoning.** The key was declared in the configuration contract, documented in §6.4 and
+read by the loader from GB-2 onward, and **nothing consulted it**: it could be set to either
+value and the system behaved identically. A key that reads as honoured and is not is worse
+than no key at all, because a reader of the config file — the supervisor, at the defence —
+is entitled to believe the file describes the system.
+
+Two consequences follow, and neither is a preference:
+
+- **``true`` is a caller-side regime, and that is forced by a frozen contract.**
+  ``Forecaster.predict`` (§4.3) takes ``(B, L, C)`` and **no symbol**, so a single fitted
+  model has nothing to route on and cannot hold five weight sets. Giving it one means
+  changing the protocol every layer above depends on, which rule 1 forbids and which is not
+  worth a study variant. What ``train`` already supports is the other half: ``frames`` may
+  name one symbol, which GB-15's docstring has called "a valid special case" from the
+  beginning. So ``individual_weights: true`` means *one call per symbol, one checkpoint per
+  symbol*, and the mistake worth refusing is being handed the universe under that setting —
+  which would pool five symbols into one weight set while the configuration says the
+  opposite. A universe of **one** is accepted under either setting, because a universe of
+  one has nothing to share weights across and the two regimes are then the same run.
+- **It governs every arm, not only FITS**, despite living in the ``fits`` section. The
+  section is where weight sharing is discussed; the force behind the key is the 2026-08-17
+  comparability ruling, which is about arms being trained alike. A regime applied to FITS
+  alone would train it per symbol while DLinear pooled — exactly the handicap that ruling
+  exists to prevent, and the study would report the handicap as architecture.
+
+**A second defect this closed, found while asserting the switch.** ``config/loader.py``
+validates ``model.active`` against ``VALID_MODELS`` and **may not import the model layer** —
+the layer contract forbids it — so ``ALL_FORECASTERS``'s keys are copied there by hand, and
+nothing checked that the two agree. A name in ``VALID_MODELS`` alone passes configuration
+validation and raises a ``KeyError`` inside ``train``; a name in the registry alone is a
+model no configuration can select. Either way "``model.active`` is the only change needed"
+would be false and no other test would notice. ``test_fits_integration.py`` now asserts the
+two sets are equal.
+
+**Consequence.** The sharing claim is asserted by **breaking** it rather than by reading it:
+a run that quietly fitted five models would still return one object and still list five
+symbols, so the test perturbs the single weight matrix and requires *every* symbol's forecast
+to move. That test is what found the dead DC row below — its first attempt perturbed row 0,
+and nothing moved for anybody.
+
+---
+
+## 2026-08-20 — Measured: 50 of FITS's 1,200 parameters cannot learn, and the row stays
+
+**Decision.** Spec §6.1 now reports **1,200 allocated / 1,150 effective**, and the dead row
+is **kept** rather than removed.
+
+**Reasoning, measured on the configured geometry after a full fold's training.** RIN
+subtracts each window's own mean, and the rFFT's bin 0 *is* that mean — so after RIN it is
+zero on every window, and row 0 of the complex weight matrix multiplies zero on every forward
+pass. It takes no gradient, never leaves its initial value, and cannot change a forecast:
+
+| | measured |
+|---|---|
+| ``max abs(w)`` on row 0, after 100 epochs | **2.1e-11** |
+| ``max abs(w)`` on rows 1.. | **0.89** (median 3.1e-02) |
+| rFFT bin 0 after RIN | **3.6e-15** |
+| rFFT bin 1 after RIN | **13.1** |
+| forecast change when every row-0 weight moves by ``1+1j`` | **exactly 0.0** |
+| the same perturbation on row 1 | **6.2** |
+
+That is ``out_bins = 25`` complex weights — **50 reals, 4.17% of the count** — allocated and
+dead. The FITS-to-DLinear ratio is 4.17× rather than 4×, which changes nothing about §6.1's
+warning and everything about whether the number means what it says.
+
+**Why it stays.** §6.2's low-pass keeps "the first ``COF`` bins" and bin 0 is one of them;
+the source paper's architecture carries the same dead row for the same reason. Removing it is
+a change to a specified pipeline, a retrain of every checkpoint and a changed parameter count,
+bought for a cosmetic 4% — and rule 4 does not permit an architecture change nobody asked for.
+**What is not acceptable is quoting 1,200 as capacity**, and that is the part fixed here.
+
+**Consequence.** ``test_fits.py::test_the_dc_row_is_allocated_and_cannot_learn`` pins both
+figures, because a number in a docstring drifts and an asserted one does not. GB-57 reports
+allocated and effective side by side, and the ``n_parameters`` docstring carries the reason
+at the point a reader would otherwise take the number at face value.
+
+---
+
+## 2026-08-20 — A named failure mode: MEASURING TWO EFFECTS AND BLAMING ONE
+
+**Decision.** This project now has a name for a defect it has produced twice in two days,
+from both ends of the review, and the name is written down so the third instance is
+recognised rather than re-derived.
+
+**The failure mode.** A measurement moves. Two mechanisms could have moved it. The write-up
+names one. Nothing in the result says the other was there, the sentence reads as a finding
+rather than a guess, and it survives review because the *number* is right — it is the
+*attribution* that is wrong. It is the attribution bug of §4.4 wearing prose instead of
+code: **a quantity is only evidence for a cause if some other cause could have been ruled
+out, and an unruled-out cause leaves the claim unfalsified rather than confirmed.**
+
+**Instance 1 — the supervisor's, spec §6.3.** The symptom paragraph said that omitting the
+``(L+H)/L`` scale leaves "direction accuracy quietly degraded". Direction accuracy *is*
+near chance, so the sentence matched the world. But two things were in the room — a
+flattened forecast and a model with no directional edge — and the paragraph gave one cause
+for both. A uniform positive factor cannot change a sign, so the scale explains the MAE
+half and **nothing at all** of the direction half. Corrected 20 Aug, with the wrong line
+kept beside its correction.
+
+**Instance 2 — mine, GB-42.** The amplitude test fed a 12-day sinusoid at the configured
+``H=4`` and asserted the backcast reconstructs. Two effects sit in that error: the
+amplitude shrinkage the test exists to catch, and the bin-interpolation error of a
+frequency that lands at ``η·k = 10.333`` and has no output bin to land on. The test
+attributed the sum to amplitude. Measured, the interpolation term is **the whole of it** —
+4.97 against an amplitude of 3.0 — so the test could not have passed a correct
+implementation. The same slip in miniature, caught the same day: the first draft asserted a
+recovered amplitude of exactly 3.0, where re-sampling onto a longer grid moves where the
+samples fall relative to the peak and only the *ratio* is exact.
+
+**Consequence.** Neither instance was found by a test, and neither could have been: both
+were assertions about *why*. What found them was arithmetic done on purpose against a
+sentence already written. The practical rule this leaves is small and mechanical — **when
+a write-up names a cause, ask what else was in the room, and prefer the claim that isolates
+one variable to the claim that explains everything** — and it is now the first question
+this project asks of its own findings. GB-57 carries the failure mode by name, because it
+generalises well past this codebase.
+
+---
+
 ## 2026-08-20 — Spec §6.3 corrected: the amplitude trap is a comparison bug, not a performance one
 
 **Decision.** §6.3's symptom paragraph is rewritten. It claimed that omitting the
@@ -107,6 +369,16 @@ return in 13 of 16 folds; DLinear is indistinguishable from a coin flip.** A low
 that keeps only cycles of five days and longer is a smoother, and a smoothed extrapolation
 continues a trend — so the result is what the architecture implies, but it was hypothesised
 the other way and is now measured.
+
+**Recorded, because the hypothesis and its correction are both part of the result.** The
+hypothesis on file — a low-pass filter, so a mean-reverting forecast — was the supervisor's,
+and it was **backwards**. What makes it worth recording rather than quietly dropping is that
+**the architecture implied the answer before any data was touched**: a low-pass filter is a
+smoother, a smoothed extrapolation continues a trend, and continuation is momentum. The
+measurement was not needed to *find* the direction — it was needed to establish that the
+implementation does what the architecture says, and to give the size. GB-57 reports the
+hypothesis, its direction, and the fact that the architecture answered it, because a paper
+that reports only confirmed hypotheses is a paper that has hidden its reasoning.
 
 *Corrected mid-measurement:* the first run took the trailing return from the **scaled**
 window. ``build_windows`` applies ``(x - mean)/std``, and the mean shift can flip the sign

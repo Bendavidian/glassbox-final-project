@@ -232,6 +232,59 @@ def test_the_measured_parameter_count(model: FITSForecaster, cfg: Config) -> Non
     assert model.n_parameters == model.cof * model.out_bins * 2
 
 
+def test_the_dc_row_is_allocated_and_cannot_learn(
+    model: FITSForecaster,
+    windows: np.ndarray,
+    channels: tuple[str, ...],
+    cfg: Config,
+) -> None:
+    """1,200 is what the tensor holds. 1,150 is what can move. Both belong in the report.
+
+    RIN subtracts each window's own mean, and the rFFT's bin 0 **is** that mean — so after
+    RIN it is zero on every window, always. Row 0 of the complex weight matrix is therefore
+    multiplied by zero on every forward pass: it takes no gradient, never leaves its
+    initial value, and cannot change a forecast. That is ``out_bins`` complex weights —
+    **50 reals at the configured geometry, 4.17% of the count spec §6.1 reports**.
+
+    **Kept, not removed.** §6.2's low-pass keeps "the first ``COF`` bins" and bin 0 is one
+    of them, and the source paper's architecture carries the same dead row for the same
+    reason. Removing it would be a change to a specified pipeline bought for a cosmetic
+    4%. What is not acceptable is quoting 1,200 as though all of it were capacity, so the
+    number is pinned here and both figures go to GB-57.
+    """
+    horizon = cfg.window.horizon
+    centred = windows[:, :, 0].astype("float64")
+    centred = centred - centred.mean(axis=1, keepdims=True)
+    spectrum = np.fft.rfft(centred, n=cfg.window.input_len, axis=1)
+
+    # The input the row is multiplied by: zero to floating-point precision, beside a
+    # neighbour that is emphatically not, so the assertion is a contrast and not a
+    # tolerance chosen to pass.
+    assert np.abs(spectrum[:, 0]).max() < 1e-12 < np.abs(spectrum[:, 1]).max()
+
+    model.fit(a_batch(windows, channels, horizon))
+
+    assert np.abs(model.weight[0]).max() < 1e-9
+    assert np.abs(model.weight[1:]).max() > 1e-3
+
+    # And the forecast is indifferent to it, which is the property that makes the count
+    # wrong rather than merely unusual.
+    before = model.predict(windows)
+    weight = model.weight.copy()
+    model._set_weight(_bumped(weight, row=0))
+    assert np.array_equal(model.predict(windows), before)
+
+    model._set_weight(_bumped(weight, row=1))
+    assert not np.allclose(model.predict(windows), before)
+
+
+def _bumped(weight: np.ndarray, row: int) -> np.ndarray:
+    """``weight`` with every entry of one row moved by ``1 + 1j``."""
+    disturbed = weight.copy()
+    disturbed[row, :] += 1.0 + 1.0j
+    return disturbed
+
+
 def test_a_wider_cutoff_keeps_fewer_frequencies(
     cfg: Config, channels: tuple[str, ...]
 ) -> None:

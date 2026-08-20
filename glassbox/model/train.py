@@ -53,7 +53,30 @@ pooled scaler would leave NVDA's inputs systematically larger than MSFT's, and s
 weights have no parameter with which to express a symbol-specific response. So a checkpoint
 holds ``{symbol: ChannelStats}``, and GB-16 applies each window's own symbol's statistics.
 
-Implemented in GB-15.
+**The regime is now named by configuration** (GB-44). ``fits.individual_weights`` was
+declared in spec 5, documented in spec 6.4 and read by the loader from GB-2 onward, and
+until GB-44 nothing consulted it: it could be set to either value and the system behaved
+identically. A key that reads as honoured and is not is worse than no key, so
+:func:`train` consults it and :func:`save_checkpoint` records which regime produced the
+weights.
+
+**Per-symbol weights are a caller-side regime, and that follows from a frozen contract
+rather than from taste.** ``Forecaster.predict`` (spec 4.3) takes ``(B, L, C)`` and no
+symbol, so a single fitted model has nothing to route on and cannot hold five weight sets;
+giving it one would mean changing the protocol every layer above depends on. What this
+module already supports is the other half: ``frames`` may name a single symbol, and the
+docstring below has called that "a valid special case" since GB-15. So
+``individual_weights: true`` means *call this function once per symbol*, and the thing
+worth refusing is being handed the whole universe under that setting - which would pool
+five symbols into one weight set while the configuration says the opposite.
+
+**And it governs every arm, not only FITS.** The key lives in the ``fits`` section because
+spec 6.4 is where weight sharing is discussed, but the 2026-08-17 ruling above is what
+gives it force, and that ruling is about comparability across arms. A regime applied to
+FITS alone would train it per symbol while DLinear pooled, which is precisely the handicap
+the ruling exists to prevent - and the study would report that handicap as architecture.
+
+Implemented in GB-15; the weight-sharing regime in GB-44.
 """
 
 from __future__ import annotations
@@ -196,6 +219,7 @@ def train(
     if not frames:
         raise ValueError("cannot train on an empty universe")
     _require_disjoint(("train", train_index), ("val", val_index), ("test", held_out))
+    _require_weight_sharing(cfg, sorted(frames))
 
     # Sorted, not insertion-ordered: the pooled batch's row order decides the mini-batch
     # partition, so a caller passing the same symbols in a different order would otherwise
@@ -308,6 +332,11 @@ def save_checkpoint(
         },
         "training": {
             "symbols": sorted(run.stats),
+            # Which regime produced these weights (GB-44). Not hashed and not checked on
+            # load: it is derivable from `symbols` for a five-symbol universe and not for
+            # a one-symbol one, and GB-25's audit should be able to read the answer rather
+            # than infer it from a count.
+            "weight_sharing": weight_sharing(cfg),
             "n_train_windows": run.n_train_windows,
             "n_val_windows": run.n_val_windows,
             # Validation is *seen* data: early stopping selects on it. Recorded as
@@ -446,6 +475,42 @@ def select_windows(
     )
 
 
+def weight_sharing(cfg: Config) -> str:
+    """``"universe"`` or ``"per_symbol"`` — the regime ``fits.individual_weights`` names.
+
+    A named function rather than a bare boolean read at three call sites, so the mapping
+    from the flag to the word that goes in the checkpoint exists once. The word is what a
+    reader of a manifest wants; the boolean is what the configuration file holds.
+    """
+    return "per_symbol" if cfg.fits.individual_weights else "universe"
+
+
+def _require_weight_sharing(cfg: Config, symbols: list[str]) -> None:
+    """Refuse a pooled universe when the configuration asks for individual weights.
+
+    Raises:
+        ValueError: ``fits.individual_weights`` is true and more than one symbol was
+            handed in. The message names the remedy, because the remedy is the whole of
+            what per-symbol weights means here: one call per symbol.
+
+    A single-symbol mapping is accepted under **either** setting, and deliberately. Under
+    ``true`` it is the regime; under ``false`` it is the special case GB-15 has always
+    allowed and every unit test in this module relies on, and refusing it would be
+    refusing a run that is not wrong - a universe of one has nothing to share weights
+    across, so the two regimes are the same run.
+    """
+    if not cfg.fits.individual_weights or len(symbols) <= 1:
+        return
+    raise ValueError(
+        f"fits.individual_weights is true, so weights are held per symbol, and this "
+        f"call was handed {len(symbols)} of them ({', '.join(symbols)}). Train one "
+        "symbol at a time - `train({symbol: frame}, ...)` - and keep one checkpoint per "
+        "symbol. One fitted model cannot hold five weight sets: Forecaster.predict "
+        "(spec 4.3) takes (B, L, C) and no symbol, so it has nothing to route on. Set "
+        "fits.individual_weights to false for one model across the universe"
+    )
+
+
 def _require_disjoint(*splits: tuple[str, pd.DatetimeIndex | None]) -> None:
     """Refuse overlapping splits, naming the pair and a timestamp they share.
 
@@ -481,4 +546,5 @@ __all__ = [
     "select_windows",
     "train",
     "training_stats",
+    "weight_sharing",
 ]

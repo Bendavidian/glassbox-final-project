@@ -183,6 +183,16 @@ class FITSForecaster:
         Counted in reals rather than complex numbers because that is what a parameter count
         means everywhere else in the study, and comparing 600 complex weights against
         DLinear's 4,800 reals would flatter FITS by a factor of two.
+
+        **This is what the tensor holds, and it is 50 more than the model can use.** RIN
+        subtracts each window's mean and the rFFT's bin 0 *is* that mean, so row 0 of the
+        weight matrix multiplies zero on every forward pass: it takes no gradient, stays at
+        its initial value, and cannot move a forecast. ``out_bins`` complex weights - 50
+        reals at the configured geometry, **4.17%** - are allocated and dead, so the
+        effective count is **1,150**. The row is kept because §6.2's low-pass keeps "the
+        first ``COF`` bins" and the source paper's architecture carries the same dead row;
+        what would be wrong is quoting the allocated number as capacity.
+        ``test_fits.py::test_the_dc_row_is_allocated_and_cannot_learn`` pins both figures.
         """
         return self.weight.size * 2
 
