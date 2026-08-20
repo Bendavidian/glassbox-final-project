@@ -789,7 +789,62 @@ def left_ruler_html(marks: int = 6) -> str:
     return f'<div class="gb-lruler">{ticks}</div>'
 
 
-def header_html(cfg: Config, status: str, reliability: Reliability | None) -> str:
+@dataclass(frozen=True)
+class BandContext:
+    """How the deployed band was selected, not just what it is (ruled 20 Aug 2026).
+
+    ``Thresholds`` carries ``lower`` and ``upper`` and nothing about where they came from,
+    which is correct for a frozen contract and not enough for a reader. **A band resting on
+    8 trades and a band resting on 80 are not the same claim and must not read alike**, and
+    the number quoted is a **maximum over a grid of fifteen candidates**, which is a
+    selected statistic rather than an estimate. Under pure noise the max of fifteen
+    candidates on eight trades is positive almost surely.
+
+    The rule that produced it is not weakened by saying so — it discriminates, standing
+    aside on 5 of 16 folds — and a rule that admitted noise freely would never stand aside
+    at all.
+    """
+
+    stood_aside: bool
+    val_sharpe: float | None
+    val_trades: int | None
+    fold: int | None
+
+    @property
+    def summary(self) -> str:
+        """One line, for the masthead."""
+        if self.stood_aside or self.val_sharpe is None:
+            return "STOOD ASIDE — VALIDATION FOUND NO CANDIDATE WITH A POSITIVE SHARPE"
+        return (
+            f"FOLD {self.fold} &nbsp;·&nbsp; VAL SHARPE {self.val_sharpe:+.3f} "
+            f"&nbsp;·&nbsp; OVER {self.val_trades} TRADES &nbsp;·&nbsp; "
+            "GRID MAXIMUM OF 15 CANDIDATES"
+        )
+
+
+def band_context(path: Path) -> BandContext | None:
+    """Read the band's selection context from the artefact GB-20 wrote.
+
+    ``None`` when there is no artefact — the loop then stands aside for a different reason
+    (no band at all), which ``status_of`` already says.
+    """
+    if not path.is_file():
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return BandContext(
+        stood_aside=bool(raw.get("stood_aside")),
+        val_sharpe=raw.get("val_sharpe"),
+        val_trades=raw.get("val_trades"),
+        fold=raw.get("fold"),
+    )
+
+
+def header_html(
+    cfg: Config,
+    status: str,
+    reliability: Reliability | None,
+    band: BandContext | None = None,
+) -> str:
     """Project block, status chip and the reliability panel, in one strip.
 
     **Stacked** PROJECT / SYSTEM / VERSION, as the references have it: three labelled rows
@@ -834,6 +889,13 @@ def header_html(cfg: Config, status: str, reliability: Reliability | None) -> st
         )
         + f'<div style="margin-top:.7rem"><span class="gb-status">{status}</span></div>'
         + f'<div style="margin-top:.6rem">{record}</div>'
+        + (
+            ""
+            if band is None
+            else '<div style="margin-top:.4rem">'
+            '<span class="gb-label">BAND</span> '
+            f'<span class="gb-meta">{band.summary}</span></div>'
+        )
         + "</div>"
     )
 
@@ -865,7 +927,12 @@ def main(
     hours = _in_market_hours(cfg)
 
     st.markdown(
-        header_html(cfg, status_of(thresholds, hours, quantities), reliability),
+        header_html(
+            cfg,
+            status_of(thresholds, hours, quantities),
+            reliability,
+            band_context(root / "thresholds.json"),
+        ),
         unsafe_allow_html=True,
     )
 
@@ -1052,8 +1119,10 @@ __all__ = [
     "ORANGE",
     "RAMP",
     "RUNNING",
+    "BandContext",
     "PositionRow",
     "Reliability",
+    "band_context",
     "channel_colour",
     "contributions_svg",
     "decision_rows",

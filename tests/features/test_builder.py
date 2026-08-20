@@ -98,13 +98,40 @@ def test_feature_frame_carries_provenance(cfg: Config) -> None:
     assert frame.attrs["source"] == "alpaca"
 
 
-def test_c2_hybrid_raises_until_the_wavelets_land(cfg: Config) -> None:
-    """Dropping the wav_* channels silently would let the study run a C2 arm that is
-    really C0 and report it as a wavelet result."""
+def test_c2_hybrid_builds_now_that_the_wavelets_have_landed(cfg: Config) -> None:
+    """It raised until GB-47, and the refusal earned its place.
+
+    Dropping the ``wav_*`` channels silently would have let the study run a C2 arm that
+    was really C0 and report it as a wavelet result. Now it builds; what remains asserted
+    is that all eight channels are there, because "builds" and "builds the right thing"
+    are different claims.
+    """
     c2 = replace(cfg, channels=replace(cfg.channels, active="C2_hybrid"))
 
-    with pytest.raises(ValueError, match=r"wav_a1.*GB-47"):
-        builder.build_feature_frame(make_bars(), c2)
+    frame = builder.build_feature_frame(make_bars(BARS), c2)
+
+    assert list(frame.columns) == list(c2.channels.active_channels)
+    assert {"wav_a1", "wav_a2", "wav_a3"} <= set(frame.columns)
+
+
+def test_an_unimplemented_channel_still_refuses(cfg: Config) -> None:
+    """The refusal itself is not retired with the wavelets — GB-47 was one instance of it.
+
+    A channel set naming something no builder implements must fail loudly, or the arm
+    silently becomes a narrower one and the study reports the narrower arm's numbers under
+    the wider arm's name.
+    """
+    invented = replace(
+        cfg,
+        channels=replace(
+            cfg.channels,
+            sets=(("invented", ("close_logret", "not_a_channel")),),
+            active="invented",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="not_a_channel"):
+        builder.build_feature_frame(make_bars(), invented)
 
 
 # ── Provenance enforcement ───────────────────────────────────────────────────
@@ -173,15 +200,16 @@ def test_min_history_bars_tracks_the_active_channel_set(cfg: Config) -> None:
 
 
 def test_min_history_bars_raises_for_an_undeclared_channel(cfg: Config) -> None:
+    """``wav_a1`` used to be the undeclared example; it has a warm-up since GB-47."""
     exotic = replace(
         cfg,
         channels=replace(
             cfg.channels,
-            sets=(("exotic", ("close_logret", "wav_a1")),),
+            sets=(("exotic", ("close_logret", "not_a_channel")),),
             active="exotic",
         ),
     )
-    with pytest.raises(ValueError, match="wav_a1"):
+    with pytest.raises(ValueError, match="not_a_channel"):
         builder.min_history_bars(exotic)
 
 

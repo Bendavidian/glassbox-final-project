@@ -7,6 +7,96 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-20 — The phase finding is withdrawn, and the sweep would have confirmed it
+
+**Decision.** The claim that FITS advances 15–30 day cycles by about two days — recorded
+this morning as GB-41's momentum result "arriving from the other side" — is **withdrawn**.
+It is a property of the B+F objective's geometry, not of equity returns.
+
+**The sweep asked for was run and it did not catch it.** 16 folds × 3 fold-grid anchors, 48
+independently trained models: **+1.9582 days, sd 0.0203, positive in 48 of 48 cells**, and
+indistinguishable between anchors (+1.9569 / +1.9538 / +1.9640). That is *more* stable than
+the r = −0.47 timing correlation that vanished under a one-week shift. **Stability across
+folds would have confirmed the claim**, which is the whole problem: a check that a correct
+explanation and an incorrect one both pass is not evidence. It is §4.4's exactness tautology
+in a new costume, and it is the third time this project has met that shape.
+
+**What separates them is a control, not more folds.** Fit the same model on data with no
+temporal structure:
+
+| | phase, 15–30 day band | mean gain |
+|---|---|---|
+| real returns | **+1.9640 days** | 0.8191 |
+| within-window shuffle | **+1.9553 days** | 0.8286 |
+| white noise | **+1.9309 days** | 0.8435 |
+| untrained (zero weights) | +0.0000 | 0.0 |
+
+**It survives the complete destruction of temporal structure.** And so does most of the
+rest: the whole gain curve on white noise correlates with the real-data curve at **+0.9485**,
+trough at **8.00 days in both**, mean absolute difference **0.0319** against a curve range of
+**0.2335** — about **86% of the response's variation is data-independent**.
+
+**The replacement finding is better than the one it displaces.** Gain tracks **grid
+misalignment**: over the 23 retained bins, averaged across all 48 models, **Pearson
+r = −0.9049 and Spearman −0.9427 (p = 1.8e-11)** against `|η·k − round(η·k)|`. The
+best-aligned bin `k=1` (120 days, misalignment 0.033) has gain **0.8102**; the worst,
+`k=15` — **8.00 days, misalignment exactly 0.500** — has **0.5758**. The trough is the
+**half-integer bin**, the frequency that lands exactly between two output bins and cannot be
+reconstructed. The phase even changes sign at that boundary (bins 1–14 about +1.9 days,
+15–23 about −1.0), which no market story predicts and grid geometry does.
+
+So **GB-46's figure keeps its place and changes its meaning**: it shows the cost of
+interpolation — §6.1's `η = 31/30` made visible in trained weights — rather than a discovery
+about equity cycles. What remains data-dependent is the ~14% that differs from the noise
+model, and the fact that the *peak* period is unstable (median 40 days, range 17.1–120)
+where the *trough* is not (median 8.00, range 8.00–9.23). **The stable half is the geometry
+and the unstable half is the data**, which is the opposite of how a reader would guess.
+
+**Consequence.** The withdrawn sentence stays in the spec beside its correction, and the
+general lesson goes to GB-57: **when a measurement is suspiciously stable, the next test is
+a control and not a larger sweep.** Twelve hours separated writing the claim from
+withdrawing it, and the only reason it was caught is that the instruction was "do not trust
+it yet" rather than "confirm it".
+
+---
+
+## 2026-08-20 — GB-47/GB-48: the wavelets, and the floor that did not move
+
+**Decision.** `features/wavelets.py` decomposes **one trailing window per bar** and emits
+the last sample of each reconstructed band. `PARITY_WARMUP` entries may now be a function of
+the configuration.
+
+**Why not the standard recipe.** Transforming the whole series once and taking the bands as
+features is what most of the literature does, and it leaks: a DWT filter is **two-sided**, so
+the reconstruction at `t` is a weighted sum of samples on both sides of `t` — at level 3 with
+`db4`, tens of bars ahead. It looks exactly like a smoothing, and every downstream metric
+improves. `wavelets.whole_series_approximation` implements it **on purpose**, for
+`BatchNormForecaster`'s reason, and GB-48 asserts that GB-10's harness rejects it in **both**
+perturbation modes — separately, because a leak only one mode saw would be a reason to doubt
+the other.
+
+**The warm-up is a different kind of number from RSI's**, and the difference is worth
+keeping visible. RSI's 325 is a tolerance argument about how fast a recursive seed decays,
+re-derived once already after the first derivation proved wrong. The wavelets' 64 is
+**exact**: a DWT of a trailing window depends on that window and on nothing before it, so two
+callers holding the same 64 bars compute the same number to the last bit. There is no residue
+to bound.
+
+**Measured, and against expectation: `min_history_bars` does not move.** It is a **maximum**
+rather than a sum, and RSI's 325 still dominates the wavelets' 64, so the floor stands at
+**445** for `C0_base` and `C2_hybrid` alike. The C2_hybrid parity sweep is byte-identical at
+that floor over **5 symbols × 25 timestamps**, inheriting GB-27's sweep rather than being
+certified at a point — which is the lesson that file exists to carry.
+
+**One thing did change shape.** `CHANNEL_BUILDERS` now takes `(bars, cfg)` for **every**
+channel, including the four that ignore the second argument. The alternative was a second
+table for the configured builders, which is the defect class `CLAUDE.md` §3 now names in its
+general form: one fact in two places with nothing keeping them equal. Same reasoning for the
+warm-up table admitting a callable — hardcoding 64 would put a literal beside the setting it
+is supposed to follow, and the two would disagree the first time anybody tuned it.
+
+---
+
 ## 2026-08-20 — CI red on the fourth instance of one defect class in two days
 
 **Decision.** ``requirements.lock`` gains matplotlib and its five transitive pins, and

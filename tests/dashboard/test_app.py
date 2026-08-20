@@ -526,3 +526,76 @@ def test_the_masthead_stacks_project_system_and_version(cfg_stub) -> None:
 
     assert html.index("PROJECT") < html.index("SYSTEM") < html.index("VERSION")
     assert html.count("gb-metarow") == 3
+
+
+# ── the band's selection context (ruled 20 Aug 2026) ────────────────────────
+
+
+def test_the_band_carries_how_it_was_selected(tmp_path: Path) -> None:
+    """A band on 8 trades and a band on 80 are not the same claim.
+
+    ``Thresholds`` carries ``lower`` and ``upper`` and nothing about provenance, which is
+    right for a frozen contract and not enough for a reader — so the masthead states the
+    validation Sharpe, the trade count it rests on, and that it is a **grid maximum**.
+    Under pure noise the maximum of fifteen candidates on eight trades is positive almost
+    surely, and a reader who is not told that reads a selected statistic as an estimate.
+    """
+    path = tmp_path / "thresholds.json"
+    path.write_text(
+        json.dumps(
+            {
+                "stood_aside": False,
+                "lower": 0.026,
+                "upper": None,
+                "val_sharpe": 0.4826,
+                "val_trades": 8,
+                "fold": 16,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    context = app.band_context(path)
+
+    assert context is not None
+    assert not context.stood_aside
+    assert "+0.483" in context.summary
+    assert "8 TRADES" in context.summary
+    assert "GRID MAXIMUM" in context.summary
+    assert "FOLD 16" in context.summary
+
+
+def test_a_stood_aside_band_says_why_rather_than_quoting_a_sharpe(
+    tmp_path: Path,
+) -> None:
+    """Standing aside is a decision, not a missing number."""
+    path = tmp_path / "thresholds.json"
+    path.write_text(
+        json.dumps({"stood_aside": True, "val_sharpe": -3.38, "val_trades": 7}),
+        encoding="utf-8",
+    )
+
+    summary = app.band_context(path).summary
+
+    assert "STOOD ASIDE" in summary
+    assert "-3.38" not in summary  # the rejected candidate is not the deployed band
+
+
+def test_no_band_artefact_is_not_a_band_context(tmp_path: Path) -> None:
+    assert app.band_context(tmp_path / "absent.json") is None
+
+
+def test_the_masthead_renders_the_band_context(cfg_stub) -> None:
+    """It has to reach the screen, not just exist as a value."""
+    context = app.BandContext(
+        stood_aside=False, val_sharpe=0.4826, val_trades=8, fold=16
+    )
+
+    html = app.header_html(cfg_stub, app.RUNNING, None, context)
+
+    assert "BAND" in html
+    assert "GRID MAXIMUM" in html
+    assert "OVER 8 TRADES" in html
+
+    # And a header built without one is unchanged, so the panel degrades rather than breaks.
+    assert "GRID MAXIMUM" not in app.header_html(cfg_stub, app.RUNNING, None)

@@ -35,7 +35,7 @@ import pandas as pd
 from glassbox.config.loader import Config
 from glassbox.contracts.schemas import ChannelStats, WindowBatch
 from glassbox.data.historical import LOG_RETURN, SOURCE_COLUMN
-from glassbox.features import indicators
+from glassbox.features import indicators, wavelets
 
 # Channel name -> the function that produces it from a canonical bar frame.
 #
@@ -44,12 +44,19 @@ from glassbox.features import indicators
 # name says so because GB-30 renders it: "62% from the close_logret channel" is
 # unambiguous where "the close channel" would not be. The raw `close` column stays in the
 # bars frame, where the backtester takes it for PnL.
+# **Every builder takes ``(bars, cfg)``**, including the four that ignore the second
+# argument. GB-47's wavelet channels need the configuration - family, level count, window -
+# and the alternative was a second table for the configured ones, which is the defect class
+# CLAUDE.md 3 now names: one fact in two places with nothing keeping them equal.
 CHANNEL_BUILDERS = {
-    "close_logret": lambda bars: bars[LOG_RETURN],
-    "rsi14": indicators.rsi14,
-    "vol_z": indicators.vol_z,
-    "mom10": indicators.mom10,
-    "ma_dist20": indicators.ma_dist20,
+    "close_logret": lambda bars, cfg: bars[LOG_RETURN],
+    "rsi14": lambda bars, cfg: indicators.rsi14(bars),
+    "vol_z": lambda bars, cfg: indicators.vol_z(bars),
+    "mom10": lambda bars, cfg: indicators.mom10(bars),
+    "ma_dist20": lambda bars, cfg: indicators.ma_dist20(bars),
+    "wav_a1": lambda bars, cfg: wavelets.approximation(bars, cfg, level=1),
+    "wav_a2": lambda bars, cfg: wavelets.approximation(bars, cfg, level=2),
+    "wav_a3": lambda bars, cfg: wavelets.approximation(bars, cfg, level=3),
 }
 
 # The channel the forecast targets (spec 6.4: the spectral pipeline is univariate).
@@ -89,14 +96,24 @@ TARGET_CHANNEL = "close_logret"
 # it byte-identical to what training computed?". GB-27 unified them: one derivation to
 # argue with rather than two constants to keep in step.
 #
-# GB-47 must add wav_a1..wav_a3 at 64 (the wavelet rolling window). min_history_bars then
-# updates itself with no edit anywhere else.
+# **A value may be an int or a function of the configuration** (GB-47). The indicators'
+# warm-ups are module constants; the wavelets' is ``wavelet.rolling_window``, which is a
+# configured value, and hardcoding 64 here would put a magic number beside the setting it
+# is supposed to follow. `_warmup_bars` resolves either form.
+#
+# **And the wavelet warm-up is exact where the RSI's is a bound.** A DWT of a trailing
+# window depends on that window and on nothing before it, so ``rolling_window`` bars is not
+# a tolerance argument - two callers holding the same 64 bars compute the same number, to
+# the last bit. There is no residue to bound and no target to re-derive.
 PARITY_WARMUP = {
     "close_logret": 1,
     "rsi14": indicators.RSI_WARMUP,
     "vol_z": indicators.VOL_Z_WINDOW,
     "mom10": indicators.MOMENTUM_LOOKBACK,
     "ma_dist20": indicators.MA_DIST_WINDOW,
+    "wav_a1": wavelets.rolling_window,
+    "wav_a2": wavelets.rolling_window,
+    "wav_a3": wavelets.rolling_window,
 }
 
 
@@ -112,7 +129,9 @@ def min_history_bars(cfg: Config) -> int:
     """
     channels = cfg.channels.active_channels
     _reject_unknown(channels, PARITY_WARMUP, "declared no parity warm-up")
-    return cfg.window.input_len + max(PARITY_WARMUP[channel] for channel in channels)
+    return cfg.window.input_len + max(
+        _warmup_bars(channel, cfg) for channel in channels
+    )
 
 
 def deepest_warmup_channel(cfg: Config) -> str:
@@ -122,7 +141,7 @@ def deepest_warmup_channel(cfg: Config) -> str:
     """
     channels = cfg.channels.active_channels
     _reject_unknown(channels, PARITY_WARMUP, "declared no parity warm-up")
-    return max(channels, key=lambda channel: (PARITY_WARMUP[channel], channel))
+    return max(channels, key=lambda channel: (_warmup_bars(channel, cfg), channel))
 
 
 def history_requirement(cfg: Config) -> str:
@@ -137,9 +156,15 @@ def history_requirement(cfg: Config) -> str:
     channel = deepest_warmup_channel(cfg)
     return (
         f"{min_history_bars(cfg)} bars is input_len {cfg.window.input_len} plus "
-        f"{PARITY_WARMUP[channel]} bars of {channel} warm-up, the deepest of the active "
-        "channels"
+        f"{_warmup_bars(channel, cfg)} bars of {channel} warm-up, the deepest of the "
+        "active channels"
     )
+
+
+def _warmup_bars(channel: str, cfg: Config) -> int:
+    """One channel's warm-up, whether it is a constant or a configured value."""
+    declared = PARITY_WARMUP[channel]
+    return declared(cfg) if callable(declared) else declared
 
 
 def build_feature_frame(bars: pd.DataFrame, cfg: Config) -> pd.DataFrame:
@@ -161,10 +186,10 @@ def build_feature_frame(bars: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     """
     source = _single_source(bars)
     channels = cfg.channels.active_channels
-    _reject_unknown(channels, CHANNEL_BUILDERS, "is not implemented yet (GB-47)")
+    _reject_unknown(channels, CHANNEL_BUILDERS, "is not implemented")
 
     frame = pd.DataFrame(
-        {channel: CHANNEL_BUILDERS[channel](bars) for channel in channels},
+        {channel: CHANNEL_BUILDERS[channel](bars, cfg) for channel in channels},
         index=bars.index,
     )[list(channels)]
 

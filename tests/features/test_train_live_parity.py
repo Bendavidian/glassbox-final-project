@@ -37,6 +37,7 @@ below-floor tests assert a **refusal** rather than a divergence.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -416,3 +417,72 @@ def test_the_whole_universe_pools_into_one_batch_that_matches_training(
     assert pooled.symbols == tuple(symbols)
     for row, symbol in enumerate(symbols):
         assert np.array_equal(pooled.X[row], trained_windows[symbol][at])
+
+
+# ── the wavelets, swept at the same floor (GB-47) ────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def hybrid_cfg(cfg: Config) -> Config:
+    """``C2_hybrid``: the five base channels plus ``wav_a1..a3``."""
+    return replace(cfg, channels=replace(cfg.channels, active="C2_hybrid"))
+
+
+@pytest.fixture(scope="module")
+def hybrid_windows(
+    universe: dict[str, pd.DataFrame], hybrid_cfg: Config
+) -> dict[str, dict[pd.Timestamp, np.ndarray]]:
+    built: dict[str, dict[pd.Timestamp, np.ndarray]] = {}
+    for symbol, bars in universe.items():
+        batch = build_windows(build_feature_frame(bars, hybrid_cfg), hybrid_cfg, symbol)
+        built[symbol] = {
+            stamp: batch.X[row] for row, stamp in enumerate(batch.timestamps)
+        }
+    return built
+
+
+def test_the_wavelet_channels_are_byte_identical_at_the_floor(
+    universe, hybrid_windows, sweep_stamps, hybrid_cfg: Config
+) -> None:
+    """GB-47's channels inherit the sweep rather than being certified at a point.
+
+    The lesson of this file is that a parity test which samples can certify a floor that
+    does not hold, so a new channel set is swept the same way the old one is — five
+    symbols, twenty-five timestamps, exact equality.
+
+    **The floor does not move**, which was not the expectation. The wavelet warm-up is 64
+    bars and RSI's is 325, and ``min_history_bars`` is a maximum rather than a sum, so 445
+    stands for both channel sets. And the two numbers are different *kinds*: RSI's is a
+    tolerance argument about a decaying seed, re-derived once already; the wavelets' is
+    exact, because a DWT of a trailing window depends on that window and nothing before it.
+    """
+    assert min_history_bars(hybrid_cfg) == 445
+
+    identical, total, failures = sweep(
+        universe,
+        hybrid_windows,
+        sweep_stamps,
+        hybrid_cfg,
+        min_history_bars(hybrid_cfg),
+    )
+
+    assert total == SWEEP_TIMESTAMPS * len(hybrid_cfg.universe)
+    assert identical == total, f"{total - identical} of {total} differ: {failures}"
+
+
+def test_the_hybrid_window_carries_all_eight_channels(
+    universe, sweep_stamps, hybrid_cfg: Config
+) -> None:
+    """Otherwise the sweep above could pass on a window that quietly dropped a channel."""
+    symbol = min(universe)
+    window = live_window(
+        universe[symbol],
+        hybrid_cfg,
+        sweep_stamps[-1],
+        min_history_bars(hybrid_cfg),
+        symbol,
+    )
+
+    assert window.channels == hybrid_cfg.channels.active_channels
+    assert len(window.channels) == 8
+    assert window.X.shape == (1, hybrid_cfg.window.input_len, 8)
