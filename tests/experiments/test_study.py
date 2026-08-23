@@ -242,6 +242,36 @@ def test_an_unknown_control_is_refused(cfg: Config) -> None:
         study.null_bars(synthetic_bars(), "wishful", seed=1)
 
 
+# ── BLAS threads ─────────────────────────────────────────────────────────────
+
+
+def test_blas_is_pinned_by_default_and_the_cli_agrees() -> None:
+    """**Measured to cost nothing, so it is the default rather than a flag.**
+
+    Pinning removes thread count as a source of cross-machine divergence. It removes only
+    that one - instruction sets, BLAS builds and `libm` remain - so this must never be
+    reported as making reproduction architecture-independent.
+    """
+    import torch
+
+    assert study.BLAS_THREADS == 1
+
+    before = torch.get_num_threads()
+    try:
+        assert study.pin_threads() == before
+        assert torch.get_num_threads() == 1
+    finally:
+        torch.set_num_threads(before)
+
+
+def test_running_the_grid_does_not_repin_the_caller_s_process() -> None:
+    """`run` is a library call; `main` is the command. A function that silently repinned
+    the process would be a side effect nobody asked for."""
+    import inspect
+
+    assert "pin_threads" not in inspect.getsource(study.run)
+
+
 # ── provenance: was this file written by the configuration on disk? ─────────
 
 
