@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -23,8 +24,13 @@ from glassbox.model import ALL_FORECASTERS
 from glassbox.model.fits import (
     CLOSE_CHANNEL,
     FITSForecaster,
+    aligned_bins,
     amplitude_scale,
+    cof_for,
+    dead_row_fraction,
     extend_spectrum,
+    mean_misalignment,
+    out_bins_for,
 )
 
 SYMBOL = "AAPL"
@@ -397,3 +403,102 @@ def test_extend_spectrum_accepts_a_single_window(cfg: Config) -> None:
 
     assert extend_spectrum(flat, 12).shape == (cfg.window.input_len + 12,)
     assert extend_spectrum(flat[None, :], 12).shape == (1, cfg.window.input_len + 12)
+
+
+# -- the geometry the cutoff decides (GB-50) ---------------------------------
+
+
+def test_the_output_bin_count_is_exact_where_the_two_grids_line_up() -> None:
+    """**The defect the COF sweep exposed**, pinned at the value that exposed it.
+
+    ``ceil(eta * COF)`` in floating point is correct on paper and wrong exactly where
+    ``eta * COF`` is a whole number: at ``COF = 60`` the product evaluates to
+    ``62.00000000000001`` and the ceiling came out 63 - one bin more than the architecture
+    describes, 120 allocated reals nothing accounts for, and no stage downstream that
+    would refuse it. It fires only on the **perfectly aligned** case, which is the one the
+    formula exists to handle cleanly.
+    """
+    assert out_bins_for(120, 4, 2) == 62
+    assert (
+        math.ceil(amplitude_scale(120, 4) * 60) == 63
+    )  # the float answer, for the record
+
+
+@pytest.mark.parametrize("cutoff", [1, 2, 3, 4, 5, 8, 10, 12, 20, 24, 30, 40, 60])
+def test_the_output_bin_count_is_the_ceiling_of_the_exact_ratio(cutoff: int) -> None:
+    """The definition, in exact arithmetic, independently of how the module computes it."""
+    length, horizon = 120, 4
+    exact = Fraction(length + horizon, length) * cof_for(length, cutoff)
+
+    assert out_bins_for(length, horizon, cutoff) == math.ceil(exact)
+
+
+def test_the_dead_row_share_rises_as_the_cutoff_keeps_fewer_bins() -> None:
+    """`1 / COF`, so the **smaller** model wastes proportionally **more**.
+
+    RIN subtracts each window's mean and bin 0 of the rFFT is that mean, so row 0 takes no
+    gradient at any cutoff. The intuition that a tighter filter is a leaner model is wrong
+    in the only sense that matters here.
+    """
+    shares = [dead_row_fraction(120, 4, cutoff) for cutoff in (2, 5, 10, 20)]
+
+    assert shares == pytest.approx([1 / 60, 1 / 24, 1 / 12, 1 / 6])
+    assert shares == sorted(shares)
+
+
+def test_the_dead_row_share_is_what_the_model_allocates_and_cannot_use() -> None:
+    """Derived, not asserted: the fraction is read off a real weight matrix."""
+    for cutoff in (2, 5, 10, 20):
+        model = FITSForecaster(
+            input_len=120,
+            horizon=4,
+            channels=(CLOSE_CHANNEL,),
+            cutoff_period_days=cutoff,
+        )
+        assert dead_row_fraction(120, 4, cutoff) == pytest.approx(
+            model.out_bins * 2 / model.n_parameters
+        )
+
+
+def test_the_interpolation_cost_rises_with_cof_and_then_saturates() -> None:
+    """**Saturation, not a middle** — and the first reading of this said "peak".
+
+    ``eta = 1 + H/L = 1 + 1/30``, so ``frac(eta*k) = frac(k/30)`` and the fractional part
+    has a **period of 30 bins**. Mean misalignment therefore rises while the retained bins
+    cover less than one cycle and settles at **0.25**, the mean distance of a uniform
+    fractional part to the nearest integer, once they cover one or more.
+
+    The apparent peak at the deployed cutoff of 5 is a **partial-cycle sampling
+    artefact**: 24 of 30 bins covers ``k/30`` up to 0.77 and over-weights the far half.
+    Asserting the peak would be asserting the artefact.
+    """
+    period = 120 // 4  # H/L = 1/30, so the fractional part repeats every 30 bins
+    rising = [mean_misalignment(120, 4, c) for c in (60, 20, 10)]
+    saturated = [mean_misalignment(120, 4, c) for c in (5, 4, 2)]
+
+    assert cof_for(120, 10) < period <= cof_for(120, 4)
+    assert rising == sorted(rising)  # below one cycle, the cost climbs with COF
+    assert all(abs(value - 0.25) <= 0.04 for value in saturated)
+    # Exactly a quarter where the retained bins are a whole number of cycles.
+    assert mean_misalignment(120, 4, 4) == pytest.approx(0.25)
+    assert mean_misalignment(120, 4, 2) == pytest.approx(0.25)
+
+
+def test_more_retained_frequencies_cost_more_to_reconstruct() -> None:
+    """The trade-off `COF` carries, stated as a property rather than as prose.
+
+    Keeping more bins buys more information **and** worse reconstruction of each, because
+    a higher ``k`` puts ``eta*k`` further from an integer. The two pull opposite ways, and
+    the asymmetry is what makes the sweep a test rather than a formality: the cost
+    saturates while the information does not.
+    """
+    keeping_more = mean_misalignment(120, 4, 10)  # COF 12
+    keeping_fewer = mean_misalignment(120, 4, 20)  # COF 6
+
+    assert cof_for(120, 10) > cof_for(120, 20)
+    assert keeping_more > keeping_fewer
+
+
+def test_bin_zero_is_aligned_at_every_cutoff_and_almost_nothing_else_is() -> None:
+    """``eta = 31/30``, so ``eta*k`` is an integer only where ``30 | k``."""
+    assert [aligned_bins(120, 4, c) for c in (2, 5, 10, 20)] == [2, 1, 1, 1]

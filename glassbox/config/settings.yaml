@@ -71,3 +71,7 @@ live:
   # cycle would still be retrying when the next one is due.
   retry_attempts: 3
   retry_backoff_seconds: 1.0
+  # A multi-day run idles for ~17 hours between sessions and, without this, produces the
+  # same output while alive as it does after dying: nothing. One line every 15 minutes is
+  # ~68 a day, which is a log a person can read and a silence that means something.
+  heartbeat_seconds: 900

@@ -58,6 +58,81 @@ def amplitude_scale(input_len: int, horizon: int) -> float:
     return (input_len + horizon) / input_len
 
 
+# ── the geometry the cutoff decides, as functions ────────────────────────────
+#
+# The properties below delegate to these. GB-50 sweeps the cutoff and has to report the
+# retained bin count and the dead-row share **per cutoff**, and computing either from the
+# cutoff a second time is the two-places defect this project has now seen five instances
+# of. One derivation, two readers.
+
+
+def cof_for(input_len: int, cutoff_period_days: int) -> int:
+    """``L // cutoff_period_days`` — how many low-frequency bins survive the filter."""
+    return input_len // cutoff_period_days
+
+
+def out_bins_for(input_len: int, horizon: int, cutoff_period_days: int) -> int:
+    """``ceil(η · COF)`` — the bins the complex layer emits.
+
+    **Integer arithmetic, and the reason is a defect GB-50 exposed.** Computing this as
+    ``math.ceil(amplitude_scale(L, H) * COF)`` is correct on paper and wrong in floating
+    point exactly where ``η · COF`` is a whole number: at ``L=120, H=4, COF=60`` the
+    product evaluates to ``62.00000000000001`` and the ceiling is **63**, one bin more
+    than the formula asks for and 120 allocated reals that the architecture does not
+    describe. The failure is silent - nothing downstream refuses an extra output bin - and
+    it fires **only on the perfectly aligned case**, which is the one the formula exists
+    to handle cleanly.
+
+    The deployed cutoff of 5 gives 24.8 and is unaffected either way, so this changes no
+    existing checkpoint and no published number.
+    """
+    cof = cof_for(input_len, cutoff_period_days)
+    return -(-(input_len + horizon) * cof // input_len)
+
+
+def dead_row_fraction(input_len: int, horizon: int, cutoff_period_days: int) -> float:
+    """The share of allocated reals that row 0 holds and can never move.
+
+    RIN subtracts each window's mean and bin 0 of the rFFT **is** that mean, so row 0 of
+    the weight matrix multiplies zero on every forward pass. It is ``out_bins`` complex
+    weights out of ``COF · out_bins``, which reduces to ``1 / COF`` — written as the ratio
+    rather than as the reciprocal because the numerator is the thing being counted.
+
+    **The share grows as the cutoff rises**, which is the opposite of the intuition that a
+    smaller model wastes less: at ``cutoff_period_days = 2`` the dead row is 1.7% of the
+    layer and at 20 it is 16.7%, because the same one row is a larger part of fewer.
+    """
+    cof = cof_for(input_len, cutoff_period_days)
+    out = out_bins_for(input_len, horizon, cutoff_period_days)
+    return (out * 2) / (cof * out * 2)
+
+
+def aligned_bins(input_len: int, horizon: int, cutoff_period_days: int) -> int:
+    """Retained bins whose frequency lands exactly on an output bin.
+
+    ``η · k`` is an integer only for those, and every other retained frequency must be
+    interpolated on every window — which is what the learned layer is *for*. See the note
+    on :func:`extend_spectrum`.
+    """
+    eta = amplitude_scale(input_len, horizon)
+    return sum(
+        1
+        for k in range(cof_for(input_len, cutoff_period_days))
+        if abs(eta * k - round(eta * k)) < 1e-9
+    )
+
+
+def mean_misalignment(input_len: int, horizon: int, cutoff_period_days: int) -> float:
+    """Mean ``|η·k − round(η·k)|`` over the retained bins: 0 aligned, 0.5 worst.
+
+    Gain tracks this at Spearman −0.9427 on a trained model (GB-48), so it is the geometric
+    quantity the frequency response is mostly reporting.
+    """
+    eta = amplitude_scale(input_len, horizon)
+    cof = cof_for(input_len, cutoff_period_days)
+    return float(np.mean([abs(eta * k - round(eta * k)) for k in range(cof)]))
+
+
 def extend_spectrum(x: np.ndarray, horizon: int) -> np.ndarray:
     """Extend ``(B, L)`` to ``(B, L+H)`` through the frequency domain, amplitude-correct.
 
@@ -171,12 +246,12 @@ class FITSForecaster:
         ``L // cutoff_period_days``. Everything faster than the cutoff period is discarded
         before the model sees it, which is the one hyperparameter FITS has.
         """
-        return self.input_len // self.cutoff_period_days
+        return cof_for(self.input_len, self.cutoff_period_days)
 
     @property
     def out_bins(self) -> int:
         """``ceil(eta * COF)`` — the bins the complex layer emits."""
-        return math.ceil(amplitude_scale(self.input_len, self.horizon) * self.cof)
+        return out_bins_for(self.input_len, self.horizon, self.cutoff_period_days)
 
     @property
     def n_parameters(self) -> int:
@@ -567,4 +642,14 @@ class FITSForecaster:
             )
 
 
-__all__ = ["CLOSE_CHANNEL", "FITSForecaster", "amplitude_scale", "extend_spectrum"]
+__all__ = [
+    "CLOSE_CHANNEL",
+    "FITSForecaster",
+    "aligned_bins",
+    "amplitude_scale",
+    "cof_for",
+    "dead_row_fraction",
+    "extend_spectrum",
+    "mean_misalignment",
+    "out_bins_for",
+]

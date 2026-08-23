@@ -340,13 +340,17 @@ def summarise(results: Sequence[ArmResult], baseline: ArmResult) -> pd.DataFrame
         "n_trades",
         "n_strategy_trades",
         "direction_reference",
-        *(part for name, _, _ in METRICS for part in _columns_for(name)),
+        *(part for name, _, _ in METRICS for part in columns_for(name)),
     ]
     return pd.DataFrame(rows, columns=columns)
 
 
-def _columns_for(name: str) -> tuple[str, ...]:
+def columns_for(name: str) -> tuple[str, ...]:
     """A metric's columns: the value, its companion if it has one, then its delta.
+
+    **Public because GB-52 builds its summary from it.** A report that ordered its own
+    columns would be a second place the `mae`/`flatness` pairing is decided, and the two
+    would agree until one of them was edited.
 
     The companion sits **between** the value and the delta so the two cannot be read
     apart, which is the whole point of pairing them.
@@ -548,6 +552,7 @@ __all__ = [
     "ArmResult",
     "always_long_accuracy",
     "average_trade",
+    "columns_for",
     "daily_returns",
     "direction_accuracy",
     "drawdown_curve",

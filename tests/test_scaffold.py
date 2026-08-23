@@ -51,6 +51,11 @@ SPEC_MODULES = (
     # which imports `signal`.
     "backtest/calibrate.py",
     "experiments/study.py",
+    # GB-51: the paired significance tests. Its own module rather than part of
+    # `study.py` because it is a pure function from a results table to a test table -
+    # it runs nothing, trains nothing and needs no cache - and because `report.py`
+    # must be able to derive it from `results.csv` alone.
+    "experiments/stats.py",
     "experiments/report.py",
     # GB-39: the retry policy. Its own module because its callers sit at opposite ends of
     # the layer stack - `data/live.py` is L1 and `engine/executor.py` is L5 - so neither

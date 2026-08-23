@@ -98,6 +98,11 @@ FILL_POLL_SECONDS = 1.5
 # closed one.
 ARMING_STRIKES = 2
 
+# The ordinary end of a session, and the **only** reason a multi-session run continues to
+# the next one. Named because `run_session` writes it and `run_sessions` reads it, and a
+# string spelt in two places is the defect family this project has five instances of.
+CLOSED = "the market closed"
+
 # GB-40's rehearsal defaults. Operator inputs for a one-off run rather than strategy
 # parameters, which is why they are CLI arguments with these as defaults rather than
 # configuration: a rehearsal is something a person decides to do on a particular
@@ -181,6 +186,14 @@ class SessionReport:
     cycles: tuple[CycleReport, ...]
     open_orders: tuple[str, ...]
     stopped_by: str
+    held_at_open: tuple[str, ...] = ()
+    """Symbols the book already held when this session started.
+
+    **The GATE 2 log has to say how the overnight residual was handled**, and it cannot
+    say that from the cycle records alone: a position re-armed in cycle 1 looks identical
+    to one opened in cycle 1. This is the session's own answer to *did we carry risk
+    across a close, and for how long was it unprotected* (ruled 23 Aug 2026).
+    """
 
     def summary(self) -> str:
         failed = [cycle for cycle in self.cycles if not cycle.ok]
@@ -196,6 +209,15 @@ class SessionReport:
             f"  orders submitted     : {sum(len(c.submissions) for c in self.cycles)}",
             f"  trades emitted       : {sum(len(c.trades) for c in self.cycles)}",
             f"  positions re-armed   : {sum(len(c.rearmed) for c in self.cycles)}",
+            (
+                "  overnight residual   : "
+                + (
+                    f"{len(self.held_at_open)} position(s) unprotected from the open"
+                    f" until first arming - {', '.join(self.held_at_open)}"
+                    if self.held_at_open
+                    else "none; the session opened flat"
+                )
+            ),
             f"  positions adopted    : {sum(len(c.adopted) for c in self.cycles)}",
             (
                 "  cycles skipped       : "
@@ -527,6 +549,55 @@ def _optional_float(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
+def overnight_residual(book: Book, when: pd.Timestamp) -> list[str]:
+    """What a session that opens holding a position must say about protection.
+
+    **The ruling of 23 Aug is that the legs stay `DAY` and the residual is reported**, so
+    the residual has to appear somewhere a reader will see it. A GATE 2 log that says how
+    the overnight gap was handled is worth more than a footnote in a document, and a
+    footnote is what this becomes if nothing prints it.
+
+    Args:
+        book: The book as loaded from disk, before this session's first reconciliation.
+        when: Session start, UTC.
+
+    Returns:
+        Banner lines, empty when the book holds nothing - a session that starts flat has
+        no residual and should not print a warning about one.
+
+    The interval is stated rather than estimated: DAY orders are expired by the broker at
+    the close, so an open position carried **no broker-side protection** from that close
+    until the first cycle of this session arms it. Rule 2 of the GB-26 policy makes that
+    cycle the first thing this session does, which bounds the gap for every session the
+    loop runs and does nothing for one it misses.
+    """
+    held = sorted(book.managed)
+    if not held:
+        return []
+    opened = ", ".join(
+        f"{symbol} (decision {book.managed[symbol].decision_id})" for symbol in held
+    )
+    return [
+        "  " + "!" * 74,
+        f"  OVERNIGHT RESIDUAL : {len(held)} position(s) held into this session",
+        f"  positions          : {opened}",
+        (
+            "  protection         : NONE between the previous close and this session's"
+            " first arming"
+        ),
+        (
+            "  why                : the protective legs are TimeInForce.DAY and the"
+            " broker expires them at the close (ruled 23 Aug 2026; GTC is refused on a"
+            " fractional quantity and flattening would break train/live parity)"
+        ),
+        (
+            "  handling           : rule 2 re-arms every open position before any entry,"
+            " and this session's first cycle is that moment"
+        ),
+        "  " + "!" * 74,
+    ]
+
+
 def session_banner(state: LiveState, when: pd.Timestamp, dry_run: bool) -> str:
     """What this session is, on one screen, before it does anything.
 
@@ -585,6 +656,7 @@ def session_banner(state: LiveState, when: pd.Timestamp, dry_run: bool) -> str:
                     "  " + "!" * 74,
                 ]
             ),
+            *overnight_residual(state.book, when),
             f"  universe           : {list(cfg.universe)}  top_k={cfg.signal.top_k}",
             f"  poll               : every {cfg.live.poll_seconds}s",
             f"  exchange session   : {hours}",
@@ -1661,6 +1733,9 @@ def run_session(
     )
 
     started = clock()
+    # Read before the first cycle reconciles, which is the only moment the book still
+    # describes what was carried **into** the session rather than what it holds now.
+    held_at_open = tuple(sorted(state.book.managed))
     banner = session_banner(state, started, dry_run)
     for line in banner.splitlines():
         LOGGER.info(line)
@@ -1684,7 +1759,7 @@ def run_session(
                 break
             if not in_session(cfg, now):
                 if cycles:
-                    stopping["reason"] = "the market closed"
+                    stopping["reason"] = CLOSED
                     break
                 LOGGER.info(
                     "no session at %s (%s): the exchange is shut or the configured window "
@@ -1711,8 +1786,125 @@ def run_session(
         banner=banner,
         cycles=tuple(cycles),
         open_orders=open_orders,
-        stopped_by=stopping["reason"] or "the market closed",
+        stopped_by=stopping["reason"] or CLOSED,
+        held_at_open=held_at_open,
     )
+
+
+def idle_state(cfg: Config, when: pd.Timestamp) -> str:
+    """Why the loop is not trading right now, in the words a log reader needs.
+
+    "outside session" and "holiday" are different facts about the same silence, and a
+    person reading a night of heartbeats needs to know which one they are looking at.
+    """
+    if market_session(cfg, when) is None:
+        return "weekend" if when.dayofweek >= 5 else "holiday"
+    return "outside session"
+
+
+def heartbeat(
+    cfg: Config, state_dir: str | Path, when: pd.Timestamp, started: pd.Timestamp
+) -> str:
+    """One line proving the process is alive while it has nothing to do.
+
+    **A loop that died at 02:00 and a loop correctly idling produce identical output:
+    nothing.** That is tolerable for a run that lasts one session and is not tolerable for
+    one that spans three, because the overnight protection residual is bounded by rule 2
+    only while the process is **alive** - and the banner that reports the residual has
+    nothing to be true about if the process is not there to print it. With a heartbeat, a
+    silent log means dead rather than quiet.
+
+    Deliberately one line and deliberately not a cycle: no fetch, no broker call, no
+    decision record. Idling for seventeen hours must not grow the decision store, and a
+    cycle record every ``poll_seconds`` while the market is shut would do exactly that.
+    """
+    book = Book.load(Path(state_dir) / BOOK_FILE)
+    held = ",".join(sorted(book.managed)) or "none"
+    return (
+        f"heartbeat {when:%Y-%m-%dT%H:%M:%SZ} state={idle_state(cfg, when)} "
+        f"positions={held} uptime={_uptime(when - started)}"
+    )
+
+
+def _uptime(delta: pd.Timedelta) -> str:
+    """``2d 03:14:00``. Days are separate because "51 hours" is not a readable number."""
+    total = max(int(delta.total_seconds()), 0)
+    days, rest = divmod(total, 86_400)
+    hours, rest = divmod(rest, 3_600)
+    minutes, seconds = divmod(rest, 60)
+    return f"{days}d {hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def run_sessions(
+    cfg: Config,
+    state_dir: str | Path,
+    *,
+    sessions: int = 1,
+    broker: Broker | None = None,
+    dry_run: bool = False,
+    language: str = EN,
+    clock=None,
+    sleep=time.sleep,
+    max_cycles: int | None = None,
+    rehearsal: Rehearsal | None = None,
+) -> tuple[SessionReport, ...]:
+    """Run ``sessions`` exchange sessions in one process, idling between them.
+
+    Args:
+        sessions: How many sessions to complete before returning. GATE 2 criterion 6 asks
+            for two or three, and running them in one process is what removes the half of
+            the overnight residual rule 2 cannot cover - a session the loop **misses**,
+            because nobody started it.
+        The rest are :func:`run_session`'s and are passed through unchanged.
+
+    Returns:
+        One :class:`SessionReport` per session, **in order and separate**. They are not
+        merged: each carries its own ``held_at_open``, which is the answer to *did this
+        session begin holding risk*, and merging them would destroy exactly that.
+
+    **Only an ordinary close continues to the next session.** A run stopped by SIGINT, by
+    ``max_cycles`` or by anything else returns what it has: a loop that stopped for a
+    reason should not silently start again tomorrow.
+    """
+    clock = clock or (lambda: pd.Timestamp.now(tz="UTC"))
+    started = clock()
+    reports: list[SessionReport] = []
+    last_beat: pd.Timestamp | None = None
+
+    while len(reports) < sessions:
+        now = clock()
+        if in_session(cfg, now):
+            report = run_session(
+                cfg,
+                state_dir,
+                broker=broker,
+                dry_run=dry_run,
+                language=language,
+                clock=clock,
+                sleep=sleep,
+                max_cycles=max_cycles,
+                rehearsal=rehearsal,
+            )
+            if not report.cycles:
+                # The session closed between our check and its. Not a session, and not a
+                # reason to stop - keep idling and wait for the next one.
+                sleep(cfg.live.poll_seconds)
+                continue
+            reports.append(report)
+            LOGGER.info("session %d of %d complete", len(reports), sessions)
+            if report.stopped_by != CLOSED:
+                break
+            continue
+
+        if (
+            last_beat is None
+            or (now - last_beat).total_seconds() >= cfg.live.heartbeat_seconds
+        ):
+            LOGGER.info(heartbeat(cfg, state_dir, now, started))
+            last_beat = now
+        sleep(cfg.live.poll_seconds)
+
+    return tuple(reports)
 
 
 def _log_run_of_failures(cycles: list[CycleReport]) -> None:
@@ -1840,9 +2032,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         stream=sys.stdout,
     )
     try:
-        report = run_session(
+        reports = run_sessions(
             load_config(),
             args.state_dir,
+            sessions=args.sessions,
             dry_run=args.dry_run,
             language=args.language,
             max_cycles=args.max_cycles,
@@ -1860,8 +2053,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"live_loop: {failure}", file=sys.stderr)
         return 2
 
-    print()
-    print(report.summary())
+    for report in reports:
+        print()
+        print(report.summary())
     return 0
 
 
@@ -1884,6 +2078,17 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="run every step except order submission",
     )
     parser.add_argument("--language", choices=("en", "he"), default="en")
+    parser.add_argument(
+        "--sessions",
+        type=int,
+        default=1,
+        help=(
+            "how many exchange sessions to run in this process, idling between them. "
+            "GATE 2 criterion 6 asks for two or three, and one process across all of "
+            "them removes the half of the overnight residual rule 2 cannot cover: a "
+            "session nobody was there to start"
+        ),
+    )
     parser.add_argument(
         "--max-cycles",
         type=int,
@@ -1929,6 +2134,7 @@ if __name__ == "__main__":  # pragma: no cover - exercised by the CLI, not by te
 
 __all__ = [
     "ARMING_STRIKES",
+    "CLOSED",
     "PERMISSIVE_LOWER",
     "REHEARSAL_CLOSE_OUT_MINUTES",
     "REHEARSAL_NOTIONAL",
@@ -1941,14 +2147,18 @@ __all__ = [
     "adopt_own_positions",
     "answer_pending",
     "drop_incomplete_bar",
+    "heartbeat",
+    "idle_state",
     "in_session",
     "is_stale",
     "last_completed_session",
     "load_thresholds",
     "main",
     "market_session",
+    "overnight_residual",
     "permissive_band",
     "run_cycle",
     "run_session",
+    "run_sessions",
     "session_banner",
 ]

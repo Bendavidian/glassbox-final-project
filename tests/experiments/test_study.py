@@ -20,6 +20,8 @@ from glassbox.backtest import metrics
 from glassbox.config.loader import Config, load_config
 from glassbox.data.historical import LOG_RETURN
 from glassbox.experiments import study
+from glassbox.model import fits
+from glassbox.model.fits import FITSForecaster
 
 
 @pytest.fixture
@@ -54,37 +56,77 @@ def synthetic_bars(n: int = 400, seed: int = 3) -> pd.DataFrame:
 
 
 def test_the_star_departs_from_one_reference_on_every_axis() -> None:
-    """Seven conditions: a centre plus one departure per axis.
+    """A centre plus one departure per axis, and the COF spokes carry their control.
 
-    The full cross buys interactions nobody asked about at four times the wall clock; a
+    The full cross buys interactions nobody asked about at seven times the wall clock; a
     star gives every axis a **common reference to depart from**, which is what a
     sensitivity analysis needs.
     """
     design = study.conditions()
 
-    assert len(design) == 7
     assert sum(condition.is_reference for condition in design) == 1
     assert {c.anchor for c in design} == set(study.ANCHORS)
     assert {c.lr for c in design} == set(study.LEARNING_RATES)
     assert {c.control for c in design} == set(study.CONTROLS)
+    assert {c.cutoff for c in design} == set(study.CUTOFFS)
 
-    # Every non-reference condition differs from the centre in exactly one axis.
     centre = design[0]
     for condition in design[1:]:
-        differences = sum(
-            (
-                condition.anchor != centre.anchor,
-                condition.lr != centre.lr,
-                condition.control != centre.control,
+        moved = {
+            axis
+            for axis, differs in (
+                ("anchor", condition.anchor != centre.anchor),
+                ("lr", condition.lr != centre.lr),
+                ("control", condition.control != centre.control),
+                ("cutoff", condition.cutoff != centre.cutoff),
             )
-        )
-        assert differences == 1, condition
+            if differs
+        }
+        # One axis, except a COF spoke, which departs on its cutoff **and** carries its
+        # own null control - ruled 23 Aug, because a cutoff tested only on real data is a
+        # cutoff nobody can falsify.
+        assert moved == {"cutoff"} or moved == {"cutoff", "control"} or len(moved) == 1
+
+
+def test_every_cutoff_is_measured_against_its_own_null_control() -> None:
+    """Not only the centre. `If FITS at cutoff 2 scores the same on white noise as on real
+    data, that is the finding for that cutoff`."""
+    design = study.conditions()
+
+    for cutoff in study.CUTOFFS:
+        controls = {c.control for c in design if c.cutoff == cutoff}
+        assert study.REAL in controls
+        assert study.NOISE in controls
+
+
+def test_the_centre_of_the_cof_sweep_is_the_configured_cutoff(cfg: Config) -> None:
+    """**The mechanism, not the convention.** The sweep departs from the deployed value,
+    so the deployed value has to be the one the sweep starts at - and a constant that
+    merely happens to equal the config today is the two-places defect waiting to happen.
+    """
+    assert study.CUTOFFS[0] == cfg.fits.cutoff_period_days
+
+
+def test_a_cof_spoke_runs_fits_alone() -> None:
+    """The cutoff reaches persistence and DLinear through nothing at all, so their rows
+    at cutoff 20 would duplicate their rows at cutoff 5."""
+    centre, spoke = (
+        study.Condition(0, 1e-3, study.REAL, study.CUTOFFS[0]),
+        study.Condition(0, 1e-3, study.REAL, study.CUTOFFS[1]),
+    )
+
+    assert centre.models == study.MODELS
+    assert spoke.models == ("fits",)
+    assert len(study.live_arms(spoke.models)) == 1
 
 
 def test_the_full_cross_is_available_and_is_the_product() -> None:
     """For the day somebody does want an interaction."""
     assert len(study.conditions(full=True)) == (
-        len(study.ANCHORS) * len(study.LEARNING_RATES) * len(study.CONTROLS)
+        len(study.ANCHORS)
+        * len(study.LEARNING_RATES)
+        * len(study.CONTROLS)
+        * len(study.CUTOFFS)
     )
 
 
@@ -93,11 +135,27 @@ def test_the_plan_is_reportable_before_the_run(cfg: Config) -> None:
     star = study.plan(cfg)
     full = study.plan(cfg, full=True)
 
-    assert star.arms == 5  # six pairs, one deliberately skipped
-    assert star.cells == 35
-    assert star.trainings == 35 * cfg.walkforward.max_folds
-    assert full.cells == 135
+    assert star.arms == 5  # six pairs at the centre, one deliberately skipped
+    assert len(star.conditions) == 13  # 7 as of GB-49, plus six COF spokes
+    assert star.cells == 7 * 5 + 6 * 1
+    assert star.trainings == star.cells * cfg.walkforward.max_folds
+    assert full.cells == 27 * 5 + 81 * 1
     assert star.seconds() < full.seconds()
+
+
+def test_the_estimate_prices_each_arm_at_what_it_measured(cfg: Config) -> None:
+    """A flat mean over the arms would misprice a FITS-only spoke by 3x.
+
+    The measured costs span 60x - buy-and-hold 0.07s a fold against FITS 4.16s - so an
+    estimate is only useful if it knows the **mix**, which is the whole difference between
+    a centre condition and a COF spoke.
+    """
+    fits_only = study.Plan(
+        conditions=(study.Condition(0, 1e-3, study.REAL, study.CUTOFFS[1]),), folds=1
+    )
+
+    expected = study.PER_FOLD_SECONDS["fits"] + study.PER_FOLD_SECONDS["buy_and_hold"]
+    assert fits_only.seconds() == pytest.approx(expected)
 
 
 def test_the_empty_cell_is_named_and_reasoned() -> None:
@@ -238,12 +296,43 @@ def test_flatness_sits_immediately_beside_mae() -> None:
     assert columns[columns.index("mae") + 1] == "flatness"
 
 
+def test_the_cutoff_is_followed_by_what_it_decides() -> None:
+    """`cutoff_period_days` alone is a number nobody can interpret. The retained bin count
+    and the dead-row share sit beside it for the reason `flatness` sits beside `mae`."""
+    columns = list(study.COLUMNS)
+
+    assert columns[columns.index("cutoff_period_days") + 1] == "cof"
+    assert columns[columns.index("cof") + 1] == "dead_row_fraction"
+
+
+def test_the_geometry_is_derived_from_the_model_and_not_recomputed(cfg: Config) -> None:
+    """`COF = L // cutoff` is exactly the arithmetic that gets written down twice."""
+    length, horizon = cfg.window.input_len, cfg.window.horizon
+
+    for cutoff in study.CUTOFFS:
+        model = FITSForecaster(
+            input_len=length,
+            horizon=horizon,
+            channels=("close_logret",),
+            cutoff_period_days=cutoff,
+        )
+        assert fits.cof_for(length, cutoff) == model.cof
+        assert fits.out_bins_for(length, horizon, cutoff) == model.out_bins
+        # The dead row is `out_bins` complex weights of `COF x out_bins`.
+        assert fits.dead_row_fraction(length, horizon, cutoff) == pytest.approx(
+            model.out_bins * 2 / model.n_parameters
+        )
+
+
 def test_every_axis_and_every_required_column_is_present() -> None:
-    """The four axes added after §7.4 was written, plus the snapshot vintage."""
+    """The five axes added after §7.4 was written, plus the snapshot vintage."""
     required = {
         "anchor",
         "lr",
         "control",
+        "cutoff_period_days",
+        "cof",
+        "dead_row_fraction",
         "flatness",
         "cancellation",
         "data_snapshot_last_bar",
@@ -279,23 +368,34 @@ def test_one_fold_of_the_whole_grid_runs(cfg: Config, repo_root: Path) -> None:
     table = study.run(cfg, n_folds=1)
 
     assert list(table.columns) == list(study.COLUMNS)
-    # Seven conditions, six arms plus the market reference, one fold each.
-    assert len(table) == 7 * (len(study.arms()) + 1)
+    # Seven centre conditions at six arms plus the market reference, and six COF spokes at
+    # two arms plus it, one fold each.
+    assert len(table) == 7 * (len(study.arms()) + 1) + 6 * (
+        len(study.arms(("fits",))) + 1
+    )
 
     market = table[table["model"] == study.BUY_AND_HOLD]
-    assert len(market) == 7  # once per condition, not once per arm
+    assert len(market) == 13  # once per condition, not once per arm
     assert market["mae"].isna().all()  # it makes no forecast, so the cell is empty
     assert market["total_return"].notna().all()
+    assert (
+        market["cof"].isna().all()
+    )  # the cutoff is FITS geometry, not a study setting
 
     skipped = table[table["skipped"].astype(bool)]
-    assert len(skipped) == 7  # one per condition
+    assert len(skipped) == 13  # one per condition
     assert (skipped["model"] == "fits").all()
     assert (skipped["channels"] == "C2_hybrid").all()
     assert skipped["reason"].str.contains("6.4").all()
 
     real = study.reportable(table)
-    # Five real conditions x (five live arms + the market reference).
-    assert len(real) == 5 * 6
+    # Five real centre conditions x six, plus three real COF spokes x two.
+    assert len(real) == 5 * 6 + 3 * 2
+
+    swept = real[(real["model"] == "fits") & (real["anchor"] == 0)]
+    assert set(swept["cutoff_period_days"]) == set(study.CUTOFFS)
+    assert (swept["cof"] == 120 // swept["cutoff_period_days"]).all()
+    assert (swept["dead_row_fraction"] > 0).all()
 
     # A univariate arm's cancellation is 1.0 by arithmetic, so the cell is empty rather
     # than perfect — suppressed at the point of the number, not only in a caveat.
@@ -310,16 +410,19 @@ def test_the_same_grid_twice_gives_the_same_numbers(
 ) -> None:
     """The determinism §7.4 asks for, asserted rather than assumed.
 
-    One condition and one fold: the property is about the seed reaching every stage, and
-    it either holds for one cell or it holds for none.
+    **One condition and one fold, and the code now says so.** It ran the whole grid twice
+    while claiming this, which cost twelve extra grids per suite run and proved nothing
+    the one cell does not: the property is about the seed reaching every stage, and it
+    holds for one cell or for none.
     """
     if not cache_ready(cfg, repo_root):
         pytest.skip("no cached history; this test needs data_cache/")
 
     narrow = replace(cfg, channels=replace(cfg.channels, active="C0_base"))
+    one = (study.Condition(0, 1e-3, study.REAL, study.CUTOFFS[0]),)
 
-    first = study.run(narrow, n_folds=1)
-    second = study.run(narrow, n_folds=1)
+    first = study.run(narrow, n_folds=1, design=one)
+    second = study.run(narrow, n_folds=1, design=one)
 
     columns = [c for c in study.COLUMNS if c != "seconds"]  # wall time is not a result
     pd.testing.assert_frame_equal(first[columns], second[columns])

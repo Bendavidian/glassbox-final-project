@@ -269,6 +269,18 @@ def build_windows(
         ValueError: The frame lacks provenance or a channel, ``as_of`` is not in the
             index or has too little history behind it, or ``stats`` describes different
             channels than the config.
+
+    **Counting the windows of a split: take them from the batch, never from a slice.**
+    ``train.py`` calls this **once over the whole frame** and splits the result by
+    timestamp afterwards, so that a second call can never be handed a second
+    :class:`ChannelStats` and validation cannot be normalised by its own statistics even
+    by accident. A consequence that catches anyone measuring from outside: slicing the
+    frame to a split **first** and windowing it after drops the last ``input_len +
+    horizon - 1`` rows, because those windows cannot find their target inside the slab.
+    Measured on fold 1 of the configured grid on 23 Aug 2026: **2,505 windows** the way
+    ``train.py`` builds them against **1,890** the other way, a **25% undercount** that
+    looks like a plausible number and is not. The training split's window count is
+    ``len(fold.train) * len(universe)``, and the authority for it is the batch.
     """
     channels = cfg.channels.active_channels
     input_len = cfg.window.input_len

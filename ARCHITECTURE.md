@@ -142,6 +142,29 @@ one window and `as_of=None` returns every valid one, but they are **not two code
 runs on both. Verified on real data — the `as_of` output is byte-identical
 (`np.array_equal`) to the corresponding batch row.
 
+### Counting the windows of a split
+
+`train.py` calls `build_windows` **once over the whole frame** and splits the result by
+timestamp afterwards. That is a **leakage-prevention decision, not a convenience**: there
+is no second `build_windows` call that could be handed a second `ChannelStats`, so
+validation cannot be normalised by its own mean and variance even by accident.
+
+It has a consequence that is invisible from outside the module and produces a wrong number
+rather than an error. **Slicing the frame to a split first and windowing it afterwards
+drops the last `input_len + horizon - 1` rows**, because those windows cannot find their
+target inside the slab. Measured on fold 1 of the configured grid, 23 Aug 2026:
+
+| how the count was taken | windows | equations at `H = 4` |
+|---|---|---|
+| **from the batch `train.py` builds** — the authority | **2,505** | **10,020** |
+| by slicing the frame to `fold.train` first | 1,890 | 7,560 |
+
+A **25% undercount**, and the wrong figure looks entirely plausible. It reached a
+determinacy calculation in GB-50 before a second measurement caught it. **Take window
+counts from the batch, never by reconstructing them.** For a training split the number is
+`len(fold.train) * len(universe)`, and `FitProvenance` records it on the checkpoint for
+exactly this reason.
+
 ### What the module refuses to do
 
 - **It does not fit normalisation statistics.** `fit_stats` is a separate function the

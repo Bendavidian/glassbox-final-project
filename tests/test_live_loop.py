@@ -10,6 +10,7 @@ symbol that loses its entry but keeps its stop.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from dataclasses import replace
 from pathlib import Path
@@ -689,6 +690,278 @@ def test_the_banner_says_when_the_session_stands_aside(
     state = a_state(cfg, tmp_path, broker, thresholds=Thresholds.never())
 
     assert "stood aside" in live_loop.session_banner(state, NOW, dry_run=False)
+
+
+# ── the overnight residual, on the page rather than in a document ────────────
+
+
+def a_holding(symbol: str = "AAPL") -> Holding:
+    return Holding(
+        symbol=symbol,
+        quantity=1.5,
+        decision_id=f"20260824-{symbol}",
+        entry_price=100.0,
+        stop_loss=98.0,
+        take_profit=104.0,
+    )
+
+
+def test_a_session_that_opens_flat_prints_no_residual_warning() -> None:
+    """A warning that fires when there is nothing to warn about is one nobody reads."""
+    assert live_loop.overnight_residual(Book(), NOW) == []
+
+
+def test_a_session_that_opens_holding_states_the_gap_and_how_it_is_handled() -> None:
+    """**The ruling of 23 Aug is that the legs stay DAY and the residual is reported**, so
+    a GATE 2 log has to say how the gap was handled rather than leave it as a footnote.
+    """
+    book = Book(managed={"AAPL": a_holding()})
+
+    lines = " ".join(live_loop.overnight_residual(book, NOW))
+
+    assert "OVERNIGHT RESIDUAL" in lines
+    assert "20260824-AAPL" in lines
+    assert "NONE between the previous close" in lines
+    assert "TimeInForce.DAY" in lines
+    assert "rule 2 re-arms" in lines
+
+
+def test_the_residual_reaches_the_banner(
+    cfg: Config, broker: FakeBroker, tmp_path: Path
+) -> None:
+    state = a_state(cfg, tmp_path, broker)
+    state.book = Book(managed={"MSFT": a_holding("MSFT")})
+
+    assert "OVERNIGHT RESIDUAL" in live_loop.session_banner(state, NOW, dry_run=False)
+
+
+def test_the_session_summary_answers_whether_risk_was_carried_across_a_close() -> None:
+    """The cycle records cannot answer it: a position re-armed in cycle 1 looks exactly
+    like one opened in cycle 1."""
+    carried = live_loop.SessionReport(
+        session_id="s",
+        banner="",
+        cycles=(),
+        open_orders=(),
+        stopped_by="the market closed",
+        held_at_open=("AAPL",),
+    )
+    flat = live_loop.SessionReport(
+        session_id="s", banner="", cycles=(), open_orders=(), stopped_by="x"
+    )
+
+    assert "unprotected from the open" in carried.summary()
+    assert "AAPL" in carried.summary()
+    assert "the session opened flat" in flat.summary()
+
+
+# ── a run that spans more than one session ───────────────────────────────────
+
+
+class AdvancingClock:
+    """A clock the loop moves by sleeping. Seventeen idle hours cost seventeen calls."""
+
+    def __init__(self, start: pd.Timestamp) -> None:
+        self.now = start
+
+    def __call__(self) -> pd.Timestamp:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now = self.now + pd.Timedelta(seconds=seconds)
+
+
+def coarse(cfg: Config, seconds: int = 3600) -> Config:
+    """The same loop at one cycle an hour, so a whole session fits in a test."""
+    return replace(
+        cfg,
+        live=replace(cfg.live, poll_seconds=seconds, heartbeat_seconds=seconds),
+    )
+
+
+def test_idle_state_tells_a_weekend_from_a_holiday_from_an_evening(
+    cfg: Config,
+) -> None:
+    """Three different facts about the same silence, and a reader of a night of
+    heartbeats needs to know which one they are looking at."""
+    assert live_loop.idle_state(cfg, pd.Timestamp("2026-08-23 12:00", tz="UTC")) == (
+        "weekend"
+    )
+    assert live_loop.idle_state(cfg, pd.Timestamp("2026-12-25 12:00", tz="UTC")) == (
+        "holiday"
+    )
+    assert live_loop.idle_state(cfg, pd.Timestamp("2026-08-24 06:00", tz="UTC")) == (
+        "outside session"
+    )
+
+
+def test_the_heartbeat_says_when_what_and_for_how_long(
+    cfg: Config, tmp_path: Path
+) -> None:
+    """**A loop that died at 02:00 and a loop correctly idling produce identical output:
+    nothing.** The heartbeat is what makes silence mean dead rather than quiet."""
+    Book(managed={"AAPL": a_holding()}).save(tmp_path / "book.json")
+    started = pd.Timestamp("2026-08-24 20:00", tz="UTC")
+
+    line = live_loop.heartbeat(
+        cfg, tmp_path, started + pd.Timedelta(hours=27, minutes=14), started
+    )
+
+    assert line.startswith("heartbeat 2026-08-25T23:14:00Z")
+    assert "state=outside session" in line
+    assert "positions=AAPL" in line
+    assert "uptime=1d 03:14:00" in line
+
+
+def test_the_heartbeat_says_none_rather_than_nothing_when_flat(
+    cfg: Config, tmp_path: Path
+) -> None:
+    line = live_loop.heartbeat(cfg, tmp_path, NOW, NOW)
+
+    assert "positions=none" in line
+    assert "uptime=0d 00:00:00" in line
+
+
+def test_two_sessions_in_one_process_are_reported_separately(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_bars: dict,
+    stub_predictor: None,
+    tmp_path: Path,
+) -> None:
+    """GATE 2 criterion 6 needs two or three, and one process across all of them is what
+    removes the half of the overnight residual rule 2 cannot cover.
+
+    They are **not merged**: each report carries its own ``held_at_open``, which is the
+    answer to *did this session begin holding risk*, and one merged report cannot say it
+    twice.
+    """
+    clock = AdvancingClock(pd.Timestamp("2026-08-24 14:00", tz="UTC"))
+
+    reports = live_loop.run_sessions(
+        coarse(cfg),
+        tmp_path,
+        sessions=2,
+        broker=broker,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert len(reports) == 2
+    assert all(report.cycles for report in reports)
+    assert all(isinstance(report.held_at_open, tuple) for report in reports)
+    # The second ran on the next exchange day, not twice on the same one.
+    assert reports[0].cycles[0].at.date() < reports[1].cycles[0].at.date()
+
+
+def test_the_session_that_opens_holding_says_so_and_the_next_one_does_not(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_bars: dict,
+    stub_predictor: None,
+    tmp_path: Path,
+) -> None:
+    """`held_at_open` is read **before** the first reconciliation, which is the only
+    moment the book still describes what was carried *into* the session."""
+    Book(managed={"AAPL": a_holding()}).save(tmp_path / "book.json")
+    clock = AdvancingClock(pd.Timestamp("2026-08-24 14:00", tz="UTC"))
+
+    reports = live_loop.run_sessions(
+        coarse(cfg),
+        tmp_path,
+        sessions=2,
+        broker=broker,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert reports[0].held_at_open == ("AAPL",)
+    assert "unprotected from the open" in reports[0].summary()
+
+
+def test_the_loop_proves_it_is_alive_while_it_waits_for_the_next_session(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_bars: dict,
+    stub_predictor: None,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = AdvancingClock(pd.Timestamp("2026-08-24 21:00", tz="UTC"))
+
+    with caplog.at_level(logging.INFO, logger="glassbox.live_loop"):
+        reports = live_loop.run_sessions(
+            coarse(cfg),
+            tmp_path,
+            sessions=1,
+            broker=broker,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+    beats = [line for line in caplog.messages if line.startswith("heartbeat ")]
+    assert len(reports) == 1
+    assert len(beats) >= 8  # the evening and the night before the next open
+    assert any("state=outside session" in beat for beat in beats)
+
+
+def test_idling_produces_no_cycles_and_so_no_records(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_bars: dict,
+    stub_predictor: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**A heartbeat every fifteen minutes is fine; a cycle record every sixty seconds
+    while the market is shut is not.** Seventeen idle hours must cost the decision store
+    nothing, so the count of cycles run must equal the count of cycles reported.
+    """
+    calls = {"n": 0}
+    real = live_loop.run_cycle
+
+    def counted(state, when):
+        calls["n"] += 1
+        return real(state, when)
+
+    monkeypatch.setattr(live_loop, "run_cycle", counted)
+    clock = AdvancingClock(pd.Timestamp("2026-08-24 21:00", tz="UTC"))
+
+    reports = live_loop.run_sessions(
+        coarse(cfg),
+        tmp_path,
+        sessions=1,
+        broker=broker,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert calls["n"] == sum(len(report.cycles) for report in reports)
+    assert calls["n"] > 0
+
+
+def test_a_run_stopped_for_a_reason_does_not_start_again_tomorrow(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_bars: dict,
+    stub_predictor: None,
+    tmp_path: Path,
+) -> None:
+    """Only an ordinary close continues to the next session."""
+    clock = AdvancingClock(pd.Timestamp("2026-08-24 14:00", tz="UTC"))
+
+    reports = live_loop.run_sessions(
+        coarse(cfg),
+        tmp_path,
+        sessions=3,
+        broker=broker,
+        clock=clock,
+        sleep=clock.sleep,
+        max_cycles=1,
+    )
+
+    assert len(reports) == 1
+    assert reports[0].stopped_by == "max_cycles=1"
 
 
 # ── the band the harness wrote ───────────────────────────────────────────────

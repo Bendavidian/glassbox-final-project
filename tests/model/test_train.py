@@ -119,6 +119,34 @@ def universe(cfg: Config) -> dict[str, pd.DataFrame]:
     }
 
 
+# ── counting the windows of a split ──────────────────────────────────────────
+
+
+def test_a_splits_window_count_comes_from_the_batch_not_from_a_slice(
+    frame, cfg: Config, splits
+) -> None:
+    """**Windowing a slice is not the same as slicing the windows**, and the difference is
+    a plausible-looking number rather than an error.
+
+    ``train`` builds windows **once over the whole frame** and splits by timestamp, so a
+    second ``build_windows`` call can never receive a second ``ChannelStats`` - a
+    leakage-prevention decision, not a convenience. The consequence is invisible from
+    outside: a window ending near the end of a slab cannot find its target inside it, so
+    slicing first loses the last ``input_len + horizon - 1`` rows. It reached a determinacy
+    calculation in GB-50 as a **25% undercount** on real data before a second measurement
+    caught it, so the property is pinned here rather than described in a docstring.
+    """
+    train_index = splits[0]
+
+    whole = build_windows(frame, cfg, SYMBOL)
+    from_batch = sum(1 for stamp in whole.timestamps if stamp in set(train_index))
+    from_slice = build_windows(frame.loc[train_index], cfg, SYMBOL).X.shape[0]
+
+    assert from_batch == len(train_index)
+    assert from_slice == len(train_index) - INPUT_LEN - HORIZON + 1
+    assert from_slice < from_batch
+
+
 # ── the hard requirement: statistics from the training split alone ───────────
 
 

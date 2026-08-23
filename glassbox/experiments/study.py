@@ -62,6 +62,7 @@ from glassbox.backtest.walkforward import make_folds
 from glassbox.config.loader import Config, config_hash, load_config, model_config_hash
 from glassbox.data.historical import LOG_RETURN
 from glassbox.features.builder import build_feature_frame
+from glassbox.model import fits
 from glassbox.smoke_offline import (
     SmokeError,
     _common_index,
@@ -90,6 +91,25 @@ ANCHORS = (0, 21, 42)
 
 LEARNING_RATES = (1e-3, 1e-4, 1e-5)
 
+# Spec 7.4's axis 3, and the centre is the configured value - asserted against
+# ``fits.cutoff_period_days`` by a test rather than kept equal by hand.
+#
+# **FITS only, and the restriction is not an economy.** The cutoff is the one FITS
+# hyperparameter; it reaches persistence and DLinear through nothing at all, so running
+# them at cutoff 20 would produce rows identical to their rows at cutoff 5 and invite a
+# reader to average a duplicate. See `Condition.models`.
+CUTOFFS = (5, 2, 10, 20)
+
+# Mean seconds per arm-fold, measured over the 20 Aug grid (679 rows). They span 60x, so
+# a flat mean over the arms mis-estimates any design whose mix of arms differs from that
+# one - which every COF spoke does, being FITS-only.
+PER_FOLD_SECONDS = {
+    "persistence": 0.39,
+    "dlinear": 1.46,
+    "fits": 4.16,
+    "buy_and_hold": 0.07,
+}
+
 REAL = "real"
 SHUFFLED = "shuffled"
 NOISE = "noise"
@@ -102,12 +122,26 @@ BUY_AND_HOLD = "buy_and_hold"
 
 RESULTS_FILE = "results.csv"
 
+# The columns that identify one condition, and therefore the columns a paired test may
+# not cross. GB-51 pairs by fold *within* a condition: fold 3 at anchor 21 and fold 3 at
+# anchor 0 are different windows, and pairing them would compare two periods rather than
+# two arms.
+PAIR_KEYS = ("anchor", "lr", "control", "cutoff_period_days")
+
 # `mae` and `flatness` are adjacent and in this order, per 7.3. The pairing is expressed
 # here, in the one place that builds the row, rather than remembered at each table.
 COLUMNS = (
     "anchor",
     "lr",
     "control",
+    # The COF axis and the two quantities it decides, adjacent for the same reason `mae`
+    # and `flatness` are: `cutoff_period_days` is a number nobody can interpret without
+    # them. `cof` is the retained bin count and `dead_row_fraction` the share of the layer
+    # that bin 0 holds and can never move - both NaN for an arm that is not FITS, since
+    # they are FITS geometry and not study settings.
+    "cutoff_period_days",
+    "cof",
+    "dead_row_fraction",
     "model",
     "channels",
     "fold",
@@ -139,12 +173,28 @@ class Condition:
     anchor: int
     lr: float
     control: str
+    cutoff: int = CUTOFFS[0]
 
     @property
     def is_reference(self) -> bool:
         return (
-            self.anchor == 0 and self.lr == LEARNING_RATES[0] and self.control == REAL
+            self.anchor == 0
+            and self.lr == LEARNING_RATES[0]
+            and self.control == REAL
+            and self.cutoff == CUTOFFS[0]
         )
+
+    @property
+    def models(self) -> tuple[str, ...]:
+        """Which models this condition runs.
+
+        Every model at the centre cutoff; **FITS alone on a COF spoke**, because the
+        cutoff is FITS's one hyperparameter and does not reach the other two. A
+        persistence row at cutoff 20 would be identical to its row at cutoff 5 in every
+        column that is a result, and a duplicate in a results file is something a reader
+        eventually averages.
+        """
+        return MODELS if self.cutoff == CUTOFFS[0] else ("fits",)
 
 
 @dataclass(frozen=True)
@@ -152,26 +202,36 @@ class Plan:
     """What a run will do, before it does it."""
 
     conditions: tuple[Condition, ...]
-    arms: int
     folds: int
 
     @property
+    def arms(self) -> int:
+        """Live arms at the centre. A COF spoke runs one; see :attr:`Condition.models`."""
+        return len(live_arms(MODELS))
+
+    @property
     def cells(self) -> int:
-        return len(self.conditions) * self.arms
+        return sum(len(live_arms(condition.models)) for condition in self.conditions)
 
     @property
     def trainings(self) -> int:
+        """Arm-folds. The market reference is counted by :meth:`seconds`, not here."""
         return self.cells * self.folds
 
-    def seconds(self, per_training: float = 3.9) -> float:
-        """A wall-time estimate from measured per-fold costs.
+    def seconds(self) -> float:
+        """A wall-time estimate from **measured** per-arm costs, not from a flat mean.
 
-        ``3.9`` is the mean over the five arms actually run, measured 20 Aug: persistence
-        about 0.5s, DLinear 3.3s on five channels and about 5s on eight, FITS 9s. An
-        estimate rather than a promise - it is here so a run of this size is a decision
-        rather than a surprise.
+        See :data:`PER_FOLD_SECONDS`. The market reference is included because it runs
+        once per condition and is not free. An estimate rather than a promise: it is here
+        so a run of this size is a decision rather than a surprise.
         """
-        return self.trainings * per_training
+        arms_cost = sum(
+            PER_FOLD_SECONDS[model]
+            for condition in self.conditions
+            for model, _ in live_arms(condition.models)
+        )
+        market = len(self.conditions) * PER_FOLD_SECONDS[BUY_AND_HOLD]
+        return (arms_cost + market) * self.folds
 
 
 def conditions(full: bool = False) -> tuple[Condition, ...]:
@@ -189,31 +249,43 @@ def conditions(full: bool = False) -> tuple[Condition, ...]:
     """
     if full:
         return tuple(
-            Condition(anchor, lr, control)
+            Condition(anchor, lr, control, cutoff)
             for anchor in ANCHORS
             for lr in LEARNING_RATES
             for control in CONTROLS
+            for cutoff in CUTOFFS
         )
-    reference = Condition(ANCHORS[0], LEARNING_RATES[0], REAL)
+    reference = Condition(ANCHORS[0], LEARNING_RATES[0], REAL, CUTOFFS[0])
     return (
         reference,
         *(replace(reference, anchor=anchor) for anchor in ANCHORS[1:]),
         *(replace(reference, lr=lr) for lr in LEARNING_RATES[1:]),
         *(replace(reference, control=control) for control in CONTROLS[1:]),
+        # **Each COF spoke carries its own null control** (ruled 23 Aug). A cutoff that
+        # scores the same on white noise as on real data is the finding *for that cutoff*,
+        # and testing only the centre would leave three of the four unfalsifiable.
+        *(
+            replace(reference, cutoff=cutoff, control=control)
+            for cutoff in CUTOFFS[1:]
+            for control in (REAL, NOISE)
+        ),
     )
 
 
-def arms() -> tuple[tuple[str, str], ...]:
-    """Every ``(model, channel set)`` pair, skipped cells included."""
-    return tuple((model, channels) for model in MODELS for channels in CHANNEL_SETS)
+def arms(models: Sequence[str] = MODELS) -> tuple[tuple[str, str], ...]:
+    """Every ``(model, channel set)`` pair for ``models``, skipped cells included."""
+    return tuple((model, channels) for model in models for channels in CHANNEL_SETS)
+
+
+def live_arms(models: Sequence[str] = MODELS) -> tuple[tuple[str, str], ...]:
+    """The pairs that actually train: :func:`arms` less the deliberately empty cells."""
+    return tuple(pair for pair in arms(models) if pair not in SKIPPED)
 
 
 def plan(cfg: Config, full: bool = False, n_folds: int | None = None) -> Plan:
     """What :func:`run` will do, without doing it."""
-    live = [pair for pair in arms() if pair not in SKIPPED]
     return Plan(
         conditions=conditions(full),
-        arms=len(live),
         folds=cfg.walkforward.max_folds if n_folds is None else n_folds,
     )
 
@@ -281,6 +353,7 @@ def run(
     full: bool = False,
     n_folds: int | None = None,
     log=lambda message: None,
+    design: Sequence[Condition] | None = None,
 ) -> pd.DataFrame:
     """Every arm at every condition, one row per fold.
 
@@ -289,6 +362,10 @@ def run(
         full: Run the cross product instead of the star. See :func:`conditions`.
         n_folds: Cap the folds, for a smoke run. ``None`` uses ``walkforward.max_folds``.
         log: Progress sink.
+        design: Run these conditions instead of the star or the cross. For a test that
+            needs one cell rather than the grid - determinism is a property of the seed
+            reaching every stage, and it holds for one condition or for none, so
+            asserting it over thirteen costs twelve grids and proves nothing more.
 
     Returns:
         A frame with :data:`COLUMNS`, including one skipped row per skipped cell per
@@ -299,14 +376,18 @@ def run(
     """
     bars = load_cached_bars(cfg)
     snapshot = max(frame.index[-1] for frame in bars.values()).date().isoformat()
-    design = plan(cfg, full, n_folds)
+    chosen = tuple(conditions(full) if design is None else design)
+    sized = Plan(
+        conditions=chosen,
+        folds=cfg.walkforward.max_folds if n_folds is None else n_folds,
+    )
     log(
-        f"{design.cells} cells over {design.folds} folds = {design.trainings} arm-folds, "
-        f"about {design.seconds() / 60:.0f} minutes"
+        f"{sized.cells} cells over {sized.folds} folds = {sized.trainings} arm-folds, "
+        f"about {sized.seconds() / 60:.0f} minutes"
     )
 
     rows: list[dict] = []
-    for condition in conditions(full):
+    for condition in chosen:
         rows.extend(
             _condition_rows(cfg, condition, bars, snapshot, n_folds=n_folds, log=log)
         )
@@ -345,7 +426,7 @@ def _condition_rows(
     # same fold grid - running it per arm would be five identical backtests and five
     # identical rows. It is a row rather than a discarded object because 7.3 reports
     # trading metrics against buy-and-hold and GB-52 regenerates from this file alone.
-    reference = replace(cfg, model=replace(cfg.model, lr=condition.lr))
+    reference = _cell_config(cfg, condition)
     market = {s: build_feature_frame(f, reference) for s, f in world.items()}
     for fold in _folds_or_raise(market, reference, condition.anchor, n_folds):
         held = run_buy_and_hold(fold, market, world, reference)
@@ -353,9 +434,9 @@ def _condition_rows(
             _row(condition, BUY_AND_HOLD, "", fold.number, held, snapshot, reference)
         )
 
-    for model, channels in arms():
+    for model, channels in arms(condition.models):
         cell = replace(
-            cfg,
+            _cell_config(cfg, condition),
             model=replace(cfg.model, active=model, lr=condition.lr),
             channels=replace(cfg.channels, active=channels),
         )
@@ -377,10 +458,46 @@ def _condition_rows(
             )
         log(
             f"  anchor {condition.anchor:>2} lr {condition.lr:g} "
-            f"{condition.control:8} {model:11} {channels:9} "
+            f"cof@{condition.cutoff:<2} {condition.control:8} {model:11} {channels:9} "
             f"{len(folds)} folds in {time.perf_counter() - started:5.1f}s"
         )
     return rows
+
+
+def _cell_config(cfg: Config, condition: Condition) -> Config:
+    """The configuration one condition runs under.
+
+    The cutoff goes through ``cfg.fits`` rather than being handed to the forecaster
+    directly, so it reaches ``model_config_hash`` and two cells that differ only in the
+    cutoff are distinguishable in the file by their hash alone.
+    """
+    return replace(
+        cfg,
+        model=replace(cfg.model, lr=condition.lr),
+        fits=replace(cfg.fits, cutoff_period_days=condition.cutoff),
+    )
+
+
+def _geometry(model: str, cfg: Config) -> dict:
+    """What the cutoff decides, for a FITS row; empty cells for anything else.
+
+    Derived from ``model.fits`` rather than recomputed here - the fifth instance of the
+    two-places family arrived from a copy that was locally correct, and ``COF = L // c``
+    is exactly the kind of arithmetic that gets written down twice.
+    """
+    if model != "fits":
+        return {
+            "cutoff_period_days": cfg.fits.cutoff_period_days,
+            "cof": math.nan,
+            "dead_row_fraction": math.nan,
+        }
+    length, horizon = cfg.window.input_len, cfg.window.horizon
+    cutoff = cfg.fits.cutoff_period_days
+    return {
+        "cutoff_period_days": cutoff,
+        "cof": fits.cof_for(length, cutoff),
+        "dead_row_fraction": fits.dead_row_fraction(length, horizon, cutoff),
+    }
 
 
 def _folds_or_raise(frames, cfg: Config, anchor: int, n_folds: int | None):
@@ -415,6 +532,7 @@ def _row(
         "anchor": condition.anchor,
         "lr": condition.lr,
         "control": condition.control,
+        **_geometry(model, cfg),
         "model": model,
         "channels": channels,
         "fold": fold,
@@ -453,6 +571,7 @@ def _skipped_row(
             "anchor": condition.anchor,
             "lr": condition.lr,
             "control": condition.control,
+            **_geometry(model, cfg),
             "model": model,
             "channels": channels,
             "fold": -1,
@@ -485,9 +604,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     cfg = load_config()
     design = plan(cfg, args.full, args.folds)
+    # Not "conditions x arms": a COF spoke runs FITS alone, so the product would be wrong
+    # and wrong in the flattering direction.
     print(
-        f"{len(design.conditions)} conditions x {design.arms} arms = {design.cells} "
-        f"cells, {design.folds} folds each = {design.trainings} arm-folds, "
+        f"{len(design.conditions)} conditions, {design.cells} cells "
+        f"({design.arms} arms at the centre, FITS alone on a COF spoke), "
+        f"{design.folds} folds each = {design.trainings} arm-folds, "
         f"about {design.seconds() / 60:.0f} minutes"
     )
     if args.plan_only:
@@ -519,9 +641,12 @@ __all__ = [
     "CHANNEL_SETS",
     "COLUMNS",
     "CONTROLS",
+    "CUTOFFS",
     "LEARNING_RATES",
     "MODELS",
     "NOISE",
+    "PAIR_KEYS",
+    "PER_FOLD_SECONDS",
     "REAL",
     "RESULTS_FILE",
     "SHUFFLED",
@@ -530,6 +655,7 @@ __all__ = [
     "Plan",
     "arms",
     "conditions",
+    "live_arms",
     "main",
     "null_bars",
     "plan",

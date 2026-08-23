@@ -7,6 +7,362 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-23 — GB-50: the COF sweep rides on the star, and each cutoff carries its own control
+
+**Decision 1 — three more spokes, not a fourth crossed axis.**
+
+| | conditions | cells | arm-folds | estimate |
+|---|---|---|---|---|
+| star as of GB-49 | 7 | 35 | 560 | 14.8 min |
+| **+ COF spokes (this task)** | **13** | **41** | **656** | **21.6 min** |
+| full cross, all four axes | 108 | 216 | 3,456 | 148 min |
+
+**It rides, and the reason is not economy.** The cutoff is FITS's one hyperparameter and
+reaches persistence and DLinear through **nothing at all**: their rows at cutoff 20 would
+be identical to their rows at cutoff 5 in every column that is a result. Running them
+would not be a waste so much as a **hazard** — a duplicate in a results file is something
+a reader eventually averages. `Condition.models` therefore returns FITS alone on a COF
+spoke, and the plan counts cells per condition rather than multiplying.
+
+**Decision 2 — every cutoff gets its own null control, not only the centre.** Six new
+conditions rather than three. A cutoff tested only on real data is a cutoff nobody can
+falsify, and the standing requirement of 20 Aug applies to each of them separately: if
+FITS at cutoff 2 scores the same on white noise as on real data, **that is the finding for
+that cutoff**.
+
+**Decision 3 — the wall-time estimate is now per-arm and measured.** The old flat 3.9 s
+per arm-fold predicted 36 minutes for a grid that took 15.1. The measured per-fold costs
+span 60x — buy-and-hold 0.07 s, persistence 0.39, DLinear 1.46, FITS 4.16 — so a flat mean
+misprices any design whose **mix** differs from the one it was averaged over, which every
+FITS-only spoke does. The same estimator run against the GB-49 design gives 14.8 minutes
+against the 15.1 measured.
+
+**Consequence — two configuration-specific results become curves, and both invert the
+natural reading.**
+
+| cutoff | COF | out bins | reals | dead row | aligned bins | mean misalignment |
+|---|---|---|---|---|---|---|
+| 2 | 60 | 62 | **7,440** | 1.67% | 2/60 | 0.2500 |
+| **5 (deployed)** | 24 | 25 | 1,200 | 4.17% | 1/24 | **0.2833** |
+| 10 | 12 | 13 | 312 | 8.33% | 1/12 | 0.1833 |
+| 20 | 6 | 7 | 84 | **16.67%** | 1/6 | 0.0833 |
+
+1. **The dead DC row's share rises with the cutoff.** It is `1 / COF` exactly, so the
+   *smaller* model wastes proportionally *more*: 1.67% at cutoff 2 against **16.67%** at
+   cutoff 20. The intuition that a tighter filter is a leaner model is wrong in the only
+   sense that matters here.
+2. **The interpolation cost saturates rather than peaking, and the deployed cutoff is on
+   the plateau.** See the correction below: mean `|η·k − round(η·k)|` rises with `COF` and
+   settles at **0.25**, and cutoffs 2 and 5 are both in that regime.
+3. **§6.1's parameter framing is cutoff-specific.** At cutoff 2 FITS holds **7,440** reals
+   against DLinear's 4,800, so *"FITS is the smaller model"* — true at the deployed cutoff
+   by 4x — **inverts inside this project's own sweep**. Any sentence comparing the two
+   sizes must name the cutoff it holds at.
+
+**Correcting the first reading of this table, which was mine.** I wrote that the cost is
+"worst in the middle" and that the deployed cutoff landed on the peak of an axis nobody was
+looking at. **The pattern is saturation, not a middle**, and the corrected version is weaker
+and truer. `η = 1 + H/L = 1 + 1/30`, so `frac(η·k) = frac(k/30)` and the fractional part has
+a **period of 30 bins**. Mean misalignment therefore rises with `COF` while the retained
+bins cover less than one full cycle, and **saturates at 0.25** — the mean distance of a
+uniform fractional part to the nearest integer — once they cover one or more:
+
+| cutoff | COF | cycles of 30 | mean misalignment |
+|---|---|---|---|
+| 60 | 2 | 0.07 | 0.0167 |
+| 20 | 6 | 0.20 | 0.0833 |
+| 10 | 12 | 0.40 | 0.1833 |
+| **5 (deployed)** | 24 | 0.80 | **0.2833** |
+| 4 | 30 | **1.00** | **0.2500** |
+| 2 | 60 | **2.00** | **0.2500** |
+
+At exact multiples of the period the value is **exactly 0.2500**. The apparent peak at
+`COF` 24 is a **partial-cycle sampling artefact** — 24 of 30 bins covers `k/30 ∈ [0, 0.77]`,
+which over-weights the far half — and the gap between 0.2833 and 0.2500 is sampling rather
+than structure. So: **every low cutoff is saturated and the deployed one is among them.**
+Landing on a plateau is a weaker claim than landing on a peak, and it is the one the numbers
+support; the peak version invites a reader to check the arithmetic and find it marginal.
+
+**The `H` table of 20 Aug is the same curve in a different parameter**, and saying so
+keeps two entries from reading as two mechanisms. The alignment period in `k` is `L/H`, so
+across `H` at fixed `COF = 24` the retained bins span 0.2 cycles at `H = 1` (0.0958, still
+rising), 0.8 at `H = 4` (0.2833), 2.4 at `H = 12` (0.2333) and 12 at `H = 60` (0.2500) —
+**rise, then the same 0.25 plateau** — and the 0.0000 at `H = 120` is not the far end of a
+curve but the one exact escape from it, `η = 2`. What survives unchanged from that entry is
+its actual claim: the cost is **not monotone in `H/L`**, `H = 1` is genuinely better than
+`H = 4`, and `H = 120` is free. What does not survive is reading either table as a peak.
+
+**And the curve carries a trade-off the source paper does not discuss.** Retaining more
+frequencies buys **more information** and **worse reconstruction of each one**, because more
+retained bins means higher `k` and higher `k` means `η·k` further from an integer. `COF` is
+therefore not only *how much to keep*; it is also *how well what you kept can be
+reconstructed*, and the two pull opposite ways. **The trade-off is not symmetric, which is
+the part that makes it testable:** the reconstruction cost **saturates at 0.25** while the
+information retained keeps rising, so the geometry alone does **not** predict a middle
+optimum.
+
+**And there is a third force, which is the one most likely to produce an actual optimum,
+because it does not saturate either.** The complex layer grows as `COF · ceil(η·COF)`,
+so statistical determinacy falls fast. Measured against **2,505 training windows × `H = 4`
+= 10,020 equations** per fold — fold 1, five symbols, 501 train timestamps each, counted
+the way `train.py` builds them rather than by slicing the frame first:
+
+| cutoff | COF | reals | equations per parameter |
+|---|---|---|---|
+| 2 | 60 | **7,440** | **1.35×** |
+| **5 (deployed)** | 24 | 1,200 | 8.35× |
+| 10 | 12 | 312 | 32.12× |
+| 20 | 6 | 84 | 119.29× |
+
+So the three forces are: **information retained**, which rises with `COF`; **reconstruction
+quality**, which falls and **saturates at 0.25**; and **statistical determinacy**, which
+falls and **does not saturate**. At cutoff 2 the layer is very nearly underdetermined.
+
+**The prediction, recorded before the sweep ran.** If there is an optimum, **it is not at
+cutoff 2**, and the reason will be **statistical rather than geometric**. **If cutoff 2 does
+win, that is evidence against the determinacy story and is worth as much as the opposite.**
+All of this is written here before the results, so that whatever the sweep returns cannot be
+read as a post-hoc explanation of it.
+
+**And the sweep found a defect in the geometry it was measuring.** `out_bins` was
+`ceil(η · COF)` in floating point, which is correct on paper and wrong **exactly where
+`η · COF` is a whole number**: at `COF = 60` the product evaluates to `62.00000000000001`
+and the ceiling came out **63**, one bin more than the architecture describes and 120
+allocated reals that nothing accounts for. It is silent — no stage downstream refuses an
+extra output bin — and it fires only on the **perfectly aligned** case, which is the one
+the formula exists to handle cleanly. Now integer arithmetic. **The deployed cutoff of 5
+gives 24.8 and is unaffected**, so no checkpoint and no published number moves; the defect
+was reachable only by sweeping the axis, which is an argument for sweeping axes.
+
+All three are **derived from `model/fits.py`** and asserted equal to the forecaster's own
+properties, rather than recomputed in the study: `COF = L // cutoff` is exactly the
+arithmetic that gets written down twice, and this project has five instances of that
+family already.
+
+---
+
+## 2026-08-23 — GB-51: three references, and the family is counted
+
+**Decision 1 — spec §7.4's "each arm vs persistence" is wrong and is corrected in place.**
+Persistence forecasts zero and takes no trades, so its `direction` and `sharpe` cells in
+`results.csv` are **empty**. A single reference would have tested two of the four metrics
+against a NaN and reported whatever survived. The three-reference rule of §7.3 applies
+here identically: **MAE against persistence** on the same channel set, **direction against
+always-long** at that fold's realised up rate, **Sharpe and total return against
+buy-and-hold** at the same fold.
+
+**Decision 2 — pairing is by fold, within a condition, and may not cross one.** Fold 3 at
+anchor 21 is not fold 3 at anchor 0. Pairing them would compare two periods rather than
+two arms, and it would do so invisibly, because both are called fold 3.
+
+**Decision 3 — multiple comparisons are corrected, and the correction is Holm.** The
+instruction was that either applying one or declining one is defensible, and that not
+mentioning it is not. Both are reported: raw `p` **and** `p_holm` side by side, with
+`n_tests` on every row. Holm-Bonferroni rather than Bonferroni because it is uniformly
+more powerful at no cost, and rather than Benjamini-Hochberg because FWER is the guarantee
+a reader of a results table assumes and BH's needs a dependence assumption nobody here has
+checked. **The family is every test computed in the same call**, which means a report
+narrows the family by narrowing the table — and that is a property to state rather than to
+leave implicit, because a p-value corrected over 98 tests and one corrected over 30 are
+different numbers from the same data.
+
+**And the floor, which matters as much as the values.** The exact two-sided signed-rank
+test on 16 folds **cannot return a p below `2 / 2^16 = 3.05e-5`**. No claim in this study
+can be significant past that however large its effect. Holm over a family of ~50 still
+leaves a smallest achievable adjusted value near 1.5e-3, so the correction is survivable —
+a claim that fails it was not close.
+
+**Consequence.** `experiments/stats.py` is a **pure function from `results.csv` to a test
+table**: it runs nothing, trains nothing and needs no cache, so GB-52 regenerates it from
+the file rather than reading a second artefact that could drift out of step. It carries
+`control` and `skipped`, so `study.reportable` gates it **unchanged** — one gate for both
+tables. A test is **withheld rather than reported powerless**: below six moved folds the
+exact test cannot reach 0.05 at all, and a p from it would be a number with no power
+behind it rather than an absence of effect.
+
+---
+
+## 2026-08-23 — The COF sweep, and a correction to what significance can be asked to do
+
+**The sweep, measured.** 877 rows, 576 reportable, 41 cells, 656 arm-folds, 29.3 minutes.
+
+| cutoff | COF | direction | vs always-long | **vs its own noise twin** | MAE | flatness |
+|---|---|---|---|---|---|---|
+| 2 | 60 | 0.4971 | −5.93 | **−0.71** | 0.0167 | 0.4187 |
+| **5** | 24 | 0.5055 | −5.09 | **+0.31** | 0.0158 | 0.2733 |
+| 10 | 12 | 0.4969 | −5.95 | **−0.79** | 0.0156 | 0.2048 |
+| 20 | 6 | 0.4956 | −6.08 | **−0.93** | 0.0155 | 0.1560 |
+
+**No optimum at any cutoff.** Three of four sit *below* their own white-noise twin and the
+fourth is +0.31 points over it, which is inside noise; all four sit five to six points
+below the always-long bar. A sweep finding nothing at every cutoff is a stronger statement
+than not having swept, and it is the specific question §1.4 set out to ask.
+
+**Correction 1 — the determinacy prediction has weak evidence against it, not an absence
+of evidence.** It was first recorded as *untested* because it was conditional on there
+being an optimum. That was the wrong reading. The term predicts **visibly higher
+fold-to-fold variance at 1.35×**, and the per-fold sd of direction is
+**0.0592 / 0.0627 / 0.0630 / 0.0546** across determinacy ratios spanning **1.35× to 119×** —
+flat. **An absence of the predicted variance is information, not silence.** The reading
+everything else in this study supports: **if the model learns nothing, there is nothing to
+overfit, so determinacy does not bite.**
+
+**Correction 2 — two claims were being conflated, and only one of them is this study's.**
+
+| | claim | what it is | support |
+|---|---|---|---|
+| **(a)** | **No arm beats the always-long bar** | a claim of **absence** | negative in **9 of 9** anchor-arm cells, **−4.3 to −6.5 points**, holds under **both** null controls, no positive cell anywhere |
+| (b) | Every arm is *significantly worse* | a **positive** claim of an effect | survives Holm at **3 of 9** in the pre-specified nine-test family |
+
+**§1.4 asked (a). The report makes (a) and does not make (b) anywhere.** Reporting the
+Holm result as a weakening of the headline was an error: it weakens (b), which we should
+not have been claiming.
+
+**And the sentence about the instrument travels with the claim.** Holm-Bonferroni guards
+against **false positives**. Applied to a claim of **absence** it makes it *easier* to
+conclude that nothing was found — **not a protection but a bias toward this study's own
+conclusion**. It is reported because declining to report it would be worse, and the claim
+rests on **nine negative cells and a five-point gap**, not on a p-value. A reader who knows
+statistics will look for that sentence, and its absence would cost more than the correction
+does.
+
+**Correction 3 — the eleven Holm survivors are not a finding about the models. They are the
+flatness artefact in significance clothing.** All eleven of the 79 real-only tests that
+survive correction are **MAE against persistence, with the trained model worse**.
+Persistence forecasts **zero**, which is **maximally flat**. Across the COF sweep
+**Spearman(MAE, flatness) = +1.00** — MAE falls 0.0167 → 0.0155 exactly as flatness falls
+0.4187 → 0.1560, and the best-MAE cutoff forecasts at **15.6% of the truth's magnitude**.
+
+**So the only results in this study that survive a family-wise correction are measuring
+flatness, and the winner is the model that forecasts nothing.** That is the **third and
+cleanest** demonstration of §7.3's ban — after the 16-fold scaler comparison and the
+Spearman +0.811/+0.668 measurement — and the first delivered by the significance machinery
+itself. It is stronger as a finding **about the metric** than it would be as one about the
+models, and it is reported that way.
+
+**A note on the wall clock, because an estimator nobody trusts is one nobody reads.** The
+run took 29.3 minutes against a 22-minute estimate, and the cause was **concurrent test
+runs on the same machine**, not the sweep: cutoff 2's sixteen folds took **97.4 s** against
+the centre cutoff's **97.5 s**, so the 6× larger model cost nothing measurable. The
+estimator is sound and the machine was not idle. The run log now names the cutoff, which it
+did not — the six COF-spoke lines were indistinguishable from one another.
+
+---
+
+## 2026-08-23 — A multi-day run needs a heartbeat, and the loop could not span a day at all
+
+**The gap, and it was found by planning the run rather than by running it.** The decision
+to leave the loop running between sessions rests on the process being **alive**, and
+**a loop that died at 02:00 and a loop correctly idling produce identical output: nothing.**
+Rule 2 bounds the overnight residual only while the process lives, and the residual banner
+of this morning has nothing to be true about if nothing is there to print it.
+
+**And a second thing the plan assumed and the code did not do.** `run_session` **returns**
+when the market closes — it has no idle state at all, and returns immediately when called
+outside a session. "Leave it running between sessions" was not a configuration choice; it
+was a feature that did not exist. The longest run to date is a handful of cycles, so
+nothing had ever asked for it.
+
+**Decision — three additions, each small and each closing one of the three ways a
+multi-day run fails quietly.**
+
+1. **`heartbeat`.** One line every `live.heartbeat_seconds` (900) while idle: timestamp,
+   state, positions held, uptime. `idle_state` separates **weekend**, **holiday** and
+   **outside session**, because they are three different facts about the same silence and
+   a reader of a night of heartbeats needs to know which one they are looking at. **A
+   silent log now means dead rather than quiet.**
+2. **`run_sessions`.** Runs N exchange sessions in one process, idling between them, and
+   returns **one `SessionReport` per session, separate and in order**. They are not merged:
+   each carries its own `held_at_open`, which is the answer to *did this session begin
+   holding risk*, and a merged report cannot say it twice. **Only an ordinary close
+   continues to the next session** — a run stopped by SIGINT or by `max_cycles` returns
+   what it has, because a loop that stopped for a reason should not silently start again
+   tomorrow. `--sessions N` on the CLI.
+3. **The idle path runs no cycle.** No fetch, no broker call, no decision record. Seventeen
+   idle hours cost the decision store nothing, which is asserted rather than assumed: a
+   test counts `run_cycle` invocations across a run that idles overnight and requires the
+   count to equal the number of cycles **reported**. A heartbeat every fifteen minutes is
+   ~68 lines a day; a cycle record every sixty seconds while the market is shut would be
+   ~1,000.
+
+**Consequence.** `live.heartbeat_seconds` is a new config key. It is in the `live` section,
+which is **not** in `MODEL_SHAPING_SECTIONS`, so `model_config_hash` does not move and no
+checkpoint is refused — the split made on 19 Aug for exactly this reason paying off a
+second time. `CLOSED = "the market closed"` becomes a module constant because `run_session`
+writes it and `run_sessions` reads it, and a string spelt in two places is the defect family
+this project has five instances of. 8 new tests, including two sessions in one process
+driven by a clock the loop advances by sleeping, so seventeen idle hours cost seventeen
+iterations.
+
+---
+
+## 2026-08-23 — RULING: the protective legs stay DAY, and the residual is stated rather than closed
+
+**Decision.** `TimeInForce.DAY` stays. **No code change.** The GATE 2 condition recorded on
+20 Aug offered two ways to close the overnight gap and **both are refused**, so the
+condition is amended rather than satisfied: the gap is accepted, and it is **reported as a
+measured limitation**.
+
+**Why GTC is not available.** It is not a preference. Measured against the paper API and
+recorded in this file: `qty=0.5` with `time_in_force=GTC` returns
+`{"code":42210000,"message":"fractional orders must be DAY orders"}`. GTC is therefore only
+reachable by **rounding to whole shares**, which reintroduces exactly the price-level
+discretisation GB-18 chose fractional sizing to avoid — and it would not be a local change
+to the executor. `engine.risk.shares_for` is shared by the backtester and the executor, so
+whole-share sizing changes **position sizing across the entire study**, and every arm in
+`results.csv` would be describing a different sizing rule from the one the report explains.
+
+**Why flattening at the close is worse.** The backtest **holds overnight**. A live loop that
+flattens at the close is running a different strategy from the one being evaluated, and the
+divergence is not a rounding residual — it is a different exit rule on every position. That
+breaks train/live parity, which is the property this project is built on and the one
+`test_train_live_parity` exists to defend. Closing a protection gap by introducing a parity
+gap is not a fix.
+
+**What already covers most of it.** The five-rule policy of 18 Aug, unchanged: arm in the
+same cycle that observes the fill; **re-arm every open position before any entry at the
+start of every session**; verify both legs live every cycle and treat a naked position as a
+risk event; cancel the surviving leg when one fills; and state the residual as the arming
+interval rather than as "unprotected overnight".
+
+**THE RESIDUAL, STATED AS MEASURED AND NOT AS UNLIKELY.** For the interval between a
+session open and a successful re-arm, and for **any session the loop does not run at all**,
+an open position carries **no broker-side protection**. Not "brief", not "unlikely": DAY
+orders are expired by the broker at the close, so the position is naked from the open until
+the loop arms it, and if the process is not running that morning it stays naked for the
+whole session. The defence is **rule 2 and it is a real defence but a partial one** —
+re-arming runs first on any start, so a loop that starts at all closes the gap before it
+does anything else. It does nothing for the session in which the loop never starts.
+
+**Consequence.** The GATE 2 condition is amended in spec §8 with its original text kept.
+GB-57 carries the residual in the words above. `executor.py` is untouched: this is a ruling
+that the current behaviour is the right one, and a ruling that changes no code still gets an
+entry, because the next reader will otherwise re-open it.
+
+**And the residual is printed rather than documented, because a ruling nobody sees at the
+moment it applies is a footnote.** `live_loop.overnight_residual` emits a banner block at
+session start whenever the book already holds something: the symbols and their decision
+ids, that protection was **NONE between the previous close and this session's first
+arming**, why (`TimeInForce.DAY`, and both escapes refused), and how it is handled (rule 2
+re-arms before any entry, and the first cycle is that moment). A session that opens flat
+prints nothing, because a warning that fires when there is nothing to warn about is one
+nobody reads. `SessionReport.held_at_open` carries the same fact into the session summary,
+read **before the first reconciliation** — the only moment the book still describes what
+was carried *into* the session rather than what it holds now. The cycle records cannot
+answer this on their own: a position re-armed in cycle 1 looks identical to one opened in
+cycle 1.
+
+**Operating decision for the live sessions of 24-26 Aug: leave the loop running between
+sessions.** The residual has two halves and rule 2 closes only one of them. Re-arming
+before entries bounds the gap for every session the loop **runs**; it does nothing for a
+session the loop **misses**, and a process started by hand at 16:30 is a process that can
+fail to be started. A loop that runs continuously across the close is inside the market
+guard all night — it does nothing until the calendar says there is a market — and then
+arms in its first cycle of the new session. The fallback, if it dies overnight, is to start
+it **before** 16:30; that is a worse plan and it is the one being avoided.
+
+---
+
 ## 2026-08-20 — Which claims survive which test: the grid, classified
 
 **Decision.** Every claim the grid can speak to is classified against **both** required

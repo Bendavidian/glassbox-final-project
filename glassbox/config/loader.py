@@ -185,6 +185,13 @@ class LiveConfig:
     market_close_il: str
     retry_attempts: int
     retry_backoff_seconds: float
+    heartbeat_seconds: int
+    """Seconds between idle heartbeat lines on a run that spans more than one session.
+
+    A loop that has died and a loop correctly idling produce identical output - nothing -
+    so without a heartbeat there is no way to tell them apart, and the overnight
+    protection residual is only bounded while the process is **alive**.
+    """
 
 
 @dataclass(frozen=True)
@@ -523,6 +530,7 @@ def _build_live(raw: Mapping[str, Any]) -> LiveConfig:
         retry_backoff_seconds=_as_positive_float(
             section, "live", "retry_backoff_seconds"
         ),
+        heartbeat_seconds=_as_positive_int(section, "live", "heartbeat_seconds"),
     )
 
 
