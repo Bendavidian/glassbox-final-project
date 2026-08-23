@@ -182,6 +182,59 @@ behind it rather than an absence of effect.
 
 ---
 
+## 2026-08-24 — The live pass: what refreshes, what is marked stale, and what a closing stop says
+
+**Decision 1 — two caches, two TTLs, because they are two problems.** Local reads
+(decision store, book, thresholds, heartbeat) at **5 s**: a few KB of filesystem, free,
+and enough to give the next-cycle countdown a credible tick. The **broker** read at
+**30 s**: Alpaca's paper tier allows ~200 requests/minute, a positions-plus-orders refresh
+is 2 calls, so 5 s would be **1,440 calls/hour** and 30 s is **240** — about 2% of the
+ceiling. **And the dashboard is not the only client:** the live loop polls the same
+account every 60 s from another process, so the ceiling is shared and the interaction is
+real rather than theoretical. A single shared TTL would either hammer the API or freeze
+the countdown.
+
+**Nothing is lost by 30 s.** The underlying instrument advances **once per trading day**;
+a position figure 30 s old is current by every standard the data supports.
+
+**Decision 2 — a stale broker read is shown as stale, never hidden and never silently
+reused.** On a failed call the panel keeps the last value, **dims it, and stamps it**
+`BROKER UNREACHABLE — LAST READ 47s AGO`. Not blanked: a position you cannot see is worse
+than one you can see is old. Not unmarked: **an unmarked stale number beside a stop
+distance is a reading someone could act on**, which is the same defect as the exit-0 pipe
+of 23 Aug — a value that looks current and is not. Above **two heartbeat intervals** it
+stops being a staleness note and becomes the **loop-not-responding** state in the header,
+because at that point the question is no longer "is this price fresh" but "is anything
+running".
+
+**Decision 3 — distance-to-stop changes what the row SAYS as it closes, not how it
+moves** (ruled 24 Aug, for the live pass rather than for GB-53):
+
+| distance | treatment |
+|---|---|
+| beyond **half** the stop distance | ordinary weight, ordinary row |
+| inside **half** | the figure takes emphasis and the row is marked |
+| inside **a quarter** | the row states plainly that a stop fill is near, **and what will happen when it fills**: the leg fills, the sibling is cancelled in the same cycle, and a Trade is emitted with reason `stop` or `stop_gap` |
+
+**No animation and no colour change** — weight, a glyph, and a sentence, so the panel still
+reads in greyscale. **The reasoning is the reliability line's:** the panel should tell a
+reader what is **about to happen**, not only what is true. A stop firing is the one event
+of the GATE 2 sessions where a human watching would want thirty seconds of warning, and it
+is the one the data can actually give.
+
+**Decision 4 — the frame is an instrument panel, not a trading terminal, and that decides
+the price chart.** This system trades **completed daily bars** (GB-26), and GB-7 measured
+that this subscription **refuses `get_stock_latest_quote` on SIP** — there is no intraday
+price to show even if we wanted one. So the chart carries
+`LAST COMPLETED BAR <date> · ADVANCES ONCE PER TRADING DAY` **in the same register as the
+reliability line**, not as small print. **Movement is allowed only where the underlying
+number moved:** a countdown ticks because time passes, a P&L figure changes because the
+price changed. Nothing pulses, sweeps or animates to look alive. Styling motion onto a
+daily bar would be the **interface** committing the misreading the spectral panel's caption
+exists to prevent.
+
+---
+
 ## 2026-08-23 — The spectral panel's capture is deferred, and its caption is mandatory
 
 **Decision 1 — the four report screenshots are captured by hand, and `figures/screenshots/`

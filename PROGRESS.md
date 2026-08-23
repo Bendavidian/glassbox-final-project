@@ -300,6 +300,40 @@ depends on nothing in the model layer.
 
 ---
 
+## Scope boundary — the live dashboard pass (ruled 24 Aug 2026, before it starts)
+
+**Recorded before tomorrow, so it is a decision rather than a judgement made while
+enjoying the work.**
+
+**What is product and what is not.** **GB-53** — the spectral explanation panel — is in
+the spec and blocks four screenshots for the architecture report. It is product and it
+lands. The **TradingView-style live pass** — header state, live positions, arriving
+decisions, the instrument-panel framing — is **not in the spec**. It was approved and
+specified without going through `IDEAS_PARKED.md` first, which is what that file exists
+for (CLAUDE.md rule 4).
+
+**The boundary:**
+
+| | |
+|---|---|
+| **GB-53** | lands as its own commit, before the live pass |
+| **the live pass** | gets **tomorrow's session window only** — from when the loop starts until **23:00** — and stops at that boundary **in whatever state it is in** |
+| **whatever has not landed by 23:00** | goes into `IDEAS_PARKED.md` with what was done and what was left. **Not carried forward** |
+| **Wednesday** | starts **GB-57** |
+
+**Timeboxed, not scope-boxed, and the difference is the whole point:** scope always
+expands and time does not. A scope box invites "just one more row"; a clock does not
+negotiate.
+
+**Why that window specifically.** The live path is **frozen while the loop runs**, so
+nothing else can safely be touched; and the results chapter cannot be written on data not
+yet collected. It is the one window in which dashboard work costs nothing else.
+
+**Why it stops at 23:00.** Five of the eight remaining tasks are **writing**; **GB-57 is
+about 15% done and is most of what is left**; and the dashboard is **already good enough**
+for the screenshots and the demo. A better dashboard does not move the submission and a
+missing results chapter does.
+
 ## GATE 2 session log
 
 **Written 23 Aug 2026, before the first session runs.** A criterion written after seeing
