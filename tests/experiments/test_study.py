@@ -17,7 +17,13 @@ import pandas as pd
 import pytest
 
 from glassbox.backtest import metrics
-from glassbox.config.loader import Config, load_config
+from glassbox.config.loader import (
+    MODEL_SHAPING_SECTIONS,
+    Config,
+    config_hash,
+    load_config,
+    model_config_hash,
+)
 from glassbox.data.historical import LOG_RETURN
 from glassbox.experiments import study
 from glassbox.model import fits
@@ -234,6 +240,69 @@ def test_the_same_seed_rebuilds_the_same_world() -> None:
 def test_an_unknown_control_is_refused(cfg: Config) -> None:
     with pytest.raises(ValueError, match="unknown control"):
         study.null_bars(synthetic_bars(), "wishful", seed=1)
+
+
+# ── provenance: was this file written by the configuration on disk? ─────────
+
+
+def test_a_results_file_from_this_configuration_is_clean(
+    cfg: Config, repo_root: Path
+) -> None:
+    """**The committed `results.csv` must match the committed `settings.yaml`.**
+
+    A grid reads its configuration once at start, which makes the configuration mutable
+    during a 20-minute run. On 23 Aug 2026 `settings.yaml` was edited at 17:00 while a
+    grid started at 16:36 was still running, and the file it wrote carried a hash matching
+    nothing on disk. Nothing in the system would have noticed; this is what notices.
+    """
+    frame = pd.read_csv(repo_root / study.RESULTS_FILE)
+
+    stamp = study.provenance(frame, cfg)
+
+    assert stamp.models_match, stamp.warning()
+    assert stamp.config_matches, stamp.warning()
+    assert stamp.ok
+
+
+def test_a_live_only_change_warns_and_does_not_condemn(cfg: Config) -> None:
+    """**The same split the checkpoint gate uses**, and for the same reason: a guard that
+    invalidates a 20-minute grid over a polling interval is a guard somebody weakens."""
+    frame = a_table()
+    frame["model_config_hash"] = model_config_hash(cfg)
+    frame["config_hash"] = config_hash(cfg)
+    moved = replace(cfg, live=replace(cfg.live, poll_seconds=cfg.live.poll_seconds + 1))
+
+    stamp = study.provenance(frame, moved)
+
+    assert stamp.models_match
+    assert not stamp.config_matches
+    assert not stamp.ok
+    assert "still stands" in stamp.warning()
+    assert "live" in stamp.candidates
+
+
+def test_a_model_shaping_change_condemns_the_file(cfg: Config) -> None:
+    frame = a_table()
+    frame["model_config_hash"] = model_config_hash(cfg)
+    frame["config_hash"] = config_hash(cfg)
+    moved = replace(cfg, window=replace(cfg.window, input_len=cfg.window.input_len + 1))
+
+    stamp = study.provenance(frame, moved)
+
+    assert not stamp.models_match
+    assert "may be quoted" in stamp.warning()
+
+
+def test_the_candidate_sections_exclude_everything_that_shapes_a_model() -> None:
+    """A hash cannot say what changed; it can say what **cannot** have."""
+    frame = a_table()
+    frame["model_config_hash"] = model_config_hash(load_config())
+    frame["config_hash"] = "not the current one"
+
+    stamp = study.provenance(frame, load_config())
+
+    assert stamp.candidates
+    assert not set(stamp.candidates) & set(MODEL_SHAPING_SECTIONS)
 
 
 # ── the gate ─────────────────────────────────────────────────────────────────

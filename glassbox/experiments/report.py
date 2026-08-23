@@ -44,8 +44,10 @@ import pandas as pd
 from scipy import stats as scipy_stats
 
 from glassbox.backtest import metrics
+from glassbox.config.loader import Config, load_config
 from glassbox.dashboard.app import HAIRLINE, INK, MUTED, ORANGE, PANEL, PAPER, RAMP
 from glassbox.experiments import stats, study
+from glassbox.experiments.study import provenance
 
 DEFAULT_DPI = 200
 REPORT_FILE = "report.md"
@@ -131,11 +133,18 @@ def load(path: str | Path = study.RESULTS_FILE) -> pd.DataFrame:
     return frame
 
 
-def header(frame: pd.DataFrame) -> list[str]:
+def header(frame: pd.DataFrame, cfg: Config | None = None) -> list[str]:
     """The lines every table in this report sits under.
 
     **The data snapshot is the first of them.** A report built on a stale cache says so on
     its own face rather than only in a run log, which is the whole of GB-52's requirement.
+
+    **And the configuration stamp is checked, not just carried** (23 Aug 2026). A grid
+    reads its configuration once at start, which makes the configuration mutable during a
+    20-minute run: editing the settings file mid-run leaves a results file stamped with a
+    hash that matches nothing on disk, and nothing else in the system would notice.
+    :func:`study.provenance` compares both hashes and the warning lands **in the header**,
+    where a reader of the tables cannot miss it.
 
     Raises:
         ValueError: The rows disagree about the snapshot. Two vintages in one file cannot
@@ -150,8 +159,10 @@ def header(frame: pd.DataFrame) -> list[str]:
             "over more than one would average two different markets"
         )
     folds = int(real["fold"].max()) if not real.empty else 0
+    stamp = provenance(frame, cfg if cfg is not None else load_config())
     return [
         f"**Data snapshot: last bar {snapshots[0]}**",
+        *([f"> **PROVENANCE:** {stamp.warning()}", ""] if not stamp.ok else []),
         (
             f"{len(frame)} rows, {len(real)} reportable "
             f"({len(frame) - len(real)} null-control or skipped) · "

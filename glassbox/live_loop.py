@@ -48,7 +48,12 @@ import pandas as pd
 import pandas_market_calendars as mcal
 
 from glassbox import records
-from glassbox.config.loader import Config, config_hash, load_config
+from glassbox.config.loader import (
+    Config,
+    config_hash,
+    load_config,
+    model_config_hash,
+)
 from glassbox.contracts.schemas import DecisionRecord, Forecast, Signal, Trade
 from glassbox.data.live import data_source, load_live_bars
 from glassbox.engine import risk
@@ -186,6 +191,12 @@ class SessionReport:
     cycles: tuple[CycleReport, ...]
     open_orders: tuple[str, ...]
     stopped_by: str
+    config_drifted: bool = False
+    """Whether the settings file had changed since this process started.
+
+    On the report rather than only in the log, because the log is where it is easy to
+    miss and the report is what the gate reads.
+    """
     held_at_open: tuple[str, ...] = ()
     """Symbols the book already held when this session started.
 
@@ -209,6 +220,15 @@ class SessionReport:
             f"  orders submitted     : {sum(len(c.submissions) for c in self.cycles)}",
             f"  trades emitted       : {sum(len(c.trades) for c in self.cycles)}",
             f"  positions re-armed   : {sum(len(c.rearmed) for c in self.cycles)}",
+            (
+                "  configuration        : "
+                + (
+                    "DRIFTED - the settings file changed after this process started; the "
+                    "running configuration is not the one on disk"
+                    if self.config_drifted
+                    else "matches the file on disk"
+                )
+            ),
             (
                 "  overnight residual   : "
                 + (
@@ -598,6 +618,68 @@ def overnight_residual(book: Book, when: pd.Timestamp) -> list[str]:
     ]
 
 
+def config_drift(cfg: Config) -> list[str]:
+    """Banner lines when the configuration on disk is no longer the one running.
+
+    **A long-running process reads its configuration once, which makes the configuration
+    mutable during the run.** On 23 Aug 2026 the settings file was edited at 17:00 while a
+    grid started at 16:36 was still running; the results file it wrote carries a hash
+    matching nothing on disk, and nothing told anyone. **A three-day live run makes that
+    worse, not better**: every decision record it writes is the audit trail GATE 2 and
+    §7 both read, and a record stamped with a configuration that no longer exists cannot
+    be replayed against the settings that produced it.
+
+    **It does not reload.** A live loop that silently changed its own behaviour mid-run
+    would be worse than one that is stale and says so - a position could be opened under
+    one risk policy and managed under another, with nothing in the log marking the seam.
+    The remedy is a restart the operator chooses, not one the loop takes.
+
+    Args:
+        cfg: The configuration this process is running under, loaded at startup.
+
+    Returns:
+        Banner lines, empty when the file on disk still matches. A failure to read the
+        file is itself reported rather than swallowed: a settings file that has become
+        unreadable during a run is not evidence that nothing changed.
+    """
+    try:
+        on_disk = load_config()
+    except (FileNotFoundError, ValueError) as failure:
+        return [
+            "  " + "!" * 74,
+            "  CONFIG DRIFT      : the settings file cannot be read while this process runs",
+            f"  error             : {failure}",
+            "  running with      : the configuration loaded at startup, unchanged",
+            "  " + "!" * 74,
+        ]
+
+    running, current = config_hash(cfg), config_hash(on_disk)
+    if running == current:
+        return []
+
+    models_moved = model_config_hash(cfg) != model_config_hash(on_disk)
+    return [
+        "  " + "!" * 74,
+        "  CONFIG DRIFT      : the settings file has changed since this process started",
+        f"  running           : {running}",
+        f"  on disk           : {current}",
+        (
+            "  model settings    : CHANGED - the running model is not the one this "
+            "configuration would build, and every record from here on is stamped with a "
+            "configuration that does not describe it"
+            if models_moved
+            else "  model settings    : unchanged; the difference is outside the sections "
+            "that shape a model"
+        ),
+        (
+            "  action            : NOT reloaded. A loop that changed its own behaviour "
+            "mid-run would be worse than one that is stale and says so. Restart the loop "
+            "to adopt the new settings"
+        ),
+        "  " + "!" * 74,
+    ]
+
+
 def session_banner(state: LiveState, when: pd.Timestamp, dry_run: bool) -> str:
     """What this session is, on one screen, before it does anything.
 
@@ -656,6 +738,7 @@ def session_banner(state: LiveState, when: pd.Timestamp, dry_run: bool) -> str:
                     "  " + "!" * 74,
                 ]
             ),
+            *config_drift(cfg),
             *overnight_residual(state.book, when),
             f"  universe           : {list(cfg.universe)}  top_k={cfg.signal.top_k}",
             f"  poll               : every {cfg.live.poll_seconds}s",
@@ -1736,6 +1819,7 @@ def run_session(
     # Read before the first cycle reconciles, which is the only moment the book still
     # describes what was carried **into** the session rather than what it holds now.
     held_at_open = tuple(sorted(state.book.managed))
+    drifted = bool(config_drift(cfg))
     banner = session_banner(state, started, dry_run)
     for line in banner.splitlines():
         LOGGER.info(line)
@@ -1788,6 +1872,7 @@ def run_session(
         open_orders=open_orders,
         stopped_by=stopping["reason"] or CLOSED,
         held_at_open=held_at_open,
+        config_drifted=drifted,
     )
 
 
@@ -2146,6 +2231,7 @@ __all__ = [
     "SessionReport",
     "adopt_own_positions",
     "answer_pending",
+    "config_drift",
     "drop_incomplete_bar",
     "heartbeat",
     "idle_state",

@@ -295,9 +295,99 @@ depends on nothing in the model layer.
 | The overnight residual is printed, not documented | 23 Aug 2026 | Ben | **A ruling nobody sees at the moment it applies is a footnote.** `live_loop.overnight_residual` emits a banner block at session start whenever the book already holds something — the symbols and decision ids, that protection was **NONE between the previous close and this session's first arming**, why (`TimeInForce.DAY`, both escapes refused), and how it is handled (rule 2 re-arms before any entry). A session that opens flat prints nothing. `SessionReport.held_at_open` carries the fact into the session summary, **read before the first reconciliation** — the only moment the book still describes what was carried *into* the session. The cycle records cannot answer it: a position re-armed in cycle 1 looks identical to one opened in cycle 1. |
 | The multi-day run needed two things it did not have | 23 Aug 2026 | Ben | **The plan to leave the loop running between sessions assumed a capability the code did not have**, found by planning the run rather than by running it: `run_session` **returns** at the close and returns immediately when called outside a session, so it could not span a day at all. And a **loop that died at 02:00 and a loop correctly idling produce identical output: nothing** — rule 2 bounds the overnight residual only while the process is alive. Three additions. **`heartbeat`**: one line every `live.heartbeat_seconds` (900) while idle — timestamp, state, positions, uptime — with `idle_state` separating **weekend**, **holiday** and **outside session**, three different facts about the same silence. **`run_sessions`**: N sessions in one process, **one report each, separate and in order**, because each carries its own `held_at_open` and a merged report cannot say it twice; **only an ordinary close continues to the next session**. **The idle path runs no cycle** — asserted by counting `run_cycle` invocations across a run that idles overnight and requiring the count to equal the cycles *reported*: ~68 heartbeat lines a day against the ~1,000 cycle records a 60-second idle poll would write. `live.heartbeat_seconds` sits in the `live` section, **not** in `MODEL_SHAPING_SECTIONS`, so no checkpoint is refused — the 19 Aug hash split paying off a second time. 8 new tests. |
 | CLAUDE.md: three rules were one rule | 23 Aug 2026 | Ben | **Consolidated into a single principle — *only something that runs is a mechanism* — with three named instances and the incident behind each**: a fact stored twice (five instances, three caught by a test written for something else); a test skippable by a cache, a marker or an environment (the deselected test that would have caught the `results.csv` defect); and a **description** of what the code should do, in a comment, a docstring or a plan (the `"GB-41 adds it"` comment GB-41 did not honour, and the determinism docstring above). Plus the practice: **before any job longer than ten minutes, run the tests that validate its output.** Three rules that rhymed invited being read as three; one principle with three instances cannot be. |
+| GB-59, eight weeks early | 23 Aug 2026 | Ben | **A clean clone from the remote reproduces the study and the deployment.** Fresh venv, interpreter and directory: **1129 passed / 0 skipped**; the grid regenerated **877 rows with every result column bit-identical**; `prepare_live` returned a band identical at `lower = 0.026076278765685856` with `model.json` **byte-identical**; `report.py` rebuilt the chapter from `results.csv` alone. **The boundary is named: one machine.** Cross-architecture is **untested**, and `--deterministic` pins BLAS as the documented path at a **measured cost of none** (70.8 s unpinned vs 62.3 s pinned, pinned run cache-warm, so *at most zero*). **Three defects found.** (1) The configuration is mutable during a long run — `settings.yaml` edited at 17:00 under a grid started at 16:36 — closed by `study.provenance` and by `live_loop.config_drift` at every session start, which **does not reload**. (2) The README's install procedure was a note and its author skipped step 3; a non-editable install still imports from the repo root, so everything would have passed while testing an install nobody has — `scripts/setup.ps1` now runs and **verifies** it. (3) A 187-char clone root **dropped a tracked file and exited 0**; pruning one uncited reference log took the longest tracked path from **83 to 66** and the clone-root ceiling from **176 to 193**, so the depth that failed now works. 9 new tests. |
 | Window counts come from the batch | 23 Aug 2026 | Ben | **A leakage-prevention decision produces a wrong number rather than an error for anyone measuring from outside it.** `train.py` calls `build_windows` **once over the whole frame** and splits by timestamp, so no second call can receive a second `ChannelStats`. Slicing the frame to a split *first* and windowing after drops the last `input_len + horizon - 1` rows: **2,505 windows the correct way against 1,890 the other**, a **25% undercount** that reached a determinacy calculation before a second measurement caught it. In the builder's docstring, in `ARCHITECTURE.md`, and — because a docstring is not a mechanism — pinned by a test asserting both counts exactly. |
 
 ---
+
+## GATE 2 session log
+
+**Written 23 Aug 2026, before the first session runs.** A criterion written after seeing
+the outcome is a criterion fitted to it — the same reason GB-57's claims went in before
+the grid. **All three sessions are assessed against this list, unchanged**, and it is
+walked at 23:00 as a checklist rather than judged while tired. A row is **PASS**, **FAIL**
+or **N/A with the reason**; "roughly right" is not one of the options.
+
+Criterion 6 needs two or three separate sessions; the band fires, so an ordinary session
+also satisfies criterion 2 by the **deployed system** rather than by a rehearsal.
+
+### The checklist
+
+**A PASS does not advance every criterion, and the two ledgers are separate.** A session
+in which the band produced no signal on any symbol passes **every row** — nothing was done
+that must not be, nothing omitted that must be — and it advances **criterion 6** while
+leaving **criterion 2** exactly where it was. Criterion 2 needs an order placed by the
+deployed system; criterion 6 needs sessions run. Record them separately at 23:00, or a
+clean Monday reads as more progress than it was.
+
+| # | What | How it is checked | Why it is on the list |
+|---|---|---|---|
+| 1 | **Cycles completed against cycles expected** | `len(report.cycles)` against the session length in minutes ÷ `poll_seconds` — 16:30–23:00 at 60 s is **390**, less any cycle the market-hours guard correctly refused | A short count is either a crash or a guard firing, and the two look identical in a summary |
+| 2 | **One entry decision per symbol per completed bar** | `decisions recorded` = 5 on the first cycle that decides, and `bars already decided` accumulating thereafter; **not** 5 × cycles | The 19 Aug ruling. Before it the loop recorded 1,950 identical rows a day |
+| 3 | **Orders submitted, filled, reconciled, adopted** | `orders submitted`, then the fill visible in the book, then `reconcile` agreeing with the broker on the next cycle, and `positions adopted` = 0 unless the account held something the loop did not open | A submission nobody reconciled is a position the system believes in and the broker does not — and an adoption nobody expected is a position with no decision behind it |
+| 4 | **Protection armed in the same cycle as the fill** | `positions re-armed` ≥ 1 in the cycle that observed the fill, and **both legs** live at the broker | Rule 1. The open is the wrong minute to be idle |
+| 5 | **Both legs verified every cycle** | every cycle reports the position as protected; no cycle logs a naked position | Rule 3. A naked position is a risk event, not a warning |
+| 6 | **No arming failure, or exactly the documented response to one** | zero arming failures; if any, `ARMING_STRIKES` behaviour observed and the flatten either fired at two in a row or did not need to | The 20 Aug liquidation came from an arming failure nobody had watched |
+| 7 | **No GAP in the heartbeat exceeding two intervals** | not "lines exist at the right spacing" but **the largest gap between consecutive heartbeat timestamps**, which must be under 2 x `heartbeat_seconds`. Compute it; do not eyeball it | **A loop that died at 02:00 and restarted at 08:00 emits correctly spaced lines on both sides of a six-hour hole**, and "present at spacing" passes it. The hole is the exact thing the heartbeat was added to detect, so the check has to be on the gap |
+| 8 | **The idle period wrote no cycle records** | the decision store's file count unchanged between the close and the next open | ~68 heartbeat lines a day against the ~1,000 cycle records a 60 s idle poll would write |
+| 9 | **One `SessionReport` per session, in order** | `len(reports)` = sessions completed; each has its own `session_id`, cycles and `stopped_by` | A merged report cannot say `held_at_open` twice |
+| 10 | **`held_at_open` correct on every session** | session 1 opens flat unless the account already holds something; **session 2 lists exactly what session 1 left open** | Read *before* the first reconciliation — the only moment the book describes what was carried *into* the session |
+| 11 | **The overnight banner appears if and only if a position was carried** | `OVERNIGHT RESIDUAL` block present at session 2's open iff session 1 ended holding; absent otherwise | A warning that fires when there is nothing to warn about is one nobody reads |
+| 12 | **Rule 2 re-arms the carried position before any entry** | at session 2's open, `positions re-armed` precedes any `orders submitted` **in the same cycle ordering** | This is the moment the protection policy stops being a design and becomes a measurement |
+| 13 | **Every decision is explainable** | each decision record carries an exact attribution, residual < 1e-5, and `provenance = live` — never `rehearsal:*` | §4.4 exactness, and the gate's own criterion |
+| 14 | **The band's selection context travels** | the banner names the deployed band **with** its validation Sharpe, trade count and grid rank | Ruled 20 Aug: wherever the band appears, its selection context appears with it |
+| 15 | **The run stopped for a stated reason** | `stopped_by` is `the market closed` for sessions 1 and 2, and whatever ended session 3 | Only an ordinary close continues to the next session; anything else is a finding |
+| 16 | **The config-drift line is present or absent, and which is recorded** | every session banner either carries no `CONFIG DRIFT` block, or carries one naming both hashes; `configuration :` in each session summary reads `matches the file on disk` | Added 23 Aug after the grid was found to have been written under a configuration edited mid-run. **Do not edit `settings.yaml` during the three-day run**; if it happens, this is what says so |
+
+### A failed session versus a session with a finding
+
+**These are different and the difference is decided by this table, not at 23:00.** A
+session is assessed as one of three things:
+
+| verdict | what it means | what happens next |
+|---|---|---|
+| **PASS** | every row PASS or N/A-with-reason | counts towards criterion 6 |
+| **PASS, with a finding** | every row PASS or N/A, **and** something was observed that the system handled correctly but that nobody had seen before — a stale symbol excluded, a retried fetch, an adoption, a band declining on a day it was expected to fire | **counts towards criterion 6**, and the finding is written up. A system behaving correctly in a case nobody had exercised is the point of running three sessions rather than one |
+| **FAIL** | any row FAIL | does **not** count towards criterion 6, the cause is fixed, and the session is re-run on a later day |
+
+**The trap this table exists to close:** at 23:00 a tired reader wants to call an
+unexpected-but-correct behaviour a failure, or a genuine failure a finding. The rule is
+mechanical — **a row is FAIL only if the system did something it must not do or failed to
+do something it must.** Anything else is a finding.
+
+### What is NOT a failure
+
+- **The band standing aside on a given day.** A session that correctly declines to trade is
+  a passing session for criteria 1, 2, 5, 7–11, 13–15, and **N/A with the reason** for 3, 4,
+  6 and 12. It is not a failure of the loop, and recording it as one would be fitting the
+  criterion to the desired outcome.
+- **A stale symbol excluded from ranking**, provided it is named in the cycle log and its
+  protective legs are still verified. That is ruling (a) of GB-26 working.
+- **An unreachable broker or feed for one cycle**, provided the retry policy logs it and the
+  next cycle proceeds. A domestic connection drops.
+
+### Session results
+
+_Filled in at 23:00 on each of 24, 25 and 26 Aug 2026, against the list above._
+
+| # | 24 Aug | 25 Aug | 26 Aug |
+|---|---|---|---|
+| 1 | | | |
+| 2 | | | |
+| 3 | | | |
+| 4 | | | |
+| 5 | | | |
+| 6 | | | |
+| 7 | | | |
+| 8 | | | |
+| 9 | | | |
+| 10 | | | |
+| 11 | | | |
+| 12 | | | |
+| 13 | | | |
+| 14 | | | |
+| 15 | | | |
+
 
 ## Gate log
 

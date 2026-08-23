@@ -755,6 +755,69 @@ def test_the_session_summary_answers_whether_risk_was_carried_across_a_close() -
     assert "the session opened flat" in flat.summary()
 
 
+# ── the configuration can move under a long run ──────────────────────────────
+
+
+def test_no_drift_when_the_running_config_is_the_one_on_disk() -> None:
+    assert live_loop.config_drift(load_config()) == []
+
+
+def test_a_live_only_drift_says_the_model_is_unchanged() -> None:
+    """The loop should say what moved, because "config changed" and "your model is not
+    the model" are different emergencies."""
+    stale = replace(load_config(), live=replace(load_config().live, poll_seconds=99999))
+
+    lines = " ".join(live_loop.config_drift(stale))
+
+    assert "CONFIG DRIFT" in lines
+    assert "model settings    : unchanged" in lines
+    assert "NOT reloaded" in lines
+
+
+def test_a_model_shaping_drift_says_the_running_model_is_wrong() -> None:
+    stale = replace(load_config(), window=replace(load_config().window, input_len=999))
+
+    lines = " ".join(live_loop.config_drift(stale))
+
+    assert "CHANGED" in lines
+    assert "not the one this configuration would build" in lines
+
+
+def test_an_unreadable_settings_file_is_reported_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settings file that has become unreadable during a run is not evidence that
+    nothing changed."""
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("settings file not found: nowhere.yaml")
+
+    running = load_config()
+    monkeypatch.setattr(live_loop, "load_config", missing)
+
+    lines = " ".join(live_loop.config_drift(running))
+
+    assert "cannot be read" in lines
+    assert "loaded at startup, unchanged" in lines
+
+
+def test_the_session_summary_says_whether_the_configuration_drifted() -> None:
+    drifted = live_loop.SessionReport(
+        session_id="s",
+        banner="",
+        cycles=(),
+        open_orders=(),
+        stopped_by="x",
+        config_drifted=True,
+    )
+    steady = live_loop.SessionReport(
+        session_id="s", banner="", cycles=(), open_orders=(), stopped_by="x"
+    )
+
+    assert "DRIFTED" in drifted.summary()
+    assert "matches the file on disk" in steady.summary()
+
+
 # ── a run that spans more than one session ───────────────────────────────────
 
 

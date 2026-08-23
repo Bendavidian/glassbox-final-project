@@ -76,10 +76,34 @@ The path it prints must be inside `.venv`. If it is not, activation did not take
 ### 3. Install from the lockfile
 
 ```powershell
+.\scripts\setup.ps1
+```
+
+**One command, because a procedure a reader must execute correctly is a note and a script
+is a mechanism.** It runs the three commands below in order, stops at the first failure,
+and then **verifies** rather than assumes: that `import glassbox` resolves, that the
+package is installed **editable** and resolving to this repository, and that every
+heavyweight dependency imports. It also refuses Python below 3.12 with a message naming
+the cause, which pip does not.
+
+It exists because on 23 Aug 2026 the third command was skipped while running this
+project's own reproducibility audit — a non-editable install still imports correctly from
+the repository root, because Python puts the working directory on the path, and breaks
+only when something runs from elsewhere. That is the silent half the verification closes.
+
+<details>
+<summary>What the script runs, for a reader on a different shell</summary>
+
+```powershell
 python -m pip install --upgrade pip
 python -m pip install -r requirements.lock
 python -m pip install -e ".[dev]" --no-deps
 ```
+
+Then check `python -c "import glassbox, pathlib; print(pathlib.Path(glassbox.__file__).resolve().parent.parent)"`
+prints this repository's path and not a `site-packages` directory.
+
+</details>
 
 **Install from `requirements.lock`, not from `pyproject.toml`.** The lockfile pins the
 exact versions every reported result was produced with. `pyproject.toml` carries lower
@@ -272,7 +296,7 @@ order).
 |---|---|
 | `ModuleNotFoundError: No module named 'pytest'` / `'pandas'` / `'yfinance'` | The virtual environment is not activated, or `pip install` ran against a different interpreter. Check with `python -c "import sys; print(sys.executable)"` — the path must be inside `.venv`. See step 2. |
 | `ModuleNotFoundError: No module named 'glassbox'` | Same cause, seen from outside the repository root. From inside it, `glassbox` imports whether or not you activated — see the note in step 2. |
-| `OSError [Errno 2]` during `pip install -r requirements.lock`, naming a very long path under `lxml` | Windows long-path support is off and the clone sits too deep. Clone nearer the drive root (`C:\glassbox`) or enable long paths. Verified: the same install succeeds from a short path. |
+| **Anything failing on a deeply nested clone** — a `git clone` that reports success but leaves files missing, `git status` claiming every file is deleted, `python -m venv` failing at `ensurepip`, or `OSError [Errno 2]` during `pip install` naming a path under `lxml` | **Windows `MAX_PATH` is 260 and the longest path this repository tracks is 66 characters**, so the clone root must stay under **193**. Measured 23 Aug 2026 from a 187-character root, in the order the failures actually occur: **(1)** `git clone` dropped one tracked file, reported *every* file as deleted because git's own `stat` calls fail, and **exited 0** — success reported for data loss; **(2)** with `-c core.longpaths=true` the clone was complete, but **`python -m venv` then failed at `ensurepip`**, leaving `python.exe` with no `pip.exe`; **(3)** `pip install` was never reached, so the `lxml` error this row used to describe is not the first thing you hit. **Two different settings, fixing different steps:** `git config core.longpaths true` fixes **git only**; the Windows registry `LongPathsEnabled` (or a shallower root) is what **Python** needs. Running the git one alone makes the clone succeed and the venv still fail. **Simplest fix: clone nearer the drive root** — verified clean end to end from `C:\gb-audit`. |
 | `unauthorized` from the Alpaca smoke script | `.env` still holds placeholders, or the keys are from a live account rather than a paper one. |
 | The smoke script exits 2 without output | `ALPACA_BASE_URL` is not the paper endpoint. This is a refusal, not a bug. |
 | `pytest` collects 0 tests | You are not in the repository root. |

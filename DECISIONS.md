@@ -182,6 +182,134 @@ behind it rather than an absence of effect.
 
 ---
 
+## 2026-08-23 — The spectral panel's capture is deferred, and its caption is mandatory
+
+**Decision 1 — the four report screenshots are captured by hand, and `figures/screenshots/`
+is tracked.** Driving a Streamlit dashboard headlessly needs a browser stack, and adding
+one the night before the first GATE 2 session is a risk with no upside; producing mockups
+instead is the dishonesty this project exists to oppose. The earlier captures live in
+`checkpoints/screenshots/`, which is **gitignored** — they are not in the repository and a
+clone has never had them. The new directory is tracked, with a README stating the exact
+dashboard state each capture must be taken under, so the specification does not live in a
+conversation.
+
+**Decision 2 — the spectral panel's capture waits until after the sessions of 24-26 Aug.**
+The panel renders only when `model.active` is `fits`; the deployed arm is `dlinear`.
+Switching it the evening before the critical session is a **forgetting risk on the wrong
+evening**, and it would move `config_hash` and trip the drift guard built the same day.
+With the loop stopped after the sessions there is no running process to drift against and
+the switch is free. **The first three screenshots are captured under the deployed
+configuration, which is what they should show.**
+
+**Decision 3 — the caption on that screenshot is mandatory and is recorded here so it does
+not depend on anyone remembering it in three weeks.** Required text:
+
+> FITS is **not** the deployed arm. This panel is shown under `model.active: fits`, set for
+> this capture only. The study found FITS beats **neither** reference: direction **0.5055**
+> against an always-long bar of **0.5564**, and **+0.31 points** against its own
+> white-noise twin.
+
+**Reasoning.** A screenshot showing a capability the deployed system does not run, without
+saying so, is exactly the misreading the panel itself exists to prevent — and it would be
+committed by **the report** rather than by the dashboard, which is worse. The same argument
+that puts the 86%-is-geometry measurement inside the panel puts this caption under the
+figure.
+
+---
+
+## 2026-08-23 — GB-59 pulled forward: a clean clone reproduces, and three defects it found
+
+**Decision.** The reproducibility audit, scheduled for the last week, was run **eight
+weeks early**. Every reason to run it in October was a reason to run it now: the data
+snapshot is tracked, `results.csv` carries every axis, `report.py` regenerates from that
+file alone. It either passes and the last week has one less thing in it, or it finds
+something and finding it now costs a day rather than the submission. **It found three
+things, and none of them would have been cheaper in October.**
+
+**The result, with its boundary named.** A clone taken **from the remote** — which also
+tests that everything needed was pushed, a failure a local clone cannot see — into a fresh
+venv, interpreter and directory:
+
+| | outcome |
+|---|---|
+| `pytest` | **1129 passed, 0 skipped**, 8:30 — identical to the development machine |
+| the grid | 877 rows, **every result column bit-identical**; 19 min against 31 on a machine also running tests |
+| `prepare_live` | band identical at `lower = 0.026076278765685856`, `model.json` **byte-identical** (sha256 `afde41c2…`) |
+| `report.py` | `report.md` and both figures, from `results.csv` alone |
+
+**The deployed artefact reproducing is the more surprising half.** That path runs through
+training, per-fold validation calibration **and** a threshold grid search, and comes back
+bit-identical. **The boundary: one machine.** Process, venv, interpreter and directory
+varied; CPU, core count, instruction set and OS did not, and BLAS reduction order can
+differ with any of them. **Cross-architecture reproduction is untested and is reported as
+untested.** `--deterministic` pins BLAS to one thread as the documented path for it, off
+by default because the study did not need it. **Measured cost: none** — 70.8 s unpinned
+against 62.3 s pinned on one condition and fold, with the pinned run second and
+cache-warm, so the honest reading is *at most zero*, not *faster*.
+
+**Defect 1 — the configuration is mutable during a long run, and nothing said so.**
+`settings.yaml` was edited at 17:00 while a grid started at 16:36 was still running, so
+the committed `results.csv` carried a `config_hash` matching nothing on disk. Only the
+provenance column caught it. **Closed twice:** `study.provenance` compares both hashes and
+`report.header` prints the warning where a reader of the tables cannot miss it; and
+`live_loop.config_drift` runs at **every session start**, because a three-day live run
+makes this worse — every decision record is the audit trail GATE 2 and §7 read. **It does
+not reload:** a loop that silently changed its own behaviour mid-run could open a position
+under one risk policy and manage it under another with nothing marking the seam.
+
+**The split is the checkpoint gate's, applied to a second artefact.** `model_config_hash`
+mismatch condemns the file; `config_hash`-only mismatch warns and names the sections the
+difference must be in. A guard that invalidated a 20-minute grid over a polling interval
+is a guard somebody eventually weakens — the spurious-retrain problem, solved once
+already on 19 Aug.
+
+**Defect 2 — the README's install procedure was a note, and its author skipped it.** Step
+3 is three commands; the third, the editable install, was omitted while running this very
+audit. **A non-editable install still imports correctly from the repository root**,
+because Python puts the working directory on the path, so every test would have passed
+while testing an install nobody would ever have. `scripts/setup.ps1` now runs all three,
+stops at the first failure, and **verifies**: `import glassbox` resolves, the package is
+editable and resolving to the repository rather than `site-packages`, and every
+heavyweight dependency imports. It refuses Python below 3.12 naming the cause, which pip
+does not.
+
+**Defect 3 — a deep clone lost a tracked file and reported success.** From a 187-character
+root, measured in the order the failures occur: `git clone` dropped one tracked file,
+reported **every** file as deleted because git's own `stat` calls fail, and **exited 0**;
+with `core.longpaths=true` the clone completed but **`python -m venv` failed at
+`ensurepip`**, leaving `python.exe` with no `pip.exe`; `pip install` was never reached, so
+the `lxml` error the README described is not the first thing anyone hits. **Two different
+settings fix different steps** — `git config core.longpaths` fixes git only; the Windows
+registry `LongPathsEnabled` is what Python needs — and the README said only "enable long
+paths".
+
+**And this one was fixable rather than documentable.** Tracked path lengths: n = 172,
+median 28, p95 56, p99 64, **max 83** — a single outlier, the reference project's own
+training log, which `REFERENCE_AUDIT.md` does not cite. Removing it:
+
+| | longest tracked path | maximum clone root |
+|---|---|---|
+| before | 83 | **176** |
+| after | **66** | **193** |
+
+The audit's deep root was **187**, so the repository now clones cleanly at a depth where
+it silently lost a file. Nothing cited by the audit was removed — `backtesting.py`,
+`evaluation.py`, `models/DLinear.py`, `models_backtest.py`, `strategies.py`,
+`data_provider/data_loader.py`, `utils/metrics.py`, `utils/tools.py` all stay — and
+nothing is destroyed: the file remains retrievable at `a547c0a` and every earlier commit.
+**A README row is a note; removing the path is a mechanism.** The row is rewritten anyway,
+because a shorter path raises the ceiling rather than removing it.
+
+**Consequence.** `results.csv` is replaced by the regenerated artefact — **not a hand
+correction**: a complete machine-generated file from a clean clone whose `config_hash`
+matches the committed configuration, with every result cell identical to what was already
+reported. `checkpoints/live` was regenerated in the main repo only after a backup and a
+field-by-field comparison: `model.json` and `history.csv` byte-identical, every threshold
+field identical, `model_config_hash`, `seed`, `stats` and `training` identical, and
+`config_hash` the only thing that moved.
+
+---
+
 ## 2026-08-23 — The COF sweep, and a correction to what significance can be asked to do
 
 **The sweep, measured.** 877 rows, 576 reportable, 41 cells, 656 arm-folds, 29.3 minutes.

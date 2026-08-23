@@ -59,7 +59,13 @@ import pandas as pd
 
 from glassbox.backtest import metrics
 from glassbox.backtest.walkforward import make_folds
-from glassbox.config.loader import Config, config_hash, load_config, model_config_hash
+from glassbox.config.loader import (
+    MODEL_SHAPING_SECTIONS,
+    Config,
+    config_hash,
+    load_config,
+    model_config_hash,
+)
 from glassbox.data.historical import LOG_RETURN
 from glassbox.features.builder import build_feature_frame
 from glassbox.model import fits
@@ -348,6 +354,27 @@ def null_bars(bars: pd.DataFrame, control: str, seed: int) -> pd.DataFrame:
 # ── the run ──────────────────────────────────────────────────────────────────
 
 
+def pin_threads() -> int:
+    """Pin BLAS to one thread and return the count that was in force before.
+
+    **Not on by default, and the reason is that it has not been needed.** The 23 Aug 2026
+    clean-clone audit reproduced all 877 rows of ``results.csv`` bit-for-bit across a
+    fresh clone, venv and interpreter **without** pinning - so pinning by default would
+    pay a wall-time cost to fix a problem this project has not been shown to have.
+
+    **What the audit did not test is different hardware.** Both interpreters ran on one
+    machine, so the CPU, core count and instruction set were constant; BLAS reduction
+    order can differ across any of them. This flag exists so that someone reproducing on a
+    different machine has a documented path rather than a gap, and so the report can state
+    the boundary of its own claim rather than overreaching past it.
+    """
+    import torch
+
+    before = torch.get_num_threads()
+    torch.set_num_threads(1)
+    return before
+
+
 def run(
     cfg: Config,
     full: bool = False,
@@ -392,6 +419,78 @@ def run(
             _condition_rows(cfg, condition, bars, snapshot, n_folds=n_folds, log=log)
         )
     return pd.DataFrame(rows, columns=list(COLUMNS))
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Whether a results file was produced by the configuration now on disk.
+
+    **The same split the checkpoint gate uses, applied to a second artefact** (23 Aug
+    2026). A change to a live-only key cannot move a number, so invalidating a 20-minute
+    grid over one would be the spurious-retrain problem GB-25 already solved once - and a
+    guard that fires spuriously is a guard somebody eventually weakens.
+
+    Attributes:
+        models_match: ``model_config_hash`` for the current configuration appears in the
+            file. **False means the file describes different models** and nothing in it
+            may be quoted.
+        config_matches: ``config_hash`` for the current configuration appears in the file.
+            False with ``models_match`` true means only non-model settings moved.
+        candidates: The sections the difference must lie in, when there is one. Derived
+            rather than measured: a hash cannot say what changed, but it can say what
+            cannot have - anything in :data:`MODEL_SHAPING_SECTIONS` would have moved
+            ``model_config_hash`` too.
+    """
+
+    models_match: bool
+    config_matches: bool
+    candidates: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.models_match and self.config_matches
+
+    def warning(self) -> str:
+        """One line for a report header, or empty when the file matches."""
+        if self.ok:
+            return ""
+        if not self.models_match:
+            return (
+                "STALE: no row in this file was produced by the committed configuration's "
+                "model settings. The models it describes are not the models this "
+                "configuration builds, and no number in it may be quoted"
+            )
+        return (
+            "The committed configuration has moved since this file was written, in a "
+            "section that cannot change a model: the difference is in one of "
+            f"{list(self.candidates)}, because anything under "
+            f"{list(MODEL_SHAPING_SECTIONS)} would have moved `model_config_hash` too. "
+            "Every number here still stands; the provenance stamp does not"
+        )
+
+
+def provenance(frame: pd.DataFrame, cfg: Config) -> Provenance:
+    """Compare a results file's recorded hashes against the configuration on disk.
+
+    **The reference cell reproduces the base configuration exactly**, which is what makes
+    this checkable: at the centre condition the arm whose model, channels, rate and cutoff
+    are the configured ones runs under `cfg` unchanged, so its hash *is*
+    ``config_hash(cfg)``. If that hash is absent, this file was written by a different
+    configuration - or the configuration was edited while the grid ran, which is how the
+    23 Aug instance happened and which nothing else would have caught.
+    """
+    models = model_config_hash(cfg) in set(frame["model_config_hash"].dropna())
+    full = config_hash(cfg) in set(frame["config_hash"].dropna())
+    others = tuple(
+        name
+        for name in Config.__dataclass_fields__
+        if name not in MODEL_SHAPING_SECTIONS
+    )
+    return Provenance(
+        models_match=models,
+        config_matches=full,
+        candidates=() if full else others,
+    )
 
 
 def reportable(frame: pd.DataFrame) -> pd.DataFrame:
@@ -596,6 +695,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--folds", type=int, default=None)
     parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help=(
+            "pin BLAS to a single thread. Not needed on the machine the study was run "
+            "on - the clean-clone audit reproduced every row bit-for-bit without it - "
+            "and offered for reproduction on different hardware, where reduction order "
+            "can differ. See `pin_threads`"
+        ),
+    )
+    parser.add_argument(
         "--plan-only",
         action="store_true",
         help="print the cell count and the wall-time estimate, and run nothing",
@@ -603,6 +712,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     cfg = load_config()
+    if args.deterministic:
+        print(f"deterministic: BLAS threads {pin_threads()} -> 1")
     design = plan(cfg, args.full, args.folds)
     # Not "conditions x arms": a COF spoke runs FITS alone, so the product would be wrong
     # and wrong in the flattering direction.
@@ -653,12 +764,15 @@ __all__ = [
     "SKIPPED",
     "Condition",
     "Plan",
+    "Provenance",
     "arms",
     "conditions",
     "live_arms",
     "main",
     "null_bars",
+    "pin_threads",
     "plan",
+    "provenance",
     "reportable",
     "run",
 ]
