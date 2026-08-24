@@ -1136,8 +1136,13 @@ def _rehearsal_close_out(state: LiveState, when: pd.Timestamp, log) -> bool:
     return True
 
 
-def _flatten_for_close(state: LiveState, symbol: str, holding: Holding, log) -> None:
-    """Cancel both legs and sell at market. Idempotent through the client_order_id."""
+def _flatten_for_close(state: LiveState, symbol: str, holding: Holding, log) -> bool:
+    """Cancel both legs and sell at market. Idempotent through the client_order_id.
+
+    Returns whether the sell reached the broker. The caller needs to know: a close-out
+    that failed leaves a real position behind, and treating it as done would put the
+    reassuring line in the log for the one case that needs the alarming one.
+    """
     for order in state.broker.get_orders():
         if (
             order.symbol == symbol
@@ -1154,6 +1159,7 @@ def _flatten_for_close(state: LiveState, symbol: str, holding: Holding, log) -> 
             client_order_id=f"{holding.decision_id}-closeout",
         )
         log(f"{symbol}: rehearsal close-out submitted id={sold.id}")
+        return True
     except Exception as failure:  # noqa: BLE001 - retried on the next poll
         LOGGER.error(
             "RISK EVENT: the rehearsal close-out for %s failed (%s). It is retried on "
@@ -1162,6 +1168,58 @@ def _flatten_for_close(state: LiveState, symbol: str, holding: Holding, log) -> 
             symbol,
             failure,
         )
+        return False
+
+
+def close_out_on_stop(
+    state: LiveState, when: pd.Timestamp, log=lambda message: None
+) -> tuple[str, ...]:
+    """Flatten a rehearsal's positions on **any** stop. Returns the symbols that failed.
+
+    **Condition 3 had a hole and the GATE 2 plan walked straight into it** (24 Aug 2026).
+    :func:`_rehearsal_close_out` fires only once the clock reaches
+    ``close_out_minutes`` before the exchange close. The gate plan stops the rehearsal at
+    the *open* - prove the execution path, stop, restart under the deployed band - roughly
+    five hours earlier, and a rehearsal stopped there was flattened by nothing at all. The
+    position survived in the saved book, its protective legs were DAY orders due to expire
+    at the close, and the deployed session would have restarted holding something a
+    rehearsal opened. *A rehearsal that holds overnight fails the rehearsal* has to mean
+    **any** stop, not only the one the clock reaches on its own.
+
+    **A no-op unless a rehearsal is active, and that is not an optimisation.** Flattening
+    on stop is right for a rehearsal and wrong for the deployed loop: the backtest holds
+    overnight, so a live loop that flattened whenever it stopped would be running a
+    different strategy from the one being evaluated - closing a protection gap by opening a
+    **parity** gap, which is what the 23 Aug DAY/GTC ruling refused to do.
+
+    Only symbols whose sell reached the broker leave the book. One that did not is left in
+    place and named in the return value, because a position the book has forgotten is worse
+    than one it still shows.
+    """
+    if state.rehearsal is None or not state.book.managed:
+        return ()
+
+    LOGGER.warning(
+        "REHEARSAL CLOSE-OUT ON STOP: flattening %s before this run ends. The protective "
+        "legs are DAY orders, so a rehearsal position left open would be unprotected the "
+        "moment this process is gone",
+        ", ".join(sorted(state.book.managed)),
+    )
+    failed: list[str] = []
+    for symbol, holding in sorted(state.book.managed.items()):
+        if _flatten_for_close(state, symbol, holding, log):
+            state.book.managed.pop(symbol, None)
+        else:
+            failed.append(symbol)
+    if failed:
+        LOGGER.error(
+            "RISK EVENT: %s could not be flattened on stop and %s still open at the "
+            "broker with DAY legs. Close by hand",
+            ", ".join(failed),
+            "is" if len(failed) == 1 else "are",
+        )
+    del when  # the stop time is not a condition; any stop flattens
+    return tuple(failed)
 
 
 def _shrink_to_rehearsal_size(order: risk.Order, rehearsal: Rehearsal) -> risk.Order:
@@ -1862,6 +1920,11 @@ def run_session(
         stopping["reason"] = "KeyboardInterrupt"
     finally:
         _restore_sigint(previous)
+        # In the `finally`, so it runs on SIGINT, on Ctrl+C, on max_cycles and on an
+        # unexpected exception alike - every way this run can end while holding something.
+        # A no-op unless a rehearsal is active; the deployed loop must hold overnight or it
+        # is not the strategy the backtest evaluated.
+        close_out_on_stop(state, clock())
 
     open_orders = _open_orders(state)
     state.save()
@@ -2231,6 +2294,7 @@ __all__ = [
     "SessionReport",
     "adopt_own_positions",
     "answer_pending",
+    "close_out_on_stop",
     "config_drift",
     "drop_incomplete_bar",
     "heartbeat",

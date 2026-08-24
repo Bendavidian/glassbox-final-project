@@ -7,6 +7,112 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-24 — GATE 2 session 1: an outage measured, a rehearsal hole closed, and a 60-minute stall nobody would have seen
+
+### 1. The outage is the session's finding, and it is better evidence than a clean afternoon
+
+The first GATE 2 live session ran through **three broker outages**. Measured from the log
+rather than estimated:
+
+| Episode | Window | Cycles skipped | Duration |
+|---|---|---|---|
+| 1 | 16:44:29 → 17:15:00 | 30 | 31 min |
+| 2 | 17:23:07 → 17:29:14 | 6 | 6 min |
+| 3 | 19:32:00 → 20:50:43 | 19 | 79 min |
+
+**55 cycles skipped of 177 that reached a verdict.** Longest consecutive failure run: 30.
+
+**The cause was local DNS, not Alpaca**, and the attribution is corroborated rather than
+assumed: 268 of the failures were `NameResolutionError` — `getaddrinfo failed`, which is a
+resolver failure and not a refusal from a reachable host — and **`scripts/ci_status.py`
+failed from the same shell at the same moment** with the identical error against a
+completely unrelated host (`api.github.com`). Two independent clients failing to resolve
+two unrelated domains simultaneously is a local resolver, not a broker. Alpaca was never
+shown to be down.
+
+**What the loop did, and why it is the stronger demonstration.** It did not die. It did not
+decide on stale data. Every skipped cycle logged *"Nothing was decided and nothing was
+submitted; the next poll will try again. Protective legs already at the broker are
+unaffected by this"*, and the run-of-failures counter escalated on each one. GATE 2
+criterion 1 asks for a session **without manual intervention**; surviving three outages
+totalling ~2 hours and recovering unaided demonstrates that more strongly than an
+uneventful session would have.
+
+### 2. The defect that finding surfaced: a cycle stalled for 60 minutes in silence
+
+Episode 3 is not what it looks like. Cycle `live-0153` began at 19:50:54, failed retry 1 at
+19:50:54 and retry 2 at 19:50:55 — and then **retry 3 blocked until 20:50:43. Fifty-nine
+minutes and forty-eight seconds inside one HTTP read.** The whole hour produced **three log
+lines**, all from before the stall.
+
+**No HTTP read timeout is configured anywhere** — not in `engine/executor.py`, not in
+`data/live.py`, not in `live_loop.py` — so the SDK's default applies and the log confirms
+it: `read timeout=None`. A hung socket blocks until the OS gives up. The project already knows to do this: `scripts/ci_status.py` passes
+`timeout=45` to its own `urlopen`. The habit exists and the broker path never got it.
+
+**Why this matters more than the outage did.** A loop blocked on a socket read is *alive
+and not polling*, and from outside it is indistinguishable from a dead one — which is
+precisely the failure the heartbeat was written to eliminate. **The heartbeat does not
+cover it**, because heartbeats fire only *outside* a session and this happened inside one.
+So the escalation stopped advancing, the log went quiet, and every mechanism built to tell
+"dead" from "quiet" was looking the other way.
+
+It also weakens a claim made earlier in the day and the correction is recorded rather than
+quietly dropped: the loop did **not** poll continuously through the outages. For one hour
+it did not poll at all.
+
+**Remedy, named and not yet applied:** an explicit read timeout on the broker and data HTTP
+clients, well under `live.poll_seconds`, so a hung read fails the attempt instead of the
+session. Not applied today because it is a live-path change and a session was running under
+the old code; it is put to Ben rather than taken unilaterally.
+
+### 3. The rehearsal could strand a position, and the GATE 2 plan walked straight into it
+
+Verifying the rehearsal path before Tuesday found that **condition 3 had a hole**.
+`_rehearsal_close_out` fires only once the clock reaches `close_out_minutes` before the
+exchange close. Its single caller is inside `run_cycle`. **There was no close-out on a
+stop** — SIGINT set a reason and broke the loop, and the `finally` restored the signal
+handler and nothing else.
+
+The Tuesday plan is *rehearse at 16:30, stop, restart under the deployed band at ~17:30* —
+**five hours before the close-out window would have fired**. A rehearsal stopped there kept
+its position, in a book that persists across runs, with `TimeInForce.DAY` protective legs
+due to expire at the close; the deployed session would then have restarted holding
+something a rehearsal opened, and carried it overnight unprotected. *A rehearsal that holds
+overnight fails the rehearsal* has to mean **any** stop.
+
+**`live_loop.close_out_on_stop` closes it**, called from the session's `finally` so it runs
+on SIGINT, Ctrl+C, `max_cycles` and an unexpected exception alike. Only symbols whose sell
+reached the broker leave the book; one that did not is left in place and named, because a
+position the book has forgotten is worse than one it still shows.
+
+**It is a no-op unless a rehearsal is active, and that is not an optimisation.** Flattening
+on stop is right for a rehearsal and wrong for the deployed loop: the backtest holds
+overnight, so a live loop that flattened whenever it stopped would run a different strategy
+from the one being evaluated — closing a protection gap by opening a **parity** gap, which
+is what the 23 Aug DAY/GTC ruling refused to do. A test asserts the deployed case flattens
+nothing.
+
+**And the first test written for this was worthless.** It ran a rehearsal session to its
+cycle cap and asserted the broker held nothing — and it **passed with the wiring removed**,
+because that session never opened a position at all: cycle 1 withholds entries until
+protection has been verified once, and later cycles do not re-decide the same bar. An
+assertion about an empty broker proves nothing when the broker was always going to be
+empty. Replaced by two that cannot pass vacuously — a spy proving the call happens on the
+stop path, and one proving it still happens when the session raises — both verified to fail
+with the wiring removed.
+
+### 4. The other two rehearsal conditions verified, by running them rather than reading them
+
+- **Provenance:** `rehearsal:gate2-execution-path` on every record; `records.is_reportable`
+  returns `False` for it and `True` only for `live`; an empty reason is refused at
+  construction.
+- **Size cap:** `REHEARSAL_NOTIONAL = $25.00` against an ordinary per-position cap of
+  **$10,000** (10% of 100,000) — 0.25% of the size the deployed band would take.
+  Close-out window: 15 minutes before the exchange close.
+
+---
+
 ## 2026-08-24 — Phase 2 opens: one location for the dates, one contract amendment, and a third copy of the registry
 
 Five rulings, all of them the same shape: **a second copy of a fact, replaced by either a

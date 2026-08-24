@@ -397,6 +397,20 @@ do something it must.** Anything else is a finding.
 
 ### What is NOT a failure
 
+- **A sell that filled for a symbol the book does not manage**, logged as *"a sell filled
+  for X, which is not a managed holding; no trade emitted — the system has no entry basis
+  for a position it did not open"*. **This is pre-existing broker activity on the paper
+  account, not something the loop did**, and it appeared in cycle 1 of the first GATE 2
+  session for AAPL. Left unqualified it reads as the system doing something odd in its very
+  first live cycle, which is the opposite of what happened: the loop found a fill it had no
+  entry basis for and **declined to fabricate a trade record**, which is the behaviour GB-29
+  specified. The gate log must say which it was rather than leave a reader to guess.
+- **A skipped cycle when the broker or the data feed is unreachable**, provided the log says
+  *nothing decided, nothing submitted, protective legs unaffected*. See the 24 Aug DECISIONS
+  entry: three outages, 55 of 177 cycles skipped, cause local DNS rather than Alpaca. A
+  skipped cycle is the loop refusing to act on data it does not have. **A cycle that stalls
+  silently for an hour is a different thing and IS a failure** — see row 7 on heartbeat
+  spacing, and note that the heartbeat does not cover a stall *inside* a session.
 - **The band standing aside on a given day.** A session that correctly declines to trade is
   a passing session for criteria 1, 2, 5, 7–11, 13–15, and **N/A with the reason** for 3, 4,
   6 and 12. It is not a failure of the loop, and recording it as one would be fitting the

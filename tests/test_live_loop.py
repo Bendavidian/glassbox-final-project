@@ -1730,6 +1730,155 @@ def test_a_rehearsal_flattens_before_the_close_and_opens_nothing(
     assert report.decisions == ()  # nothing new is opened in the close-out window
 
 
+def test_a_rehearsal_stopped_cleanly_mid_session_leaves_nothing_behind(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """**Condition 3 has a hole the close-out window does not cover** (found 24 Aug 2026).
+
+    ``_rehearsal_close_out`` fires only once the clock reaches ``close_out_minutes``
+    before the exchange close. The GATE 2 plan stops the rehearsal **five hours earlier**
+    - prove the execution path at the open, stop, restart under the deployed band - and a
+    rehearsal stopped there was flattened by nothing at all. The position persisted in the
+    saved book, the protective legs were DAY orders that expire at the close, and the
+    deployed session restarted on top of a position a rehearsal had opened.
+
+    *A rehearsal that holds overnight fails the rehearsal* has to mean any stop, not only
+    the one the clock reaches on its own.
+    """
+    state = rehearsing(cfg, tmp_path, broker)
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+    assert state.book.managed, "the rehearsal opened nothing; harness problem"
+
+    _, closes = live_loop.market_session(cfg, NOW)
+    assert NOW < closes - pd.Timedelta(minutes=15)  # nowhere near the close-out window
+
+    live_loop.close_out_on_stop(state, NOW, log=lambda message: None)
+
+    closed_out = [
+        order
+        for order in broker.orders
+        if records.client_order_id(order).endswith("-closeout")
+    ]
+    assert (
+        closed_out
+    ), "a clean mid-session stop left the rehearsal position at the broker"
+    assert not state.book.managed
+
+
+def test_a_deployed_session_stopped_cleanly_does_NOT_flatten(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """**The other half, and it is the half that protects the study.**
+
+    Flattening on stop is right for a rehearsal and wrong for the deployed loop. The
+    backtest holds overnight, so a live loop that flattened at every stop would be running
+    a different strategy from the one being evaluated - the parity gap the 23 Aug DAY/GTC
+    ruling refused to open. ``close_out_on_stop`` is a no-op unless a rehearsal is active.
+    """
+    state = a_state(
+        replace(cfg, live=replace(cfg.live, mode="auto")), tmp_path, broker, total=0.05
+    )
+    state.thresholds = live_loop.permissive_band()
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+    held = sorted(state.book.managed)
+    assert held, "nothing opened; harness problem"
+
+    live_loop.close_out_on_stop(state, NOW, log=lambda message: None)
+
+    assert sorted(state.book.managed) == held
+    assert not [
+        order
+        for order in broker.orders
+        if records.client_order_id(order).endswith("-closeout")
+    ]
+
+
+def test_run_session_closes_out_on_every_stop_path(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_bars: dict,
+    stub_predictor: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**The wiring, asserted so it cannot pass vacuously.**
+
+    The first version of this test ran a rehearsal session to its cycle cap and asserted
+    the broker held nothing. It passed with the wiring **removed**, because that session
+    never opened a position at all - cycle 1 withholds entries until protection has been
+    verified once, and later cycles do not re-decide the same bar. An assertion about an
+    empty broker is worthless when the broker was always going to be empty. So this asserts
+    the *call*, on the stop path, with the state it was given.
+
+    :func:`test_a_rehearsal_stopped_cleanly_mid_session_leaves_nothing_behind` proves the
+    function does the right thing to a state that **is** holding something. Together they
+    close the chain; neither alone does.
+    """
+    seen: list[tuple[str, ...]] = []
+    real = live_loop.close_out_on_stop
+
+    def spy(state, when, log=lambda message: None):
+        seen.append(tuple(sorted(state.book.managed)))
+        return real(state, when, log)
+
+    monkeypatch.setattr(live_loop, "close_out_on_stop", spy)
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+
+    report = live_loop.run_session(
+        auto,
+        tmp_path,
+        broker=broker,
+        clock=lambda: NOW,
+        sleep=lambda s: None,
+        max_cycles=3,
+        rehearsal=a_rehearsal(),
+    )
+
+    assert report.stopped_by == "max_cycles=3"
+    assert len(seen) == 1, "the stop path did not call close_out_on_stop exactly once"
+
+
+def test_run_session_closes_out_even_when_the_session_raises(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_bars: dict,
+    stub_predictor: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It sits in the ``finally``, so an unexpected exception cannot skip it.
+
+    The ordinary stop paths are the ones a plan uses; this is the one nobody plans for, and
+    it is the one where a stranded position would be least expected and least noticed.
+    """
+    called: list[bool] = []
+    monkeypatch.setattr(
+        live_loop,
+        "close_out_on_stop",
+        lambda state, when, log=lambda m: None: called.append(True) or (),
+    )
+
+    def explode(state, now):
+        raise RuntimeError("cycle blew up")
+
+    monkeypatch.setattr(live_loop, "run_cycle", explode)
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+
+    with pytest.raises(RuntimeError, match="cycle blew up"):
+        live_loop.run_session(
+            auto,
+            tmp_path,
+            broker=broker,
+            clock=lambda: NOW,
+            sleep=lambda s: None,
+            rehearsal=a_rehearsal(),
+        )
+
+    assert called, "an exception escaped without the rehearsal being closed out"
+
+
 def test_the_banner_says_the_run_is_a_rehearsal_and_why_it_is_not_reportable(
     cfg: Config, broker: FakeBroker, tmp_path: Path
 ) -> None:
