@@ -72,7 +72,7 @@ The phrasing is fixed and the shorter version — *"there is no measurable diffe
 
 ### 2.1 In scope
 
-- Fixed universe: `AAPL, MSFT, NVDA, AMZN, GOOGL`
+- Fixed universe: **20 symbols** under the selection rule of §2.4 (5 through GB-60; expanded by GB-61)
 - Daily bars only
 - Long-only positions
 - Three forecasters: `Persistence` (baseline), `DLinear` (established baseline), `FITS` (new core)
@@ -80,6 +80,7 @@ The phrasing is fixed and the shorter version — *"there is no measurable diffe
 - Live loop against Alpaca paper, Co-Pilot mode, Replay mode
 - Streamlit dashboard with live explanations
 - Walk-forward comparative study with statistical testing
+
 
 ### 2.2 Explicitly out of scope — declared, not forgotten
 
@@ -103,6 +104,74 @@ The original plan assumed 14 weeks. The actual window is 8. Consequences, applie
 - Sprint 4 carries the entire report; nothing technical may spill into it.
 
 ---
+
+### 2.4 The universe selection rule
+
+**Written before the names were chosen, and that ordering is the whole point** (GB-61,
+24 Aug 2026). A universe picked on outcomes is a universe picked with hindsight, and it
+would quietly poison every result the expansion exists to strengthen — the null result
+most of all, because a universe selected for having gone up is a universe where
+always-long is a stronger bar than it should be.
+
+**A candidate is admitted if and only if all five hold:**
+
+1. **US-listed common equity** on NYSE or NASDAQ. Not an ADR, not a foreign issuer, not a
+   fund or trust.
+2. **Complete daily history from `data.start` (2016-01-01)** to the cache's last bar, with
+   no missing sessions against the NYSE calendar beyond what GB-5's report already
+   tolerates for the incumbents.
+3. **Continuous liquidity** across that whole window: traded every session, no suspension,
+   no delisting, no period of non-tradability.
+4. **Large capitalisation** at the selection date.
+5. **Fractionable on the Alpaca paper account**, because `shares_for` sizes in fractional
+   quantities and the DAY-orders ruling of §8 depends on it.
+
+**A candidate is excluded only by those five.** No sector balancing. No performance
+screening. No substitution of one name for another on the basis of what its series did.
+Every candidate considered and rejected is recorded with the criterion that rejected it,
+so the rule can be audited rather than trusted.
+
+> **What this rule does not remove, stated plainly.** It removes *performance* hindsight.
+> It does **not** remove *existence* hindsight, and criterion 2 is where that enters:
+> requiring complete history from 2016 excludes everything that listed later and
+> everything that was delisted, so the universe is drawn from companies that still exist
+> and are still large in 2026. **That is survivorship bias and it is not eliminated — it is
+> bounded and named.** Any result on this universe is a result conditional on a set of
+> survivors, and §7 must say so rather than let 20 symbols read as more general than 5.
+> The honest version of the claim is *"no arm beats always-long on twenty large US
+> survivors"*, and the always-long bar is itself inflated by the same selection.
+
+**The rule applied, 24 August 2026.** Twenty admitted, in the order they were considered:
+
+| # | Symbol | | # | Symbol | | # | Symbol | | # | Symbol |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | `AAPL` | | 6 | `META` | | 11 | `V` | | 16 | `PG` |
+| 2 | `MSFT` | | 7 | `TSLA` | | 12 | `XOM` | | 17 | `HD` |
+| 3 | `NVDA` | | 8 | `LLY` | | 13 | `UNH` | | 18 | `COST` |
+| 4 | `AMZN` | | 9 | `JPM` | | 14 | `MA` | | 19 | `WMT` |
+| 5 | `GOOGL` | | 10 | `JNJ` | | 15 | `MRK` | | 20 | `ABBV` |
+
+All twenty carry **2,668 bars, 2016-01-04 → 2026-08-13, zero missing sessions against the
+NYSE calendar, zero duplicates, and one NaN each** — the first bar's `log_return`, which is
+undefined by construction and identical for the incumbents. The sector spread is
+**incidental**: no balancing was applied and none should be read into it.
+
+**Excluded candidates, each with the criterion that excluded it:**
+
+| Candidate | Criterion | Detail |
+|---|---|---|
+| `GOOG` | 1 | Same issuer as `GOOGL`. A second share class is not a second series; admitting both would double-weight one company and correlate a fifth of the universe with itself. |
+| `BRK.B` | 1, 5 | Share class with a `.` in the ticker, which the cache path and the provider disagree about (`BRK-B` vs `BRK.B`); also a holding company rather than an operating equity. Excluded on data integrity, not on returns. |
+| `TSM`, `ASML`, `NVO`, `SHEL` | 1 | Foreign issuers trading as ADRs. Not US-listed common equity. |
+| `ABNB`, `COIN`, `PLTR`, `RIVN`, `SNOW`, `UBER`, `DASH`, `ZM` | 2 | Listed after 2016-01-01, so no complete history at `data.start`. |
+| `DOW`, `CTVA`, `OTIS`, `CARR`, `GEHC`, `KVUE` | 2 | Spun off after 2016-01-01; the series does not reach back to `data.start`. |
+| `PYPL` | — | **Admissible and not admitted.** Spun off July 2015, so it clears criterion 2 by six months. Twenty was the target count and it fell outside it. Recorded because "did not make the cut" is an exclusion too, and leaving it unrecorded is how a rule becomes a preference. |
+
+> **One judgement call, recorded rather than buried.** `META` traded as `FB` until June
+> 2022. The provider back-adjusts the ticker and returns one continuous series from 2012,
+> and criterion 3 asks about the *security's* tradability rather than its label, so it is
+> admitted. The ticker changed; the listing did not.
+
 
 ## 3. Layered Architecture
 
@@ -367,6 +436,7 @@ class Attribution:
     per_lag: np.ndarray | None = None    # (L, C) contribution heatmap — optional
     per_frequency: dict[float, float] | None  # FITS only: period(days) → contrib
     gain_phase: dict[float, tuple[float, float]] | None  # FITS only
+    per_level: dict[str, float] | None = None  # WITS only: band name → contrib
     forecast_total: float
 
 @dataclass(frozen=True)
@@ -389,6 +459,23 @@ class DecisionRecord:
     narrative: str
     config_hash: str       # ties the record to the exact config that made it
 ```
+
+> **`per_level` — amended 24 Aug 2026 for GB-66, and this is the amendment §4 requires
+> rather than a silent adaptation.** WITS moves the transform inside the model, and a
+> wavelet decomposition has **two** axes where Fourier has one: *which band*, and *when
+> within the window*. The cheap route was to reuse `per_frequency` and key it by band. It
+> is refused. A field named for a frequency holding a level means every reader must first
+> know which model wrote the record before it can know what a key means — the two-places
+> defect committed inside a single schema, where no test can see it because each copy is
+> internally consistent. So the band totals get `per_level`, and the time localisation goes
+> in `per_lag`, which this contract has carried unused since GB-31 for precisely this
+> reason: *"retained in the schema so the feature can be added later without a contract
+> change."* GB-66 is that later.
+>
+> **Optional and defaulted to `None`, and the decoder reads it with `.get`.** The field was
+> added while a multi-day GATE 2 run was writing the decision log, so records without the
+> key exist and are correct. A field added after a log has started must read as **absent**
+> rather than as broken.
 
 **Note on `WindowBatch.symbols` (contract change, 2026-08-17).** It was `symbol: str`.
 Every forecaster now trains **across the universe** — see §7.4 and the GB-15 row in §9 —
@@ -886,14 +973,24 @@ architecture. Any arm added later inherits the regime. See §4.2 and the GB-15 r
 
 Four sprints, three gates. **A gate is a hard stop, not a checkpoint.**
 
-| Sprint | Dates | Theme | Ends at |
-|---|---|---|---|
-| **S1** | 15 Aug – 28 Aug | Foundations: config, contracts, data, features | — |
-| **S2** | 29 Aug – 11 Sep | Offline vertical slice: model → backtest → metrics | **GATE 1** |
-| **S3** | 12 Sep – 25 Sep | Live end-to-end: loop, execution, explain, dashboard | **GATE 2** |
-| **S4** | 26 Sep – 10 Oct | FITS, wavelets, the study, the report | **GATE 3** |
+> **The dates are not here. They are in `GLASSBOX_PHASE2_EXPANSION.md` §3, and that table
+> is the only place they exist** (ruled 24 Aug 2026). This section held a sprint calendar
+> until the expansion opened with a schedule of its own, at which point one fact lived in
+> two documents and the two had *already* disagreed — §8 said GATE 2 fell on 25 September
+> while the expansion ran its sessions on 24–30 August. The expansion carries a precedence
+> sentence covering exactly this, and a precedence sentence is a **note**: it resolves the
+> conflict for a reader holding both documents and does nothing for a reader who opens one.
+> A single location is the mechanism. **What stays here is what a date cannot replace** —
+> the gate criteria, the checklists, and the cancellation rule each gate carries.
 
-### GATE 1 — 11 Sep · "The offline slice is real"
+| Sprint | Theme | Ends at |
+|---|---|---|
+| **S1** | Foundations: config, contracts, data, features | — |
+| **S2** | Offline vertical slice: model → backtest → metrics | **GATE 1** |
+| **S3** | Live end-to-end: loop, execution, explain, dashboard | **GATE 2** |
+| **S4** | FITS, wavelets, the study, the report | **GATE 3** |
+
+### GATE 1 · "The offline slice is real"
 
 - [ ] `python -m glassbox.smoke_offline` runs data → features → DLinear → backtest → metrics
 - [ ] Persistence baseline produces numbers on the same folds
@@ -902,7 +999,7 @@ Four sprints, three gates. **A gate is a hard stop, not a checkpoint.**
 
 **If red:** stop all new work. Sprint 3 does not begin. Fix or cut.
 
-### GATE 2 — 25 Sep · "The system is a product"
+### GATE 2 · "The system is a product"
 
 - [ ] Live loop runs a full session against Alpaca paper without manual intervention
 - [ ] **2. EXECUTION PATH PROVEN LIVE.** In a live session, a loop-produced decision becomes an order, fills, is reconciled, adopted and protected. This may be demonstrated with a deliberately permissive **rehearsal band** when the deployed band stands aside — the criterion tests the machine, not the model. **Since 20 Aug 2026 the deployed band fires** (validation Sharpe +0.483 over 8 trades, a grid maximum), so the criterion can be met by the deployed system in an ordinary session, **which is better** and is the route to take. The rehearsal path **stays in this spec**: it was the right amendment, it is implemented and tested, and it is needed again the moment a future fold stands aside.
@@ -962,7 +1059,7 @@ Four sprints, three gates. **A gate is a hard stop, not a checkpoint.**
 
 **If red:** **FITS is cancelled, not postponed.** Sprint 4 becomes hardening + report. A working v1 is submitted. This is an acceptable outcome and is stated as such in the proposal.
 
-### GATE 3 — 10 Oct · "Submitted"
+### GATE 3 · "Submitted"
 
 - [ ] Study runs from one command and produces `results.csv`
 - [ ] Every table reports deltas vs persistence

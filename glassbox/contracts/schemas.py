@@ -412,12 +412,23 @@ class Attribution:
 
     per_lag is optional. The per-lag heatmap (GB-31) is cut from scope;
     implementations return None. It is retained in the schema so the feature
-    can be added later without a contract change."""
+    can be added later without a contract change.
+
+    **`per_level` was added 24 Aug 2026 for GB-66 (WITS), and it is a new field rather
+    than a reuse of `per_frequency` on purpose.** A wavelet decomposition has *two* axes -
+    which band, and when within the window - and both already have homes here. Storing a
+    level in a field named for a frequency would be the two-copies defect committed inside
+    a single schema: every reader of `per_frequency` would then have to know which model
+    wrote it before it could know what a key meant. `per_level` carries the band totals;
+    `per_lag` - retained for exactly this, "so the feature can be added later without a
+    contract change" - carries the time localisation, which is the whole reason a wavelet
+    explanation says more than a Fourier one. See DECISIONS.md, 24 Aug 2026."""
 
     per_channel: dict[str, float]  # channel → contribution to Σ path
     per_lag: np.ndarray | None = None  # (L, C) contribution heatmap — optional
     per_frequency: dict[float, float] | None  # FITS only: period(days) → contrib
     gain_phase: dict[float, tuple[float, float]] | None  # FITS only
+    per_level: dict[str, float] | None = None  # WITS only: band name → contrib
     forecast_total: float
 
     @classmethod
@@ -479,6 +490,7 @@ class Attribution:
             per_lag=None,
             per_frequency=None,
             gain_phase=None,
+            per_level=None,
             forecast_total=float(forecast_total),
         )
 

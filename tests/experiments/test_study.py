@@ -525,3 +525,45 @@ def test_the_same_grid_twice_gives_the_same_numbers(
 
     columns = [c for c in study.COLUMNS if c != "seconds"]  # wall time is not a result
     pd.testing.assert_frame_equal(first[columns], second[columns])
+
+
+# ── GB-61: one cache state, or a refusal ─────────────────────────────────────
+
+
+def _frame_ending(last: str, rows: int = 5) -> pd.DataFrame:
+    index = pd.date_range(end=pd.Timestamp(last, tz="UTC"), periods=rows, freq="D")
+    return pd.DataFrame({"close": np.arange(float(rows))}, index=index)
+
+
+def test_the_data_snapshot_is_the_date_every_symbol_shares() -> None:
+    bars = {symbol: _frame_ending("2026-08-13") for symbol in ("AAPL", "MSFT", "META")}
+
+    assert study.data_snapshot(bars) == "2026-08-13"
+
+
+def test_a_cache_with_two_end_dates_is_refused_rather_than_maxed() -> None:
+    """**This was a ``max`` and the ``max`` would have written a false provenance.**
+
+    GB-61 fetched fifteen new symbols on a day the committed five did not have, leaving the
+    cache ending on 2026-08-13 for the incumbents and 2026-08-21 for the new names.
+    ``_common_index`` intersects, so every fold would have been computed correctly on the
+    shorter window — and ``max`` would have stamped **2026-08-21** onto
+    ``data_snapshot_last_bar`` in all 877 rows, which is the provenance GB-57 quotes. Folds
+    right, label wrong, and nothing downstream disagreeing with itself.
+
+    A ``max`` reports the newest and *hides* the disagreement, which makes it an instrument
+    blind to the one fault it is positioned to see. Truncating the cache fixed that day; the
+    refusal is what fixes the next symbol somebody adds.
+    """
+    bars = {
+        "AAPL": _frame_ending("2026-08-13"),
+        "MSFT": _frame_ending("2026-08-13"),
+        "META": _frame_ending("2026-08-21"),
+    }
+
+    with pytest.raises(study.SmokeError) as caught:
+        study.data_snapshot(bars)
+
+    message = str(caught.value)
+    assert "2026-08-13" in message and "2026-08-21" in message
+    assert "META" in message and "AAPL" in message  # both groups named, not just one

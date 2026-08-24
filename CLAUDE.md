@@ -5,10 +5,18 @@
 
 ## 0. Orientation — do this first, every session
 
-1. Read `docs/GLASSBOX_PROJECT_SPEC.md`. It is the **single source of truth**.
-2. Run `git log --oneline -15` and read `PROGRESS.md` to find the current task.
-3. Confirm which `GB-NN` task you are working on. State it before writing code.
-4. If the task is ambiguous or seems to conflict with the spec, **stop and ask**.
+1. Read `docs/GLASSBOX_PROJECT_SPEC.md`. It is the source of truth **for contracts,
+   architecture, methodology and the gate criteria** — everything about what the system
+   *is*. It was the single source of truth until Phase 2 opened, and it is no longer
+   that for **scope**, which is the one thing this step used to imply and now must not.
+2. Read `GLASSBOX_PHASE2_EXPANSION.md`. It sits **alongside** the spec rather than
+   replacing it and **governs scope after GATE 2** — the task list, the acceptance
+   criteria for GB-61 to GB-66, and the schedule, which lives only there. **Where the
+   two conflict, the spec wins on contracts and the expansion wins on scope.**
+3. Run `git log --oneline -15` and read `PROGRESS.md` to find the current task.
+4. Confirm which `GB-NN` task you are working on. State it before writing code.
+5. If the task is ambiguous or seems to conflict with **either** document, **stop and
+   ask**. Two documents is two chances for a task to sit between them.
 
 ## 1. The six rules
 

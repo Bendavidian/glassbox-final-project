@@ -43,8 +43,20 @@ Three problems close at once, and each was measured rather than assumed.
 
 | Symbols | Windows/fold | Equations | Determinacy | Gross if all held |
 |---|---|---|---|---|
-| 5 (current) | 2,505 | 10,020 | 2.09× | **0.50 — exactly the cap** |
-| **20** | **10,020** | **40,080** | **8.35×** | **2.00 against a 0.50 cap** |
+| 5 (current) | 2,480 – 2,505 (mean 2,492) | 9,920 – 10,020 | 2.07× – 2.09× | **0.50 — exactly the cap** |
+| **20** | **9,920 – 10,020 (mean 9,968)** | **39,680 – 40,080** | **8.27× – 8.35×** | **2.00 against a 0.50 cap** |
+
+> **Measured 24 Aug 2026, and the first draft of this table was one fold of sixteen.** It
+> read 2,505 → 10,020 and 2.09× → 8.35×, which is **fold 1** — the largest of the sixteen,
+> not the typical one. Counts fall monotonically across the grid as the calendar shortens
+> the training span, so the honest figures are the ranges above. Taken **off the batch
+> `train.py` builds**, per the standing rule that window counts are read from the batch and
+> never reconstructed by slicing the frame first.
+>
+> **The ×4 was exactly right and only the base was wrong.** Every fold's 20-symbol count is
+> its 5-symbol count times 4.000 — all twenty symbols share one index, so the scaling is
+> exact rather than approximate. The determinacy improvement stands as claimed; the level
+> it starts and ends at is 1% lower than written.
 
 **Determinacy.** 4,800 parameters against 10,020 equations is thin. Four times the
 samples for the same parameter budget is the cheapest capacity improvement available,
@@ -53,10 +65,24 @@ and it costs no model change.
 **The risk layer stops being inert.** GB-21 found that `5 × max_position_pct 0.10 = 0.50
 = max_gross_exposure`, so the gross cap is numerically redundant and bound exactly once
 across 16 folds. GB-57 currently has to report a risk layer that is correct, enforced and
-doing nothing. At 20 symbols it binds continuously.
+doing nothing. At 20 symbols it binds well below the point where every position is
+held — but **how often it actually binds is the measurement, not the claim.** The
+acceptance criterion below asks for the fold count, and that number is what GB-57
+reports.
 
 **Ranking becomes a selection.** `top_k = 2` out of 5 is barely a choice. Out of 20 it is
 one, and the cross-sectional ranking in `rank.py` starts carrying weight.
+
+**Split across GATE 2, and the split is the whole of it.** This task is scheduled in
+the same window as the gate sessions, which would otherwise contradict this file's own
+claim to govern only what is built *after* GATE 2. It does not, because the task has
+two halves with different blast radii. **The preparatory half runs alongside the gate**
+- caching, the quality report, the parity sweep and the `min_history_bars`
+verification - because none of it touches the deployed path: the live loop reads
+Alpaca through `data/live.py` and never reads `data_cache/`. **The `universe:` flip and
+the grid re-run wait until the sessions are done**, because editing the deployed
+configuration under a running multi-day loop is the mutation GB-59 recorded as its
+first defect, and `live_loop.config_drift` warns at session start without reloading.
 
 **Universe:** extend to 20 large-cap US equities with full history from 2016. Liquidity
 and history are the only criteria — no sector or performance screening, because a
@@ -161,9 +187,17 @@ the measured count.
    shift-invariant but redundant, which changes the parameter count and the capacity
    argument. Treat it as an axis, not a default, and measure both.
 
-**Attribution stays exact.** Every stage is linear, so `forecast_matrix` works unchanged
-and `Attribution.from_terms` closes as it does for FITS. But the explanation improves in
-kind, not only in wording: wavelet coefficients are localised in time and Fourier
+**Attribution stays exact, and it needs a field that does not exist yet.** Every stage is
+linear, so `forecast_matrix` works unchanged and `Attribution.from_terms` closes as it
+does for FITS. But wavelet attribution has **two axes** and `per_frequency` is not one of
+them: storing a *level* in a field named for a *frequency* would be the two-places defect
+committed inside a single schema. Both axes already have homes. **`per_level` is added to
+the §4 contract as optional**, for the band totals, and **`per_lag` - retained in the
+schema precisely so a view could be added later without a contract change - carries the
+time localisation**, which is the whole reason WITS's explanation beats FITS's. One
+`DECISIONS.md` entry, before GB-66 starts.
+
+**And the explanation improves in kind, not only in wording:** wavelet coefficients are localised in time and Fourier
 coefficients are not. The panel can say
 
 > "34% from the 8–16 day band, and it happened in the last three days"
@@ -174,8 +208,8 @@ structurally cannot give.
 **Done when:**
 - Passes the full `Forecaster` contract test unchanged, registered in `ALL_FORECASTERS`
 - Causal at the window level, verified by GB-10's harness in both perturbation modes
-- Attribution per level, summing to the forecast through `from_terms`, with a per-level
-  time-localisation figure that FITS has no equivalent for
+- Attribution per level in `per_level`, summing to the forecast through `from_terms`,
+  with the time localisation in `per_lag` - a figure FITS has no equivalent for
 - **The null control is run and the correlation between the learned response on real data
   and on white noise is reported against FITS's +0.9485.** This is the acceptance
   criterion that matters; performance is not.
@@ -253,8 +287,16 @@ recent headlines and context for the symbol, **explicitly labelled as informatio
 not enter the decision.**
 
 **Done when:**
+- **A new `forbidden` import contract names the sentiment module and lists
+  `glassbox.backtest` and `glassbox.experiments` as forbidden importers.** This is an
+  acceptance criterion rather than a note because **the contract as it stands does not
+  prevent this**: the layers contract places `glassbox.data` *below* `backtest` and
+  `experiments`, so a provider living under `data/` is freely importable by exactly the
+  two modules this task forbids, and the existing `forbidden` contract only points the
+  other way - it keeps `live_loop`, `replay` and `records` out of the harness. Until
+  that contract exists the claim is discipline in a contract's clothes.
 - Sentiment data is fetched only in the live path, never in `study.py`, `train.py` or
-  anything under `backtest/`. Enforced by the import contract, not by discipline.
+  anything under `backtest/` - enforced by the contract above.
 - No `DecisionRecord` field carries it, so it cannot reach `results.csv`
 - The panel states, in the interface and not only in a docstring, that the annotation is
   context for the operator and not a model input
@@ -280,7 +322,8 @@ saying so, is the misreading the panel itself exists to prevent — committed by
 
 | Window | Work |
 |---|---|
-| 24–30 Aug | GATE 2 live sessions · GB-53 · GB-61 · **GB-66 begins** |
+| 24–30 Aug | GATE 2 live sessions · GB-53 · **GB-61 preparatory half only** (cache, quality, parity, `min_history_bars`) · **GB-66 begins** |
+| after the sessions | **GB-61 completes**: the `universe:` flip and the grid re-run |
 | 31 Aug – 7 Sep | **GB-66 completes** · GB-63 |
 | 8–14 Sep | GB-64 · GB-65 · re-run the full grid at 20 symbols with three model arms |
 | **15 Sep** | **Report writing begins. Phase 2 closes in whatever state it is in.** |

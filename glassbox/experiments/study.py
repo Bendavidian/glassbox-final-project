@@ -50,7 +50,7 @@ import argparse
 import math
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -68,7 +68,7 @@ from glassbox.config.loader import (
 )
 from glassbox.data.historical import LOG_RETURN
 from glassbox.features.builder import build_feature_frame
-from glassbox.model import fits
+from glassbox.model import ALL_FORECASTERS, fits
 from glassbox.smoke_offline import (
     SmokeError,
     _common_index,
@@ -79,7 +79,14 @@ from glassbox.smoke_offline import (
 
 # ── the axes ─────────────────────────────────────────────────────────────────
 
-MODELS = ("persistence", "dlinear", "fits")
+# **Derived, because this was a third copy of the registry** (24 Aug 2026). It read
+# ``("persistence", "dlinear", "fits")`` by hand, which agreed with the registry on the
+# day it was written and would have gone on agreeing until a model was registered - at
+# which point the study would have quietly run three arms and omitted the fourth. That
+# is the GB-44 defect exactly: the runner that produces every study number unable to
+# select the model the study is about. ``dict`` preserves insertion order, so the arm
+# order is the registration order rather than an accident.
+MODELS = tuple(ALL_FORECASTERS)
 CHANNEL_SETS = ("C0_base", "C2_hybrid")
 
 # Spec 6.4: feeding pre-filtered wavelet bands to a model whose first act is to filter
@@ -109,6 +116,11 @@ CUTOFFS = (5, 2, 10, 20)
 # Mean seconds per arm-fold, measured over the 20 Aug grid (679 rows). They span 60x, so
 # a flat mean over the arms mis-estimates any design whose mix of arms differs from that
 # one - which every COF spoke does, being FITS-only.
+#
+# **This one cannot be derived - the values are measurements - so a test pins it
+# instead.** A model registered without a timing here would not fail; it would silently
+# under-report the wall time of every plan containing it, which is the estimate the
+# ten-minute rule depends on.
 PER_FOLD_SECONDS = {
     "persistence": 0.39,
     "dlinear": 1.46,
@@ -402,6 +414,42 @@ def pin_threads(threads: int = BLAS_THREADS) -> int:
     return before
 
 
+def data_snapshot(bars: Mapping[str, pd.DataFrame]) -> str:
+    """The one date every cached symbol ends on, or a refusal naming the disagreement.
+
+    **This was a ``max`` and the ``max`` was a lie** (GB-61, 24 Aug 2026). Expanding the
+    universe from 5 to 20 fetched fifteen symbols on a day the committed five did not have,
+    so the cache held two snapshot dates - 2026-08-13 for the incumbents and 2026-08-21 for
+    the new names. ``_common_index`` intersects, so every fold would have been computed
+    correctly on the shorter window; ``max`` would have written **2026-08-21** into
+    ``data_snapshot_last_bar`` on all 877 rows, and that column is the provenance GB-57
+    quotes. The folds would have been right and the label wrong, which is worse than both
+    being wrong, because nothing downstream disagrees with itself.
+
+    A ``max`` reports the newest and **hides** the disagreement, which makes it an
+    instrument that cannot report the one fault it is positioned to see. Truncating the
+    cache fixed 24 August; a refusal is what fixes the next symbol somebody adds.
+
+    Raises:
+        SmokeError: The cached symbols do not share a last bar, naming each group.
+    """
+    by_date: dict[str, list[str]] = {}
+    for symbol, frame in bars.items():
+        by_date.setdefault(frame.index[-1].date().isoformat(), []).append(symbol)
+    if len(by_date) > 1:
+        groups = "; ".join(
+            f"{date}: {', '.join(sorted(symbols))}"
+            for date, symbols in sorted(by_date.items())
+        )
+        raise SmokeError(
+            "the cached symbols end on different dates, so this run has no single data "
+            f"snapshot to record: {groups}. Every result row carries "
+            "`data_snapshot_last_bar`, and one value cannot describe two cache states. "
+            "Refetch the laggards or truncate the leaders to the common last bar."
+        )
+    return next(iter(by_date))
+
+
 def run(
     cfg: Config,
     full: bool = False,
@@ -429,7 +477,7 @@ def run(
         SmokeError: The cache is incomplete or yields no fold.
     """
     bars = load_cached_bars(cfg)
-    snapshot = max(frame.index[-1] for frame in bars.values()).date().isoformat()
+    snapshot = data_snapshot(bars)
     chosen = tuple(conditions(full) if design is None else design)
     sized = Plan(
         conditions=chosen,

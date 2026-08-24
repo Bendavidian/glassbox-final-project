@@ -7,6 +7,72 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-24 — Phase 2 opens: one location for the dates, one contract amendment, and a third copy of the registry
+
+Five rulings, all of them the same shape: **a second copy of a fact, replaced by either a
+derivation or a test.** `GLASSBOX_PHASE2_EXPANSION.md` arrived as a second authority
+alongside the spec, and every one of these is a seam it opened.
+
+**1. The dates leave §8 and live only in the expansion's schedule table.** §8 held a sprint
+calendar; the expansion opened with a schedule of its own, and the two had **already
+disagreed** — §8 said GATE 2 fell on 25 September while the expansion ran its sessions on
+24–30 August. The expansion carries a precedence sentence covering exactly this case, and a
+precedence sentence is a **note**: it resolves the conflict for a reader holding both
+documents and does nothing for a reader who opens one. §8 keeps what a date cannot replace
+— the gate criteria, the checklists and the cancellation rule each gate carries — and the
+dates are gone from it.
+
+**2. `CLAUDE.md` §0 names both documents, and "single source of truth" is withdrawn for
+scope.** It was the first line every session read and it had become false in one specific
+way. The spec is now stated as the authority for contracts, architecture, methodology and
+the gate criteria; the expansion for scope after GATE 2. Where they conflict, the spec wins
+on contracts and the expansion wins on scope.
+
+**3. GB-64's enforcement claim was false as written, and is now an acceptance criterion.**
+The expansion said sentiment fetching is *"enforced by the import contract, not by
+discipline."* It is not. The layers contract places `glassbox.data` **below** `backtest` and
+`experiments`, so a provider under `data/` is freely importable by the two modules GB-64
+forbids, and the existing `forbidden` contract only points the other way — it keeps
+`live_loop`, `replay` and `records` out of the harness. GB-64 must **add** a `forbidden`
+contract naming the sentiment module. Until it exists the claim is discipline in a
+contract's clothes.
+
+**4. `Attribution.per_level` is added to the §4 contract for GB-66.** The cheap route was to
+reuse `per_frequency` keyed by band; refused, because a field named for a frequency holding
+a level is the two-places defect committed **inside a single schema**, where no test can see
+it — each copy is internally consistent and only a reader who knows which model wrote the
+record can tell what a key means. A wavelet decomposition has two axes and both already have
+homes: `per_level` for the band totals, and `per_lag` for the time localisation, retained
+unused since GB-31 with the words *"so the feature can be added later without a contract
+change."* GB-66 is that later.
+
+**Consequence, and it is why the decoder is asymmetric.** The field was added **while a
+multi-day GATE 2 run was writing the decision log**. Records without the key exist and are
+correct, so `records._decode` reads it with `.get` where it indexes every other key: the
+dashboard, replay and the gate log all decode that file, and indexing would turn every line
+written before 15:44 today into a `KeyError`. A field added after a log has started must
+read as **absent**, not as broken.
+
+**5. There was a third copy of the model registry, and the test that was supposed to cover
+this could not see it.** `test_the_registry_and_the_config_layer_name_the_same_models`
+asserts `set(VALID_MODELS) == set(ALL_FORECASTERS)` — two lists **enumerated by name**, so it
+detects those two diverging and is blind to a third appearing. That is the same defect one
+level up. Written as a scan, it found one immediately:
+`experiments/study.py` held `MODELS = ("persistence", "dlinear", "fits")`, which **agreed**
+with the registry and would have gone on agreeing until a model was registered — at which
+point the study would have run three arms and silently omitted the fourth. **That is the
+GB-44 defect, in the same file family**: the runner that produces every study number, unable
+to select the model the study is about. GB-66 registers `wits` in six days.
+
+`MODELS` is now `tuple(ALL_FORECASTERS)`, so the copy is gone rather than pinned.
+`PER_FOLD_SECONDS` **cannot** be derived — its values are measurements — so it is pinned by a
+test instead; a model registered without a timing would not fail, it would silently
+under-report the wall time of every plan containing it, which is the estimate the
+ten-minute rule depends on. The scan catches a complete copy **and a stale one**, and was
+proven to fail against both before it was committed.
+
+---
+
 ## 2026-08-23 — GB-50: the COF sweep rides on the star, and each cutoff carries its own control
 
 **Decision 1 — three more spokes, not a fourth crossed axis.**

@@ -118,6 +118,48 @@ def test_a_record_round_trips_losslessly(tmp_path) -> None:
     np.testing.assert_array_equal(restored.forecast.path, original.forecast.path)
 
 
+def test_a_record_written_before_per_level_existed_still_decodes(tmp_path) -> None:
+    """**The GATE 2 run was writing this log when the field was added** (24 Aug 2026).
+
+    ``per_level`` joined the ``Attribution`` contract for GB-66 while a multi-day live loop
+    was mid-run, so records without the key exist and are correct. If ``_decode`` indexed it
+    the way it indexes every other key, every one of those lines would raise ``KeyError`` at
+    read time - in the dashboard, in replay, and in the gate log that has to be read to
+    decide whether the gate passed. A field added after a log has started must read as
+    absent rather than as broken, and that is a property of the reader, not of the writer.
+    """
+    path = records.save_decision(a_record(), tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    del raw["attribution"]["per_level"]
+    path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    [restored] = records.load_decisions("2026-08-01", "2026-08-31", tmp_path)
+
+    assert restored.attribution.per_level is None
+    assert restored.attribution.per_channel == a_record().attribution.per_channel
+
+
+def test_a_wavelet_attribution_round_trips_both_of_its_axes(tmp_path) -> None:
+    """``per_level`` and ``per_lag`` are the two axes GB-66 needs, and neither substitutes
+    for the other: the band totals say *which*, the lag heatmap says *when*."""
+    original = a_record()
+    original = replace(
+        original,
+        attribution=replace(
+            original.attribution,
+            per_level={"a3": 0.004, "d3": -0.001},
+            per_lag=np.zeros((3, 2), dtype="float64"),
+        ),
+    )
+
+    records.save_decision(original, tmp_path)
+    [restored] = records.load_decisions("2026-08-01", "2026-08-31", tmp_path)
+
+    assert restored.attribution.per_level == {"a3": 0.004, "d3": -0.001}
+    assert restored.attribution.per_lag is not None
+    assert restored.attribution.per_lag.shape == (3, 2)
+
+
 def test_the_forecast_path_survives_as_float32(tmp_path) -> None:
     """A numpy array serialises as a list and must come back as an array of the same dtype,
     or the replayed decision is not the decision that was made."""

@@ -545,3 +545,38 @@ def test_statistics_refuse_a_scale_for_a_channel_they_do_not_describe(
 
     with pytest.raises(ValueError, match="were asked for"):
         stats.scale_for("not_a_channel")
+
+
+def test_min_history_bars_does_not_move_with_the_universe() -> None:
+    """**A max over channels, not a sum over symbols** — measured, not assumed (GB-61).
+
+    The universe expansion from 5 to 20 asked whether the live loop would suddenly need
+    four times the history. It does not, and the reason is structural rather than lucky:
+    :func:`min_history_bars` reads ``window.input_len`` and the active channels' warm-ups
+    and never looks at ``universe`` at all. A symbol is another *row*; a channel is another
+    *depth*. This test exists because "obviously unchanged" is how the 352-bar floor got
+    recorded as verified, and because a wrong answer here would silently change what the
+    live loop requests at 16:30.
+    """
+    cfg = load_config()
+    twenty = replace(cfg, universe=tuple(f"SYM{n:02d}" for n in range(20)))
+    one = replace(cfg, universe=("AAPL",))
+
+    assert builder.min_history_bars(twenty) == builder.min_history_bars(cfg)
+    assert builder.min_history_bars(one) == builder.min_history_bars(cfg)
+    assert builder.deepest_warmup_channel(twenty) == builder.deepest_warmup_channel(cfg)
+
+
+def test_the_history_floor_is_a_max_and_would_be_wrong_as_a_sum() -> None:
+    """The property the test above rests on, stated so it cannot pass by coincidence.
+
+    If the floor were a *sum* over active channels it would exceed the max; asserting the
+    max explicitly means a future change to summing fails here rather than in production.
+    """
+    cfg = load_config()
+    warmups = [
+        builder._warmup_bars(channel, cfg) for channel in cfg.channels.active_channels
+    ]
+
+    assert builder.min_history_bars(cfg) == cfg.window.input_len + max(warmups)
+    assert builder.min_history_bars(cfg) < cfg.window.input_len + sum(warmups)

@@ -411,6 +411,14 @@ def _encode(record: DecisionRecord) -> dict[str, Any]:
                     for key, pair in attribution.gain_phase.items()
                 }
             ),
+            "per_level": (
+                None
+                if attribution.per_level is None
+                else {
+                    str(key): float(value)
+                    for key, value in attribution.per_level.items()
+                }
+            ),
             "forecast_total": float(attribution.forecast_total),
         },
         "signal": asdict(record.signal),
@@ -452,6 +460,21 @@ def _decode(raw: dict[str, Any]) -> DecisionRecord:
                 else {
                     float(key): (pair[0], pair[1])
                     for key, pair in attribution["gain_phase"].items()
+                }
+            ),
+            # ``.get`` rather than ``[...]``, and the asymmetry is deliberate. Every
+            # other key has existed since the log's first line; ``per_level`` was added on
+            # 24 Aug 2026 **while a multi-day GATE 2 run was writing records**, so records
+            # without it exist and are correct. Indexing would turn every one of them into
+            # a ``KeyError`` at read time - the dashboard, replay and the gate log all
+            # decode this file. A field added after a log has started is a field that must
+            # read as absent, not as broken.
+            per_level=(
+                None
+                if attribution.get("per_level") is None
+                else {
+                    str(key): float(value)
+                    for key, value in attribution["per_level"].items()
                 }
             ),
             forecast_total=attribution["forecast_total"],

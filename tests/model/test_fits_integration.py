@@ -21,6 +21,7 @@ documented and nothing consulted until GB-44.
 
 from __future__ import annotations
 
+import ast
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -30,6 +31,7 @@ import pandas as pd
 import pytest
 
 from glassbox.config.loader import VALID_MODELS, Config, load_config
+from glassbox.experiments.study import PER_FOLD_SECONDS
 from glassbox.features.builder import build_feature_frame, build_windows
 from glassbox.model import ALL_FORECASTERS
 from glassbox.model import train as trainer
@@ -116,6 +118,86 @@ def test_the_registry_and_the_config_layer_name_the_same_models() -> None:
     ``test_smoke_offline.py`` covers that end.
     """
     assert set(VALID_MODELS) == set(ALL_FORECASTERS)
+
+
+def test_no_third_copy_of_the_registry_exists_anywhere(package_root: Path) -> None:
+    """**The test above enumerates two lists by name, so it cannot see a third appear.**
+
+    Ruled 24 Aug 2026, and the scan found one the moment it was written:
+    ``experiments/study.py`` held ``MODELS = ("persistence", "dlinear", "fits")``, a
+    hand-written third copy that *agreed* with the registry and would have gone on agreeing
+    until a model was registered - at which point the study would have run three arms and
+    silently omitted the fourth. That is the GB-44 defect exactly, in the same file family:
+    the runner that produces every study number, unable to select the model the study is
+    about. ``MODELS`` is now ``tuple(ALL_FORECASTERS)`` and this test is what keeps a fourth
+    copy from being written.
+
+    **The signature of a registry copy** is a literal collection whose elements are *all*
+    model names. That catches a complete copy and, more usefully, a **stale** one - a
+    ``("persistence", "dlinear")`` written before FITS existed passes every other check in
+    this suite. A collection that merely *mentions* a model is not flagged, because
+    ``report.py`` names arms by hand for good reason and ``PER_FOLD_SECONDS`` mixes model
+    names with ``buy_and_hold``; that one cannot be derived, since its values are
+    measurements, so :func:`test_every_registered_model_has_a_measured_fold_time` pins it
+    instead.
+    """
+    names = set(ALL_FORECASTERS)
+    sanctioned = {
+        ("config/loader.py", "VALID_MODELS"),
+        ("model/__init__.py", "ALL_FORECASTERS"),
+    }
+    offenders: list[str] = []
+
+    for path in package_root.rglob("*.py"):
+        if "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(package_root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+
+        named: dict[int, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        named[id(node.value)] = target.id
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                named[id(node.value)] = node.target.id
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+                elements = node.elts
+            elif isinstance(node, ast.Dict):
+                elements = [key for key in node.keys if key is not None]
+            else:
+                continue
+            if len(elements) < 2:
+                continue
+            literals = [
+                element.value
+                for element in elements
+                if isinstance(element, ast.Constant) and isinstance(element.value, str)
+            ]
+            if len(literals) != len(elements) or not set(literals) <= names:
+                continue
+            if (relative, named.get(id(node))) in sanctioned:
+                continue
+            offenders.append(
+                f"{relative}:{node.lineno} {named.get(id(node))} {literals}"
+            )
+
+    assert not offenders, f"third copy of the model registry: {offenders}"
+
+
+def test_every_registered_model_has_a_measured_fold_time() -> None:
+    """``PER_FOLD_SECONDS`` cannot be derived - its values are measurements - so it is
+    pinned.
+
+    A model registered without a timing would not fail. It would silently under-report the
+    wall time of every plan containing it, and that estimate is what the ten-minute rule
+    depends on: the rule says run the validating tests before any job longer than ten
+    minutes, and a job that mis-estimates itself as short is a job that skips them.
+    """
+    assert set(PER_FOLD_SECONDS) >= set(ALL_FORECASTERS)
 
 
 def test_the_config_switch_is_the_only_difference_between_two_arms(

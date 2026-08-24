@@ -12,9 +12,28 @@
       "log_return": 1,
       "low": 0,
       "open": 0,
+      "source": 0,
       "volume": 0
     },
     "symbol": "AAPL"
+  },
+  "ABBV": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "ABBV"
   },
   "AMZN": {
     "bar_count": 2668,
@@ -29,9 +48,28 @@
       "log_return": 1,
       "low": 0,
       "open": 0,
+      "source": 0,
       "volume": 0
     },
     "symbol": "AMZN"
+  },
+  "COST": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "COST"
   },
   "GOOGL": {
     "bar_count": 2668,
@@ -46,9 +84,145 @@
       "log_return": 1,
       "low": 0,
       "open": 0,
+      "source": 0,
       "volume": 0
     },
     "symbol": "GOOGL"
+  },
+  "HD": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "HD"
+  },
+  "JNJ": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "JNJ"
+  },
+  "JPM": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "JPM"
+  },
+  "LLY": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "LLY"
+  },
+  "MA": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "MA"
+  },
+  "META": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [
+      [
+        "2022-02-03",
+        -0.3063907466155758
+      ],
+      [
+        "2022-10-27",
+        -0.28179361828003324
+      ]
+    ],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "META"
+  },
+  "MRK": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "MRK"
   },
   "MSFT": {
     "bar_count": 2668,
@@ -63,6 +237,7 @@
       "log_return": 1,
       "low": 0,
       "open": 0,
+      "source": 0,
       "volume": 0
     },
     "symbol": "MSFT"
@@ -85,8 +260,122 @@
       "log_return": 1,
       "low": 0,
       "open": 0,
+      "source": 0,
       "volume": 0
     },
     "symbol": "NVDA"
+  },
+  "PG": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "PG"
+  },
+  "TSLA": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "TSLA"
+  },
+  "UNH": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [
+      [
+        "2025-04-17",
+        -0.2533407580777855
+      ]
+    ],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "UNH"
+  },
+  "V": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "V"
+  },
+  "WMT": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "WMT"
+  },
+  "XOM": {
+    "bar_count": 2668,
+    "duplicate_dates": [],
+    "first_date": "2016-01-04",
+    "large_moves": [],
+    "last_date": "2026-08-13",
+    "missing_bars": [],
+    "nan_counts": {
+      "close": 0,
+      "high": 0,
+      "log_return": 1,
+      "low": 0,
+      "open": 0,
+      "source": 0,
+      "volume": 0
+    },
+    "symbol": "XOM"
   }
 }
