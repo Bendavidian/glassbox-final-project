@@ -38,7 +38,7 @@ import math
 import sys
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pandas as pd
@@ -459,6 +459,288 @@ def contributions_svg(
         note += " — FRAGILE, THIS DECOMPOSITION IS A RESIDUE"
     body.append(_text(12, height - 8, note, ORANGE if survived < 50.0 else MUTED))
     return _svg(width, height, "".join(body), "per-channel contributions")
+
+
+# ── GB-53: the spectral panel (§6.5) ─────────────────────────────────────────
+#
+# **It renders only when the attribution carries a frequency view**, which is the FITS
+# gate expressed structurally rather than by naming a model: `Attribution.per_frequency`
+# is None for DLinear and persistence, so the panel is *absent* rather than empty. An
+# empty panel invites a reader to wonder what broke; an absent one says the deployed model
+# does not decompose that way.
+
+#: What the white-noise control reproduced of the learned frequency response (GB-48, 48
+#: models at three fold-grid anchors). The panel states it because a beautiful curve read
+#: as "what the model learned about the market" is the black-box failure this project
+#: exists to oppose, committed by the explanation layer itself.
+SPECTRAL_GEOMETRY_SHARE = 0.86
+SPECTRAL_NOISE_CORRELATION = 0.9485
+
+#: Below this, no single cycle carries the forecast. Measured on real data: the largest
+#: share across 24 contributors was 0.211, so the flag fires and must not be silent here
+#: when the equivalent is loud in the channel panel.
+SPECTRAL_DOMINANT_BELOW = 0.25
+
+RIN_MEAN_LABEL = "RIN MEAN"
+DEAD_BIN_LABEL = "BIN 0 · DEAD"
+
+
+def period_label(period: float) -> str:
+    """A period as a label. The RIN mean is **not** a frequency and is not labelled as one.
+
+    ``per_frequency`` keys the window mean at ``DC_PERIOD`` (infinity) because it has to
+    key it at something. Rendering that as "inf-day cycle" would invent a cycle nobody
+    measured; it is the mean RIN removed and added back, and it says so.
+    """
+    return RIN_MEAN_LABEL if math.isinf(period) else f"{period:.1f}-DAY"
+
+
+def period_colour(period: float, periods: Sequence[float]) -> str:
+    """The ramp entry for a period, **dark for long and light for short**.
+
+    The same ordering :func:`channel_colour` uses, so a reader who has learned the channel
+    bars reads these for free: the ramp encodes how far back a thing looks. The RIN mean
+    takes no ramp entry - it is not a frequency, and giving it one would place it on a
+    scale it does not sit on.
+    """
+    if math.isinf(period):
+        return MUTED
+    finite = sorted((value for value in periods if math.isfinite(value)), reverse=True)
+    if period not in finite:
+        return RAMP[len(RAMP) // 2]
+    step = max(len(finite) - 1, 1)
+    index = round(finite.index(period) * (len(RAMP) - 1) / step)
+    return RAMP[min(index, len(RAMP) - 1)]
+
+
+def frequency_shares(attribution: Attribution) -> dict[float, float]:
+    """Each period's share of the **gross** frequency view.
+
+    Routed through :func:`explain.channel.shares` rather than recomputed, so the
+    denominator - share of gross, never percent-of-net - has one definition in this
+    codebase. See that function for why the gross denominator is the only bounded choice
+    on daily log returns.
+    """
+    view = attribution.per_frequency or {}
+    keyed = replace(attribution, per_channel={repr(k): v for k, v in view.items()})
+    by_key = shares(keyed)
+    return {period: by_key[repr(period)] for period in view}
+
+
+def spectral_svg(
+    attribution: Attribution, width: int = 1400, row_height: int = 22
+) -> str:
+    """Per-frequency contributions, keyed by period in **days** rather than by bin index.
+
+    "The 17-day cycle" means something to a reader and "bin 7" does not (§6.5). Sign is
+    geometry and glyph - filled and right for positive, hollow and left for negative -
+    so the panel reads in greyscale; the ramp encodes period, never sign.
+    """
+    view = attribution.per_frequency or {}
+    ranked = sorted(
+        frequency_shares(attribution).items(), key=lambda kv: (-abs(kv[1]), kv[0])
+    )
+    height = 34 + row_height * len(ranked) + 40
+    left, right = 150, 92
+    plot_w = width - left - right
+    middle = left + plot_w / 2
+    widest = max((abs(value) for _, value in ranked), default=0.0) or 1.0
+    periods = list(view)
+
+    body = [
+        _text(12, 16, "PER-FREQUENCY CONTRIBUTION", ORANGE),
+        _text(width - 12, 16, "SHARE OF GROSS VIEW", MUTED, anchor="end"),
+        _rule(middle, 26, middle, height - 36, ORANGE_DIM),
+    ]
+
+    for index, (period, share) in enumerate(ranked):
+        y = 34 + index * row_height
+        length = abs(share) / widest * (plot_w / 2 - 6)
+        colour = period_colour(period, periods)
+        dead = view[period] == 0.0
+        x = middle if share >= 0 else middle - length
+        fill = "none" if share < 0 or dead else colour
+        body.append(
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{max(length, 0.6):.1f}" '
+            f'height="{row_height - 10}" fill="{fill}" stroke="{colour}" '
+            f'stroke-width="1"{" stroke-dasharray=\"2 2\"" if dead else ""}/>'
+        )
+        label = period_label(period)
+        if dead and math.isfinite(period):
+            label = f"{label} · {DEAD_BIN_LABEL}"
+        body.append(_text(12, y + row_height - 12, label, MUTED if dead else PAPER))
+        glyph = "▲" if share > 0 else ("▼" if share < 0 else "·")
+        body.append(
+            _text(
+                width - 12,
+                y + row_height - 12,
+                f"{glyph} {abs(share) * 100:.1f}%",
+                MUTED if dead else PAPER,
+                anchor="end",
+            )
+        )
+
+    strongest = max((abs(value) for _, value in ranked), default=0.0)
+    if strongest < SPECTRAL_DOMINANT_BELOW:
+        note = (
+            f"NO SINGLE CYCLE CARRIES THIS FORECAST — STRONGEST IS "
+            f"{strongest * 100:.1f}% OF {len(ranked)} CONTRIBUTORS"
+        )
+        body.append(_text(12, height - 20, note, ORANGE))
+    body.append(
+        _text(
+            12,
+            height - 6,
+            "BIN 0 MULTIPLIES ZERO — RIN REMOVES THE WINDOW MEAN BEFORE THE TRANSFORM",
+            MUTED,
+        )
+    )
+    return _svg(width, height, "".join(body), "per-frequency contributions")
+
+
+def gain_phase_svg(
+    attribution: Attribution, top: int = 6, width: int = 1400, row_height: int = 22
+) -> str:
+    """Gain and phase shift for the strongest contributors, **phase in days**.
+
+    Radians of an unnamed cycle are not a thing anyone can picture (§6.5), so a shift is
+    reported as the days by which the model advances or delays that cycle. Positive means
+    it **leads**.
+    """
+    pairs = attribution.gain_phase or {}
+    ranked = [
+        period
+        for period, _ in sorted(
+            frequency_shares(attribution).items(), key=lambda kv: (-abs(kv[1]), kv[0])
+        )
+        if period in pairs and math.isfinite(period)
+    ][:top]
+    height = 34 + row_height * max(len(ranked), 1) + 10
+
+    body = [
+        _text(12, 16, "GAIN AND PHASE, STRONGEST CYCLES", ORANGE),
+        _text(width - 12, 16, "GAIN ×   PHASE IN DAYS", MUTED, anchor="end"),
+    ]
+    widest = max((abs(pairs[p][0]) for p in ranked), default=0.0) or 1.0
+    for index, period in enumerate(ranked):
+        gain, shift = pairs[period]
+        y = 34 + index * row_height
+        length = abs(gain) / widest * (width - 150 - 200)
+        body.append(
+            f'<rect x="150" y="{y:.1f}" width="{max(length, 0.6):.1f}" '
+            f'height="{row_height - 10}" fill="{period_colour(period, list(pairs))}" '
+            'stroke="none"/>'
+        )
+        body.append(_text(12, y + row_height - 12, period_label(period), PAPER))
+        lead = "▲ LEADS" if shift > 0 else ("▼ LAGS" if shift < 0 else "· NO SHIFT")
+        body.append(
+            _text(
+                width - 12,
+                y + row_height - 12,
+                f"{gain:.3f} ×   {lead} {abs(shift):.2f} D",
+                PAPER,
+                anchor="end",
+            )
+        )
+    if not ranked:
+        body.append(_text(12, 44, "NO FINITE CYCLE CONTRIBUTED", MUTED))
+    return _svg(width, height, "".join(body), "gain and phase")
+
+
+def response_svg(
+    periods: Sequence[float],
+    gains: Sequence[float],
+    width: int = 1400,
+    height: int = 260,
+) -> str:
+    """The learned frequency response, **with what it was measured to be**.
+
+    **The caption is the point of this chart, not decoration.** A curve rendered without
+    it invites "this is what the model learned about the market", and GB-48 measured that
+    it is mostly not: a model trained on white noise reproduces it at r = +0.9485, about
+    86% of the response. Rendering the curve and letting a reader infer market structure
+    would be the black-box behaviour this project opposes, committed by the explanation
+    layer - the worst place for it to happen.
+    """
+    left, right, top, floor = 60, 24, 34, height - 46
+    plot_w = width - left - right
+    if len(periods) < 2:
+        return _svg(
+            width,
+            96,
+            _text(12, 16, "LEARNED FREQUENCY RESPONSE", ORANGE)
+            + _text(12, 44, "NO RETAINED CYCLE TO PLOT", MUTED),
+            "frequency response",
+        )
+
+    logs = [math.log(period) for period in periods]
+    lo, hi = min(logs), max(logs)
+    span = (hi - lo) or 1.0
+    tallest = max(gains) or 1.0
+    points = [
+        (
+            left + (value - lo) / span * plot_w,
+            floor - (gain / tallest) * (floor - top),
+        )
+        for value, gain in zip(logs, gains, strict=True)
+    ]
+
+    body = [
+        _text(12, 16, "LEARNED FREQUENCY RESPONSE", ORANGE),
+        _text(width - 12, 16, "GAIN × BY PERIOD", MUTED, anchor="end"),
+        _rule(left, floor, width - right, floor, HAIRLINE),
+    ]
+    body.append(
+        '<polyline fill="none" stroke="{}" stroke-width="1.4" points="{}"/>'.format(
+            RAMP[-2], " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+        )
+    )
+    for (x, y), period, gain in zip(points, periods, gains, strict=True):
+        body.append(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2" '
+            f'fill="{period_colour(period, list(periods))}"/>'
+        )
+        del gain
+    for period in (periods[0], periods[len(periods) // 2], periods[-1]):
+        x = left + (math.log(period) - lo) / span * plot_w
+        body.append(_text(x, floor + 14, f"{period:.0f}D", MUTED, anchor="middle"))
+
+    body.append(
+        _text(
+            12,
+            height - 20,
+            f"DOMINATED BY INTERPOLATION COST, NOT BY MARKET STRUCTURE — "
+            f"{SPECTRAL_GEOMETRY_SHARE * 100:.0f}% OF THIS CURVE IS REPRODUCED BY A MODEL "
+            f"TRAINED ON WHITE NOISE",
+            ORANGE,
+        )
+    )
+    body.append(
+        _text(
+            12,
+            height - 6,
+            f"MEASURED GB-48: GAIN CURVES CORRELATE r = +{SPECTRAL_NOISE_CORRELATION:.4f} "
+            "ACROSS 48 MODELS AT THREE FOLD-GRID ANCHORS",
+            MUTED,
+        )
+    )
+    return _svg(width, height, "".join(body), "learned frequency response")
+
+
+def spectral_panel(attribution: Attribution, response=None, width: int = 1400) -> str:
+    """The whole panel, or **empty when the model does not decompose by frequency**.
+
+    Absent rather than blank: `Attribution.per_frequency` is None for DLinear and
+    persistence, and a panel that rendered an empty frame for them would read as a fault
+    rather than as a property of the deployed model.
+    """
+    if not attribution.per_frequency:
+        return ""
+    parts = [spectral_svg(attribution, width), gain_phase_svg(attribution, width=width)]
+    if response is not None:
+        periods, gains = response
+        parts.append(response_svg(periods, gains, width))
+    return "".join(parts)
 
 
 def is_rtl(text: str) -> bool:
@@ -983,6 +1265,9 @@ def main(
         with st.expander(expander_title(record)):
             st.markdown(narrative_html(record.narrative), unsafe_allow_html=True)
             st.markdown(contributions_svg(record.attribution), unsafe_allow_html=True)
+            # GB-53. Empty string for a model that does not decompose by frequency, so
+            # the panel is absent under DLinear and persistence rather than blank.
+            st.markdown(spectral_panel(record.attribution), unsafe_allow_html=True)
 
     _refresh(cfg, st)
 
@@ -1130,6 +1415,8 @@ __all__ = [
     "escape",
     "expander_title",
     "forecast_svg",
+    "frequency_shares",
+    "gain_phase_svg",
     "header_html",
     "is_fragile",
     "is_rtl",
@@ -1138,10 +1425,15 @@ __all__ = [
     "main",
     "narrative_html",
     "pending_summary",
+    "period_colour",
+    "period_label",
     "position_rows",
     "position_table",
     "price_path",
     "provenance_label",
+    "response_svg",
+    "spectral_panel",
+    "spectral_svg",
     "status_of",
     "stylesheet",
     "table_html",

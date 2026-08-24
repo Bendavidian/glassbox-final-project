@@ -345,6 +345,170 @@ def test_no_traffic_light_colours_anywhere() -> None:
         assert not [word for word in banned if word in lowered]
 
 
+# ── GB-53: the spectral panel ────────────────────────────────────────────────
+
+
+def a_spectral_attribution(dead_period: float = 120.0) -> Attribution:
+    """A FITS-shaped attribution: a frequency view, a gain/phase map, one dead bin."""
+    view = {
+        math.inf: 0.0040,
+        24.0: 0.0031,
+        12.0: -0.0022,
+        8.0: 0.0015,
+        dead_period: 0.0,
+    }
+    pairs = {
+        24.0: (0.83, 1.96),
+        12.0: (0.41, -0.55),
+        8.0: (0.22, 0.12),
+        dead_period: (0.0, 0.0),
+    }
+    return Attribution(
+        per_channel={"close_logret": sum(view.values())},
+        per_lag=None,
+        per_frequency=view,
+        gain_phase=pairs,
+        forecast_total=sum(view.values()),
+    )
+
+
+def test_the_panel_is_absent_rather_than_empty_for_a_model_without_frequencies() -> (
+    None
+):
+    """**The FITS gate, expressed structurally.** `per_frequency` is None for DLinear and
+    persistence, so the panel does not render - an empty frame would read as a fault
+    rather than as a property of the deployed model."""
+    dlinear = an_attribution(close_logret=0.01, rsi14=-0.004)
+
+    assert dlinear.per_frequency is None
+    assert app.spectral_panel(dlinear) == ""
+    assert app.spectral_panel(a_spectral_attribution()) != ""
+
+
+def test_frequencies_are_keyed_by_period_in_days_not_by_bin_index() -> None:
+    """ "The 17-day cycle" means something to a reader and "bin 7" does not."""
+    svg = app.spectral_svg(a_spectral_attribution())
+
+    assert "24.0-DAY" in svg
+    assert "BIN 7" not in svg
+    assert "bin" not in svg.lower().replace("bin 0", "")
+
+
+def test_the_rin_mean_is_not_labelled_as_a_frequency() -> None:
+    """It is keyed at infinity because it has to be keyed at something. Rendering that as
+    an "inf-day cycle" would invent a cycle nobody measured."""
+    assert app.period_label(math.inf) == app.RIN_MEAN_LABEL
+    assert "RIN MEAN" in app.spectral_svg(a_spectral_attribution())
+    assert "INF" not in app.spectral_svg(a_spectral_attribution()).upper().replace(
+        "INFORMATION", ""
+    )
+
+
+def test_the_dead_row_is_shown_as_dead_and_says_why() -> None:
+    """**Not omitted.** A reader who never sees it cannot know the architecture allocates
+    a row that multiplies zero on every forward pass."""
+    svg = app.spectral_svg(a_spectral_attribution())
+
+    assert app.DEAD_BIN_LABEL in svg
+    assert "MULTIPLIES ZERO" in svg
+    assert "RIN REMOVES THE WINDOW MEAN" in svg
+    assert "stroke-dasharray" in svg  # geometry, not colour, marks it
+
+
+def test_the_response_chart_carries_the_measurement_not_only_the_curve() -> None:
+    """**The caption is the point of the chart.** A curve read as "what the model learned
+    about the market" is the black-box failure this project opposes, committed by the
+    explanation layer - the worst place for it."""
+    svg = app.response_svg([8.0, 12.0, 24.0, 120.0], [0.22, 0.41, 0.83, 0.0])
+
+    assert "WHITE NOISE" in svg
+    assert "86%" in svg
+    assert "+0.9485" in svg
+    assert "GB-48" in svg
+    assert "48 MODELS" in svg
+
+
+def test_the_fragility_flag_is_not_silent_when_no_cycle_carries_the_forecast() -> None:
+    """Loud in the channel panel, so it must not be quiet here. Measured on real data: the
+    largest share across 24 contributors was 0.211."""
+    spread = Attribution(
+        per_channel={"close_logret": 0.004},
+        per_lag=None,
+        per_frequency={float(period): 0.001 for period in range(5, 25)},
+        gain_phase={float(period): (0.1, 0.0) for period in range(5, 25)},
+        forecast_total=0.020,
+    )
+
+    assert "NO SINGLE CYCLE CARRIES THIS FORECAST" in app.spectral_svg(spread)
+    assert "NO SINGLE CYCLE" not in app.spectral_svg(
+        Attribution(
+            per_channel={"close_logret": 0.01},
+            per_lag=None,
+            per_frequency={12.0: 0.01, 8.0: 0.0001},
+            gain_phase={12.0: (1.0, 0.0), 8.0: (0.1, 0.0)},
+            forecast_total=0.0101,
+        )
+    )
+
+
+def test_phase_is_reported_in_days_and_names_the_direction() -> None:
+    """Radians of an unnamed cycle are not a thing anyone can picture."""
+    svg = app.gain_phase_svg(a_spectral_attribution())
+
+    assert "LEADS" in svg
+    assert "1.96 D" in svg
+    assert "LAGS" in svg
+    assert "RAD" not in svg.upper()
+
+
+def test_the_ramp_runs_dark_for_long_and_light_for_short_like_the_channels() -> None:
+    """Same ordering as `channel_colour`, so a reader who has learned one reads the other
+    for free: the ramp encodes how far back a thing looks."""
+    periods = [120.0, 24.0, 12.0, 8.0]
+
+    longest = app.period_colour(120.0, periods)
+    shortest = app.period_colour(8.0, periods)
+
+    assert app.RAMP.index(longest) < app.RAMP.index(shortest)
+    assert app.period_colour(math.inf, periods) == app.MUTED  # not on the scale
+
+
+def test_the_spectral_marks_use_the_data_ramp_and_no_other_colour() -> None:
+    """The ramp is the data encoding. A second colour family inside these marks would make
+    the panel unreadable in greyscale, which is the rule the whole design rests on."""
+    svg = app.spectral_panel(
+        a_spectral_attribution(), response=([8.0, 12.0, 24.0], [0.22, 0.41, 0.83])
+    )
+    allowed = {
+        *app.RAMP,
+        app.ORANGE,
+        app.ORANGE_DIM,
+        app.PAPER,
+        app.MUTED,
+        app.INK,
+        app.PANEL,
+        app.HAIRLINE,
+    }
+
+    used = set(re.findall(r"#[0-9A-Fa-f]{6}", svg))
+    assert used <= allowed, used - allowed
+
+
+def test_frequency_shares_use_the_same_denominator_as_channel_shares() -> None:
+    """Routed through `explain.channel.shares` rather than recomputed, so share-of-gross
+    has one definition in this codebase."""
+    view = app.frequency_shares(a_spectral_attribution())
+
+    assert sum(abs(value) for value in view.values()) == pytest.approx(1.0)
+    assert all(-1.0 <= value <= 1.0 for value in view.values())
+
+
+def test_a_response_with_nothing_to_plot_says_so() -> None:
+    svg = app.response_svg([12.0], [0.4])
+
+    assert "NO RETAINED CYCLE TO PLOT" in svg
+
+
 def test_the_svg_builders_are_pure_strings() -> None:
     """No browser, no plotting library, no dependency — which is what makes the geometry
     testable at all."""
