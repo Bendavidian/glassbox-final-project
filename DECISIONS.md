@@ -38,17 +38,30 @@ criterion 1 asks for a session **without manual intervention**; surviving three 
 totalling ~2 hours and recovering unaided demonstrates that more strongly than an
 uneventful session would have.
 
-### 2. The defect that finding surfaced: a cycle stalled for 60 minutes in silence
+### 2. The defect that finding surfaced: 90 minutes stalled in silence, in two different clients
 
-Episode 3 is not what it looks like. Cycle `live-0153` began at 19:50:54, failed retry 1 at
-19:50:54 and retry 2 at 19:50:55 — and then **retry 3 blocked until 20:50:43. Fifty-nine
-minutes and forty-eight seconds inside one HTTP read.** The whole hour produced **three log
-lines**, all from before the stall.
+**Corrected the same evening, and the first version undercounted it.** This section
+originally read *"a cycle stalled for 60 minutes"* and named one stall. A sweep of every gap
+over two minutes between cycle starts found **two**, in **two different HTTP clients**:
+
+| Stall | Window | Duration | Where |
+|---|---|---|---|
+| A | 19:01:51 → 19:31:57 | **30m 06s** | `data.live` daily bar fetch, attempt **1** of 3 |
+| B | 19:50:55 → 20:50:43 | **59m 49s** | `executor.get_orders`, attempt **3** of 3 |
+
+**Ninety minutes of a six-and-a-half-hour session, inside two HTTP reads.** Stall A produced
+**two** log lines in half an hour and ended in a `ChunkedEncodingError` — a connection
+accepted and then dying mid-stream, which is not the DNS failure the rest of the session
+saw. Stall B produced **three** in an hour.
 
 **No HTTP read timeout is configured anywhere** — not in `engine/executor.py`, not in
 `data/live.py`, not in `live_loop.py` — so the SDK's default applies and the log confirms
-it: `read timeout=None`. A hung socket blocks until the OS gives up. The project already knows to do this: `scripts/ci_status.py` passes
-`timeout=45` to its own `urlopen`. The habit exists and the broker path never got it.
+it: `read timeout=None`. A hung socket blocks until the OS gives up. That it happened on the
+**first** attempt in one client and the **third** in the other is the point: the retry
+policy bounds the number of attempts and nothing bounds their duration, so `retry_attempts:
+3` is a guarantee about count that reads like a guarantee about time. The project
+already knows to do this: `scripts/ci_status.py` passes `timeout=45` to its own
+`urlopen`. The habit exists and the broker path never got it.
 
 **Why this matters more than the outage did.** A loop blocked on a socket read is *alive
 and not polling*, and from outside it is indistinguishable from a dead one — which is
@@ -62,9 +75,10 @@ quietly dropped: the loop did **not** poll continuously through the outages. For
 it did not poll at all.
 
 **Remedy, named and not yet applied:** an explicit read timeout on the broker and data HTTP
-clients, well under `live.poll_seconds`, so a hung read fails the attempt instead of the
-session. Not applied today because it is a live-path change and a session was running under
-the old code; it is put to Ben rather than taken unilaterally.
+clients — **both of them**, since each stalled independently — well under
+`live.poll_seconds`, so a hung read fails the attempt instead of the session. Not
+applied today because it is a live-path change and a session was running under the old
+code; it is put to Ben rather than taken unilaterally.
 
 ### 3. The rehearsal could strand a position, and the GATE 2 plan walked straight into it
 
