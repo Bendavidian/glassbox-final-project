@@ -261,8 +261,13 @@ def test_the_request_actually_carries_the_pinned_feed(
     seen: dict[str, Any] = {}
 
     class FakeClient:
+        # `_session` because `bound_reads` refuses a client it cannot bound, and that
+        # strictness is the point: a double that got waved through would mean the guard
+        # could silently no-op on the real client too. A stand-in for an SDK client that
+        # holds a session has to hold one.
         def __init__(self, **kwargs: Any) -> None:
             del kwargs
+            self._session = type("Session", (), {"request": lambda *a, **k: None})()
 
         def get_stock_bars(self, request: Any) -> Any:
             seen["feed"] = request.feed

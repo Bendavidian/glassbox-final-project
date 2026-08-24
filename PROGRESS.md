@@ -303,6 +303,7 @@ depends on nothing in the model layer.
 | GB-61, the safe half | 24 Aug 2026 | Ben | **20 symbols cached and quality-checked; the deployed `universe:` deliberately untouched.** Split across GATE 2: the preparatory half runs alongside the sessions because the live loop reads Alpaca through `data/live.py` and never reads `data_cache/`; the `universe:` flip and the grid re-run wait until the loop stops, since editing the deployed config under a running multi-day loop is GB-59's first defect. **Selection rule written into spec §2.4 before any name was chosen**, with all 20 admitted, every excluded candidate recorded against the criterion that excluded it, and the limit the rule does *not* remove stated plainly: it removes performance hindsight, not **existence** hindsight — requiring history from 2016 selects survivors, and the always-long bar is inflated by the same selection. **Measured, not assumed:** `min_history_bars` is **445 at 5 and at 20** (a max over channels, not a sum over symbols — `input_len` 120 + 325 of `rsi14`); GB-5 reports **0 missing bars, 0 duplicates, 1 structural NaN** across all 20; the parity sweep is **500 of 500 byte-identical** at the 445 floor over 25 timestamps each. |
 | A second snapshot date, and the `max` that would have hidden it | 24 Aug 2026 | Ben | **Fetching 15 new symbols split the cache's provenance and nothing would have caught it.** The incumbents end 2026-08-13; the new names arrived at 2026-08-21. `_common_index` intersects, so every fold would have been computed **correctly** on the shorter window — while `study.run`'s `snapshot = max(...)` stamped **2026-08-21** onto `data_snapshot_last_bar` in all 877 rows, the provenance GB-57 quotes. Folds right, label wrong, and nothing downstream disagreeing with itself. A `max` reports the newest and *hides* the disagreement, which makes it an instrument blind to the one fault it is positioned to see. The 15 were truncated to the committed snapshot, preserving GB-59's bit-identical claim, and `data_snapshot` now **refuses** a split cache naming both groups. Truncating fixed today; the refusal fixes the next symbol somebody adds. |
 | The determinacy table was one fold of sixteen | 24 Aug 2026 | Ben | **Measured off the batch rather than multiplied, and the base was fold 1.** The expansion recorded 2,505 → 10,020 windows and 2.09× → 8.35× determinacy; swept across all sixteen folds the ranges are **2,480–2,505 (mean 2,492)** and **9,920–10,020 (mean 9,968)**, giving **2.07×–2.09×** and **8.27×–8.35×**. Counts fall monotonically as the calendar shortens the training span, so 2,505 is the largest cell, not the typical one. **The ×4 was exactly right and only the base was wrong** — every fold's 20-symbol count is its 5-symbol count times 4.000, because all twenty share one index. Second time this project has taken a window count from the wrong place, and the first time a test was already watching for it. |
+| The session log existed only in a terminal | 25 Aug 2026 | Ben | **A session that ran could not be summarised at all.** `main` configured logging with `stream=sys.stdout` and no file handler, so the 24 Aug log lived in a closed terminal: cycles attempted, skip reasons, WARNING and ERROR lines and uptime were all gone, and the only trace on disk was `decisions/2026-08.jsonl` — 10 records, which is **not** 10 cycles and cannot answer any of it. `DailyLogFile` writes `logs/live-YYYY-MM-DD.log`, one file per calendar day, `mode="a"` so *rehearse, stop, restart* appends rather than truncating the first half. **Re-targeted when the day turns rather than named once at startup**, because `--sessions 3` idles through two midnights in one process and a startup-computed filename would put all three sessions in the first day's file and make the other two dates lies. **Two defects found while wiring it.** The summary was `print`ed, not logged, so a file handler alone would have preserved every line *except* the one the gate reads — it now goes through `LOGGER` line by line as the banner already did. And `basicConfig` is a **silent no-op when the root logger already has a handler**, which is this same failure reintroduced by anything touching logging before `main`; `force=True` makes the entry point own the root logger. `--log-dir`/`DEFAULT_LOG_DIR` is an operator path like `DEFAULT_STATE_DIR` rather than a settings key, which would enter every model's config hash. 5 tests. |
 
 ---
 
@@ -407,7 +408,7 @@ do something it must.** Anything else is a finding.
   specified. The gate log must say which it was rather than leave a reader to guess.
 - **A skipped cycle when the broker or the data feed is unreachable**, provided the log says
   *nothing decided, nothing submitted, protective legs unaffected*. See the 24 Aug DECISIONS
-  entry: three outages, 55 of 177 cycles skipped, cause local DNS rather than Alpaca. A
+  entry: three outages, 55 of 266 cycles skipped, cause local DNS rather than Alpaca. A
   skipped cycle is the loop refusing to act on data it does not have. **A cycle that stalls
   silently for an hour is a different thing and IS a failure** — see row 7 on heartbeat
   spacing, and note that the heartbeat does not cover a stall *inside* a session.
@@ -426,21 +427,38 @@ _Filled in at 23:00 on each of 24, 25 and 26 Aug 2026, against the list above._
 
 | # | 24 Aug | 25 Aug | 26 Aug |
 |---|---|---|---|
-| 1 | | | |
-| 2 | | | |
-| 3 | | | |
-| 4 | | | |
-| 5 | | | |
-| 6 | | | |
-| 7 | | | |
-| 8 | | | |
-| 9 | | | |
-| 10 | | | |
-| 11 | | | |
-| 12 | | | |
-| 13 | | | |
-| 14 | | | |
-| 15 | | | |
+| 1 | **FAIL** — 211 completed of ~390 expected; 266 attempted, 55 skipped. 90 min lost inside two unbounded HTTP reads | | |
+| 2 | PASS — 5 decisions at the 2026-08-21 bar, once each, none re-decided across 266 cycles | | |
+| 3 | N/A — the band stood aside on all five; no order submitted | | |
+| 4 | N/A — no fill to arm against | | |
+| 5 | N/A — flat the whole session | | |
+| 6 | N/A — no position to arm | | |
+| 7 | PASS **with a finding** — idle heartbeats at exactly 15 min (15:44, 15:59, 16:14, 16:29, 23:00). The 391-min gap is the session itself, by design — **and is exactly why row 7 could not see the 90 min of stalls** | | |
+| 8 | PASS — the idle period wrote no cycle records; the decision store gained 5 rows, all from cycle 1 | | |
+| 9 | PASS — one report, `session 1 of 3 complete` | | |
+| 10 | PASS — opened flat; `book.json` empty at open and at close | | |
+| 11 | PASS — no position carried, and no `OVERNIGHT RESIDUAL` block appeared | | |
+| 12 | N/A — session 2 has not run | | |
+| 13 | PASS — residuals 4.1e-11 to 8.7e-10, all « 1e-5; provenance `live` on all five | | |
+| 14 | **FAIL** — the banner prints `thresholds : lower=0.026076 upper=none` and **omits the validation Sharpe (+0.483), the trade count (8) and the grid rank**. `thresholds.json` holds all three. The 20 Aug ruling that the band's selection context travels wherever the band appears **was recorded and never implemented** | | |
+| 15 | PASS **with a finding** — the session ended at the close as required, but `stopped_by` is **not printed**, so the reason is inferred from `session 1 of 3 complete` rather than read | | |
+| 16 | PASS — no `CONFIG DRIFT` block, and the banner carries `config hash` | | |
+
+**Verdict, 24 Aug: FAIL on two rows, and both are findings worth more than the session.**
+
+**Row 1** is the 90 minutes lost inside two HTTP reads with no timeout — closed the same
+night by `glassbox/data/http.py`, measured and ruled at 45 s. **Row 14 is the one to
+notice**: a ruling of 20 Aug, written down, never built, and invisible until a checklist
+walked the banner line by line. It is the first principle exactly — *a description of what
+the code should do is not a mechanism* — and it survived four days and a CI suite because
+nothing executed it. It is **not** blocking: the band's context is in `thresholds.json` and
+in the gate log, so no decision was made without it. It goes on the list for after GATE 2.
+
+**Neither failure touches criterion 2**, which is where the session leaves the gate: the
+deployed band stood aside on all five symbols, decisively rather than marginally — the best
+signal reached **14% of the lower bound** and also missed `min_up_points`. Criterion 6
+advances by one session; **criterion 2 is exactly where it was**, which is why the rehearsal
+is scheduled for 25 Aug at the open.
 
 
 ## Gate log

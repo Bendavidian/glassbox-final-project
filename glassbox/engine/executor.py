@@ -57,6 +57,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from glassbox.config.loader import Config, alpaca_credentials, require_paper_endpoint
+from glassbox.data.http import bound_reads
 from glassbox.engine.risk import Order, shares_for
 from glassbox.faults import retry
 
@@ -546,10 +547,14 @@ class AlpacaBroker:
         require_paper_endpoint(credentials.base_url)
         from alpaca.trading.client import TradingClient
 
-        self._client = TradingClient(
-            api_key=credentials.api_key,
-            secret_key=credentials.secret_key,
-            paper=True,
+        # Bounded reads before the first call. The SDK takes no `timeout`, and an
+        # unbounded one cost 59m 49s inside a single `get_orders` on 24 Aug 2026.
+        self._client = bound_reads(
+            TradingClient(
+                api_key=credentials.api_key,
+                secret_key=credentials.secret_key,
+                paper=True,
+            )
         )
 
     def submit_market_order(

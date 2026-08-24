@@ -180,12 +180,30 @@ baseline on the same folds. This is GATE 1's acceptance criterion.
 ### The live loop
 
 ```powershell
-python -m glassbox.live_loop
+python -m glassbox.live_loop --sessions 3
 ```
 
-> **Not yet implemented** — `GB-26`, Sprint 3. Runs in Co-Pilot mode by default
-> (`live.mode` in `glassbox/config/settings.yaml`), where every order is proposed and
-> waits for your approval.
+Runs in Co-Pilot mode by default (`live.mode` in `glassbox/config/settings.yaml`), where
+every order is proposed and waits for your approval. `--sessions N` keeps one process
+across N exchange sessions, idling between them, which is what bounds the overnight
+protection residual — see §8 of the spec.
+
+#### A dry run must never share the deployed state directory
+
+```powershell
+# Copy the state first. The loop REFUSES a dry run against checkpoints/live.
+Copy-Item -Recurse checkpoints/live $env:TEMP/dryrun_state
+python -m glassbox.live_loop --dry-run --state-dir $env:TEMP/dryrun_state --max-cycles 12
+```
+
+**Two reasons, and the first one nearly bit on 24 Aug 2026.** A dry run alongside a live
+loop is two processes writing one book and one decision log, so a check meant to protect
+the session would corrupt it. And `--dry-run` refuses broker *writes* but **does not change
+provenance**: a decision it records is written as `live`, so it would be indistinguishable
+from a real one in the study's inputs.
+
+`run_session` refuses the deployed directory rather than relying on this paragraph — the
+instruction is here for the reader, the refusal is what makes it true.
 
 ### The dashboard
 

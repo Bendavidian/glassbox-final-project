@@ -81,6 +81,7 @@ from alpaca.data.timeframe import TimeFrame
 
 from glassbox.config.loader import alpaca_credentials
 from glassbox.data.historical import normalise_bars
+from glassbox.data.http import bound_reads
 from glassbox.faults import retry
 
 LOGGER = logging.getLogger(__name__)
@@ -232,9 +233,13 @@ def _fetch_bars(symbols: list[str], start: datetime) -> pd.DataFrame:
     The seam the tests replace with a recorded response, so the suite needs no network.
     """
     credentials = alpaca_credentials()
-    client = StockHistoricalDataClient(
-        api_key=credentials.api_key,
-        secret_key=credentials.secret_key,
+    # Bounded reads before the first call. An unbounded one cost 30m 06s inside a single
+    # bar fetch on 24 Aug 2026, producing two log lines in half an hour.
+    client = bound_reads(
+        StockHistoricalDataClient(
+            api_key=credentials.api_key,
+            secret_key=credentials.secret_key,
+        )
     )
     request = StockBarsRequest(
         symbol_or_symbols=symbols,

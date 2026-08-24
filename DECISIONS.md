@@ -7,6 +7,121 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-08-24 — The read timeout, and a dry run that could damage what it verifies
+
+**The bound.** No HTTP read had a timeout, and 90 minutes of the first GATE 2 session went
+into two of them. `glassbox/data/http.py` applies one to the SDK's **session** rather than
+to the two call sites that were caught stalling, so every request either Alpaca client
+makes is bounded. `UnboundedClientError` if a future SDK renames the private `_session`,
+because doing nothing quietly would restore the defect while every behavioural test kept
+passing.
+
+**The value moved from 30 s to 45 s, and the first number is kept with its reason.** 30 was
+ruled on a premise of a ~5 s maximum and therefore ~6x headroom. Measuring **520 healthy
+single calls** — spans containing no retry — gave p50 0.22 / p95 1.52 / p99 4.57 and a
+**maximum of 19.75 s**, so 30 s was **1.52x**, not 6x.
+
+**What moved it was not the ratio but the provenance of the maximum.** That call was the
+first cycle *recovering from an outage*, which is the worst moment for a spurious timeout
+and the one where it is **self-reinforcing**: recovery is slow, the bound fires, a cycle
+about to succeed is skipped, and the retry meets the same slow path. A bound tuned on
+healthy-period latency is tuned on the case that does not matter.
+
+The costs are asymmetric. Too low skips a working cycle while the system is already
+degraded; too high detects a real stall in 138 s instead of 93 s — and since both exceed one
+60 s poll, the cycle is skipped either way. The whole difference is 42 seconds, and a
+one-hour rehearsal window still gets 26 attempts.
+
+**And a dry run cannot settle it**, which is worth recording because it is a general trap: a
+dry run executes in a healthy period, and the case the value turns on is not reproducible on
+demand. A clean dry run says the bound does not fire on healthy calls. It says nothing about
+the case that set the number. The evidence answers a different question from the one asked.
+
+### The dry run could have damaged the session it was verifying
+
+Validating the bound meant running a dry run while the GATE 2 session was live, and **both
+default to `checkpoints/live`** — two processes writing one book and one decision log. The
+verification step would have corrupted the thing it existed to protect. Copying the state
+directory avoided it; a runbook line saying *remember to copy it* would have been a note, so
+`run_session` now **refuses** a dry run against the deployed directory.
+
+**The refusal also covers a second defect, which is worse and is not about concurrency.**
+`--dry-run` refuses broker *writes* and **does not change provenance**: `run_session` sets
+`records.LIVE` unless a rehearsal is active, so a decision a dry run records is written as
+`live`, is indistinguishable from a real one, and `records.is_reportable` would admit it
+into the study. GB-40 was careful to give a rehearsal `rehearsal:<reason>`; the dry run
+never got the equivalent.
+
+**Not fixed tonight, and the reason is scope rather than difficulty.** It is a live-path
+provenance change, tomorrow's runs are `--rehearsal` and deployed rather than dry, and the
+refusal keeps dry-run records out of the deployed log in the meantime. It is named here so
+it is closed deliberately rather than discovered again.
+
+---
+
+## 2026-08-24 — Reasoning note: when two arguments support one decision, know which survives alone
+
+The decision to rehearse the execution path on Tuesday rather than Wednesday had two
+reasons behind it.
+
+**The weak one was arithmetic.** The best signal on 24 Aug reached 14% of the deployed
+band's lower bound and also missed `min_up_points`, so the band was unlikely to fire in the
+two remaining sessions and the natural route to criterion 2 was unlikely to appear on its
+own. True, and it only says *unlikely*.
+
+**The load-bearing one was that the rehearsal path had never run live**, and running
+untested code on the last available day, with no session left to retry it, is the mistake.
+That argument does not depend on the band at all. It would hold just as well if the band
+were certain to fire.
+
+**It is the one that paid.** Verifying the path *because it was about to run* found that
+`_rehearsal_close_out` fires only inside the pre-close window and nothing flattened on a
+stop — so a rehearsal stopped at 17:30, exactly as the plan stops it, would have stranded a
+position with expiring DAY legs for the deployed session to inherit. The band arithmetic
+would never have found that; it is not about the band.
+
+**The pattern, which is why this is written down.** When two arguments support the same
+decision it is easy to bank the conclusion and stop separating them. Do the separation
+anyway, because **if only the weak one is true the decision may still be right for a reason
+nobody has checked** — and that is exactly what breaks when the situation changes. Had the
+band suddenly fired on Tuesday morning, the arithmetic would have evaporated and the
+decision would still have been correct, for the reason that was doing the work all along.
+
+Recorded as a reasoning note rather than a technical one. This project has kept those
+before, and they have been worth more per line than most of the code.
+
+### The companion, from the read timeout the same night: headroom is a ratio, cost is not
+
+Choosing 30 s against 45 s looked like a question about **headroom** — 1.52x against 2.28x
+over the slowest observed call. Headroom is a **ratio**, and a ratio treats the two errors
+as symmetric. They never are.
+
+- **Too low** skips a cycle that was about to succeed, *while the system is already
+  degraded* — and it is **self-reinforcing**: recovery is slow, the bound fires, the retry
+  meets the same slow path.
+- **Too high** notices a real stall in 138 s instead of 93 s. Both exceed one 60 s poll, so
+  the cycle is skipped either way. The entire cost is 42 seconds.
+
+**When two candidate values both look defensible on headroom, the ratio cannot separate
+them and the question is what each error costs when it happens — and whether either one
+feeds back on itself.** The maximum that set this value came from outage recovery, which is
+precisely the self-reinforcing case, so the number had to be set by the bad case rather
+than by the typical one.
+
+### And the sharper half: a necessary check that cannot be a sufficient one
+
+The dry run validating this bound runs in a **healthy period**. The case the value turns on
+— recovery latency — is not reproducible on demand. So a clean dry run says the bound does
+not fire on healthy calls, and says **nothing** about the case that set the number.
+
+**Recognising that before the result arrived is what stopped it being read as validation.**
+A green result answering a different question than the one asked is the most comfortable
+kind of wrong, because nothing about it looks like a failure. Ask what a check can rule out
+*before* it runs, and write the answer down, or its passing will be read as evidence for
+whatever was hoped for.
+
+---
+
 ## 2026-08-24 — GATE 2 session 1: an outage measured, a rehearsal hole closed, and a 60-minute stall nobody would have seen
 
 ### 1. The outage is the session's finding, and it is better evidence than a clean afternoon
@@ -20,7 +135,8 @@ rather than estimated:
 | 2 | 17:23:07 → 17:29:14 | 6 | 6 min |
 | 3 | 19:32:00 → 20:50:43 | 19 | 79 min |
 
-**55 cycles skipped of 177 that reached a verdict.** Longest consecutive failure run: 30.
+**55 cycles skipped. Final session totals: 266 attempted, 211 completed, 55 skipped**
+(21%). Longest consecutive failure run: 30.
 
 **The cause was local DNS, not Alpaca**, and the attribution is corroborated rather than
 assumed: 268 of the failures were `NameResolutionError` — `getaddrinfo failed`, which is a

@@ -1914,3 +1914,194 @@ def test_replay_and_rehearsal_are_both_unreportable_and_live_is_not() -> None:
     assert records.is_reportable(records.LIVE)
     assert not records.is_reportable(records.replay_provenance(13))
     assert not records.is_reportable(records.rehearsal_provenance("gate2"))
+
+
+def test_a_dry_run_may_not_use_the_deployed_state_directory(cfg: Config) -> None:
+    """**A verification step must not be able to damage what it verifies** (24 Aug 2026).
+
+    Two reasons, and the first one nearly bit. Validating the read timeout meant running a
+    dry run while the GATE 2 session was live, and both default to `checkpoints/live` -
+    two processes writing one book and one decision log, so the check would have corrupted
+    the session it existed to protect. Copying the state directory was the fix, and a
+    runbook line saying "remember to copy it" is a note; this is the mechanism.
+
+    The second reason is worse and is not about concurrency at all. `--dry-run` refuses
+    broker *writes* and does **not** change provenance, so a decision it records is written
+    as `live` and is indistinguishable from a real one - `records.is_reportable` would admit
+    it into the study. That is a defect in its own right and is recorded as one; refusing
+    the deployed directory keeps it out of the log that matters until it is fixed.
+    """
+    with pytest.raises(live_loop.LiveError, match="may not use the deployed state"):
+        live_loop.run_session(cfg, live_loop.DEFAULT_STATE_DIR, dry_run=True)
+
+
+def test_a_dry_run_against_a_copy_is_allowed(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_bars: dict,
+    stub_predictor: None,
+    tmp_path: Path,
+) -> None:
+    """The guard names the deployed directory, not dry runs. Pointed at a copy it is the
+    intended way to exercise the live path without touching the account or the log."""
+    report = live_loop.run_session(
+        cfg,
+        tmp_path,
+        broker=broker,
+        dry_run=True,
+        clock=lambda: NOW,
+        sleep=lambda s: None,
+        max_cycles=1,
+    )
+
+    assert report.stopped_by == "max_cycles=1"
+
+
+def test_every_dry_run_says_its_records_carry_live_provenance(
+    cfg: Config, broker: FakeBroker, tmp_path: Path
+) -> None:
+    """**Unconditional, because the containment it backs up is not one** (24 Aug 2026).
+
+    `run_session` refuses a dry run against `checkpoints/live`, which covers the
+    concurrency case. It does not cover a dry run against a *copied* directory - which
+    still records `live` provenance, still produces records `records.is_reportable` admits,
+    and is exactly what a tired person runs on a Wednesday. "Tomorrow's runs are not dry" is
+    a fact about intention; this is the line that survives the person who forgot.
+
+    Removed when dry runs get `dry:<reason>` the way rehearsals got `rehearsal:<reason>`
+    and `is_reportable` rejects both. Until then the banner is the only thing standing
+    between a dry run and the study's inputs.
+    """
+    state = a_state(cfg, tmp_path, broker)
+    banner = live_loop.session_banner(state, NOW, dry_run=True)
+
+    assert "DRY RUN" in banner
+    assert "KNOWN DEFECT" in banner
+    assert "INDISTINGUISHABLE" in banner
+    assert "Do not analyse or report" in banner
+    assert "DECISIONS.md" in banner
+    # and it must not appear when the run is real
+    assert "KNOWN DEFECT" not in live_loop.session_banner(state, NOW, dry_run=False)
+
+
+# ── the session log has to outlive the terminal ──────────────────────────────
+
+
+@pytest.fixture
+def bare_root_logger():
+    """A root logger with no handlers, because `basicConfig` is a no-op when it has any.
+
+    pytest's own logging plugin attaches handlers to the root, so without this the call
+    under test would silently do nothing and the assertions would be measuring pytest.
+    """
+    root = logging.getLogger()
+    saved, saved_level = root.handlers[:], root.level
+    root.handlers = []
+    yield root
+    for handler in root.handlers:
+        handler.close()
+    root.handlers, root.level = saved, saved_level
+
+
+def test_the_session_log_is_written_to_a_file_named_for_the_day(tmp_path: Path) -> None:
+    """**The terminal is not the record.** On 24 Aug 2026 a session's log existed only in
+    a closed terminal, and the run could not be summarised at all."""
+    handler = live_loop.DailyLogFile(tmp_path)
+    day = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d")
+    try:
+        handler.handle(
+            logging.LogRecord("x", logging.INFO, "f", 1, "a cycle ran", None, None)
+        )
+    finally:
+        handler.close()
+
+    written = tmp_path / f"live-{day}.log"
+    assert written.exists()
+    assert "a cycle ran" in written.read_text(encoding="utf-8")
+
+
+def test_a_restart_appends_rather_than_truncating(tmp_path: Path) -> None:
+    """The rehearsal plan is *rehearse, stop, restart under the deployed band*. A
+    truncating handler would delete the first half at the restart, where the deletion
+    would read as a session that never ran."""
+    for message in ("first process", "second process"):
+        handler = live_loop.DailyLogFile(tmp_path)
+        try:
+            handler.handle(
+                logging.LogRecord("x", logging.INFO, "f", 1, message, None, None)
+            )
+        finally:
+            handler.close()
+
+    day = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d")
+    text = (tmp_path / f"live-{day}.log").read_text(encoding="utf-8")
+    assert "first process" in text
+    assert "second process" in text
+
+
+def test_the_file_is_retargeted_when_the_day_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--sessions 3` idles through two midnights inside one process. A filename computed
+    once at startup would put all three sessions in the first day's file and make the
+    other two dates lies - the two-places defect, in the log's own name."""
+    handler = live_loop.DailyLogFile(tmp_path)
+    try:
+        monkeypatch.setattr(
+            live_loop.DailyLogFile, "_today", staticmethod(lambda: "2026-08-24")
+        )
+        handler.handle(
+            logging.LogRecord("x", logging.INFO, "f", 1, "before midnight", None, None)
+        )
+        monkeypatch.setattr(
+            live_loop.DailyLogFile, "_today", staticmethod(lambda: "2026-08-25")
+        )
+        handler.handle(
+            logging.LogRecord("x", logging.INFO, "f", 1, "after midnight", None, None)
+        )
+    finally:
+        handler.close()
+
+    first = (tmp_path / "live-2026-08-24.log").read_text(encoding="utf-8")
+    second = (tmp_path / "live-2026-08-25.log").read_text(encoding="utf-8")
+    assert "before midnight" in first and "after midnight" not in first
+    assert "after midnight" in second and "before midnight" not in second
+
+
+def test_the_summary_reaches_the_file_and_not_only_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bare_root_logger
+) -> None:
+    """**The summary IS the gate evidence** - cycles completed, decisions recorded, open
+    orders at exit. It was `print`ed, so a file handler alone would have preserved every
+    line except the one the gate reads."""
+    report = live_loop.SessionReport(
+        session_id="s",
+        banner="",
+        cycles=(),
+        open_orders=(),
+        stopped_by="the market closed",
+    )
+    monkeypatch.setattr(live_loop, "run_sessions", lambda *a, **k: (report,))
+
+    assert live_loop.main(["--log-dir", str(tmp_path)]) == 0
+
+    day = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d")
+    text = (tmp_path / f"live-{day}.log").read_text(encoding="utf-8")
+    assert "stopped by the market closed" in text
+    assert "open orders at exit" in text
+
+
+def test_both_handlers_share_one_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bare_root_logger
+) -> None:
+    """A second copy of a format string is a second thing to change, and stdout and the
+    file diverging is only discovered when the terminal is gone."""
+    report = live_loop.SessionReport(
+        session_id="s", banner="", cycles=(), open_orders=(), stopped_by="x"
+    )
+    monkeypatch.setattr(live_loop, "run_sessions", lambda *a, **k: (report,))
+
+    live_loop.main(["--log-dir", str(tmp_path)])
+
+    formats = {h.formatter._fmt for h in bare_root_logger.handlers}
+    assert formats == {live_loop.LOG_FORMAT}

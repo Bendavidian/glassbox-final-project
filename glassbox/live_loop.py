@@ -112,6 +112,21 @@ CLOSED = "the market closed"
 # parameters, which is why they are CLI arguments with these as defaults rather than
 # configuration: a rehearsal is something a person decides to do on a particular
 # afternoon, and a configured value would be a value in every model's config hash.
+#: Where the deployed loop keeps its checkpoint, band, book and decision log. Named rather
+#: than repeated so the CLI default and the dry-run guard below cannot drift apart.
+DEFAULT_STATE_DIR = "checkpoints/live"
+
+#: Where the session log is written, one file per calendar day. An operator path like
+#: DEFAULT_STATE_DIR rather than a configured value, for the reason recorded just above: a
+#: settings key would become a value in every model's config hash, and where a log file
+#: lands says nothing about what any model learned.
+DEFAULT_LOG_DIR = "logs"
+
+#: One format for both handlers. A second copy of a format string is a second thing to
+#: change, and stdout and the file quietly diverging is the kind of drift that is only
+#: discovered when the terminal is gone and the file is all that is left.
+LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s %(message)s"
+
 REHEARSAL_NOTIONAL = 25.0
 REHEARSAL_CLOSE_OUT_MINUTES = 15
 
@@ -734,6 +749,31 @@ def session_banner(state: LiveState, when: pd.Timestamp, dry_run: bool) -> str:
                     (
                         "  reportable         : NO. No metric, table or figure may"
                         " include a decision from this run"
+                    ),
+                    "  " + "!" * 74,
+                ]
+            ),
+            *(
+                []
+                if not dry_run
+                else [
+                    "  " + "!" * 74,
+                    "  DRY RUN            : broker writes are refused and logged",
+                    (
+                        "  provenance         : 'live' - a KNOWN DEFECT. This run does"
+                        " NOT stamp its records"
+                    ),
+                    (
+                        "  reportable         : records written here are"
+                        " INDISTINGUISHABLE from real ones and"
+                    ),
+                    (
+                        "                       `records.is_reportable` admits them."
+                        " Do not analyse or report"
+                    ),
+                    (
+                        "                       anything this run records. See"
+                        " DECISIONS.md, 2026-08-24."
                     ),
                     "  " + "!" * 74,
                 ]
@@ -1845,6 +1885,17 @@ def run_session(
             :class:`Rehearsal` for the four conditions this run must satisfy.
     """
     root = Path(state_dir)
+    if dry_run and root.resolve() == Path(DEFAULT_STATE_DIR).resolve():
+        raise LiveError(
+            "a dry run may not use the deployed state directory "
+            f"({DEFAULT_STATE_DIR}). Pass --state-dir pointing at a copy. "
+            "Two reasons, and the first one bit on 24 Aug 2026. A dry run alongside a "
+            "live loop means two processes writing the same book and decision log, so "
+            "the verification step would corrupt the session it exists to verify. And "
+            "`--dry-run` refuses broker writes but does NOT change provenance: a "
+            "decision it records is written as `live` and is indistinguishable from a "
+            "real one, which `records.is_reportable` would then admit into the study."
+        )
     clock = clock or (lambda: pd.Timestamp.now(tz="UTC"))
     predictor = load_predictor(root / CHECKPOINT_DIR, cfg)
     thresholds = (
@@ -2169,16 +2220,74 @@ def _restore_sigint(previous) -> None:  # pragma: no cover - depends on the host
             pass
 
 
+class DailyLogFile(logging.FileHandler):
+    """The session log on disk: one file per calendar day, appended to, never truncated.
+
+    Three properties, and each closes a way the GATE 2 evidence could stop existing:
+
+    - **Appending** (``mode="a"``), so a restart adds to the day's file rather than
+      truncating it. The rehearsal plan is *rehearse, stop, restart under the deployed
+      band*, and a truncating handler would delete the first half at the moment of the
+      restart - where it would read as a session that never ran.
+    - **One file per calendar day**, so a multi-session run lands in files a person can
+      read one at a time.
+    - **Re-targeted when the day turns**, not fixed at startup. ``--sessions 3`` idles
+      through two midnights inside a single process, so a filename computed once would put
+      all three sessions in the first day's file and make the other two dates lies. The
+      check is per record, which is cheap beside the write it guards.
+    """
+
+    def __init__(self, directory: str | Path) -> None:
+        self._directory = Path(directory)
+        self._directory.mkdir(parents=True, exist_ok=True)
+        self._day = self._today()
+        super().__init__(self._path(self._day), mode="a", encoding="utf-8")
+
+    @staticmethod
+    def _today() -> str:
+        """UTC, matching every other timestamp the loop computes (spec §4.1)."""
+        return pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d")
+
+    def _path(self, day: str) -> Path:
+        return self._directory / f"live-{day}.log"
+
+    def emit(self, record: logging.LogRecord) -> None:
+        day = self._today()
+        if day != self._day:
+            self._day = day
+            # Deliberately not self.close(): that marks the handler closed and
+            # deregisters it, and this one has to keep serving the next day's records.
+            if self.stream is not None:
+                self.flush()
+                self.stream.close()
+            self.baseFilename = str(self._path(day).absolute())
+            self.stream = self._open()
+        super().emit(record)
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    try:
+        log_file = DailyLogFile(args.log_dir)
+    except OSError as failure:
+        # Fatal on purpose. A rehearsal that runs and leaves no evidence is worse than one
+        # that refuses to start, and refusing costs nothing here: nothing has traded yet.
+        print(f"live_loop: cannot open the session log: {failure}", file=sys.stderr)
+        return 2
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
-        stream=sys.stdout,
+        format=LOG_FORMAT,
+        handlers=[logging.StreamHandler(sys.stdout), log_file],
+        # `basicConfig` is a silent no-op when the root logger already has a handler, and
+        # a silent no-op here means no session log at all - the exact failure this is
+        # fixing, reintroduced by anything that touches logging before main does. As the
+        # entry point, main owns the root logger rather than hoping to be first.
+        force=True,
     )
+    LOGGER.info("session log: %s", log_file.baseFilename)
     try:
         reports = run_sessions(
             load_config(),
@@ -2201,9 +2310,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"live_loop: {failure}", file=sys.stderr)
         return 2
 
+    # Through the logger, not print, and line by line as the banner already is: the
+    # summary IS the gate evidence - cycles completed, decisions recorded, open orders at
+    # exit - and a summary that only ever reached stdout would be the one thing missing
+    # from the file written to preserve it.
     for report in reports:
-        print()
-        print(report.summary())
+        for line in report.summary().splitlines():
+            LOGGER.info(line)
     return 0
 
 
@@ -2217,8 +2330,16 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--state-dir",
-        default="checkpoints/live",
+        default=DEFAULT_STATE_DIR,
         help="where the checkpoint, band, book and decision log live",
+    )
+    parser.add_argument(
+        "--log-dir",
+        default=DEFAULT_LOG_DIR,
+        help=(
+            "where the session log is written, as one live-YYYY-MM-DD.log per calendar "
+            "day, appended to across restarts"
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -2283,10 +2404,12 @@ if __name__ == "__main__":  # pragma: no cover - exercised by the CLI, not by te
 __all__ = [
     "ARMING_STRIKES",
     "CLOSED",
+    "DEFAULT_STATE_DIR",
     "PERMISSIVE_LOWER",
     "REHEARSAL_CLOSE_OUT_MINUTES",
     "REHEARSAL_NOTIONAL",
     "CycleReport",
+    "DailyLogFile",
     "DryRunBroker",
     "LiveError",
     "LiveState",

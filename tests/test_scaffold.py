@@ -17,6 +17,7 @@ SPEC_MODULES = (
     "contracts/schemas.py",
     "contracts/protocols.py",
     "data/historical.py",
+    "data/http.py",
     "data/live.py",
     "data/quality.py",
     "features/indicators.py",
