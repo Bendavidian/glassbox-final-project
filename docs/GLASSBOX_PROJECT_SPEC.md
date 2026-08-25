@@ -16,7 +16,7 @@
 > 3. **Never bypass a gate.** §8 defines three hard gates. Work belonging to a later phase does not start until the gate before it is green.
 > 4. **Tests are the definition of done.** Every task in §9 lists its acceptance test. A task without a passing test is not complete.
 > 5. **No feature invention.** If an idea is not in this document, it goes into `IDEAS_PARKED.md` — it does not go into the codebase.
-> 6. **Config over constants.** No magic numbers in modules. Everything comes from `config/settings.yaml`.
+> 6. **Config over constants.** No magic numbers in modules. Everything comes from `glassbox/config/settings.yaml`.
 
 ---
 
@@ -583,7 +583,7 @@ see it, since a batch of one centres to zero.
 
 ---
 
-## 5. Configuration Contract (`config/settings.yaml`)
+## 5. Configuration Contract (`glassbox/config/settings.yaml`)
 
 ```yaml
 meta:
@@ -1262,7 +1262,7 @@ FITS uses the same architecture for anomaly detection: instead of forecasting fo
 
 - Python 3.12+, `ruff` + `black` defaults, type hints everywhere, `pytest`
 - Every feature function is **pure**: DataFrame in → DataFrame out, no hidden state, no I/O
-- No config values hardcoded in modules — always via `config/loader.py`
+- No config values hardcoded in modules — always via `glassbox/config/loader.py`
 - Any change to feature or model code requires the full causality and contract suites to pass
 - Small commits, imperative messages, one module per PR where possible
 - Every task commit message begins with its Jira key: `GB-42: fix irFFT amplitude scaling`

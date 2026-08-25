@@ -294,7 +294,7 @@ move". It is the null hypothesis every other arm is measured against.
 
 ## 7. Configuration
 
-One file — `glassbox/config/settings.yaml` — parsed by `config/loader.py` into frozen
+One file — `glassbox/config/settings.yaml` — parsed by `glassbox/config/loader.py` into frozen
 dataclasses that validate every field and raise naming the exact path that was wrong.
 **No module contains a magic number.** Two consequences worth stating:
 

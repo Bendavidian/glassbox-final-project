@@ -23,6 +23,15 @@ data_cache/*
 !data_cache/*.parquet
 checkpoints/
 
+# Session logs, treated as `checkpoints/` is: written by a run, not authored. Ignored so a
+# rehearsal cannot leave a new untracked directory in the path of a blanket `git add`,
+# which on 14 Aug 2026 swept a real key out of a file nobody had touched.
+#
+# This does NOT decide whether a session log is GATE 2 evidence. If it is, `git add -f` on
+# the named file commits it deliberately - which is the point: evidence goes in because
+# somebody chose it, not because it happened to be in the working tree.
+logs/
+
 # Python
 __pycache__/
 *.py[cod]

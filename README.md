@@ -188,6 +188,32 @@ every order is proposed and waits for your approval. `--sessions N` keeps one pr
 across N exchange sessions, idling between them, which is what bounds the overnight
 protection residual — see §8 of the spec.
 
+#### The GATE 2 launch sequence — run these, do not reconstruct them
+
+**Both commands live here because a launch command that must be remembered is not a
+mechanism** (CLAUDE.md §3, instance 4). On 24 Aug 2026 the loop was started without
+`--sessions`, whose default is **1**; it ran one session, stopped at the close, and looked
+exactly like a completed run. Nothing failed. The multi-day run simply did not happen, and
+the overnight re-arming policy — one of the five protection rules the gate depends on —
+went another day without ever executing outside `FakeBroker`.
+
+```powershell
+# 16:30 — criterion 2, the execution path, under a DELIBERATELY PERMISSIVE band.
+# Order, fill, adopt, arm, verify both legs, flatten, clean stop.
+# Provenance is never 'live'; nothing this run records is reportable.
+python -m glassbox.live_loop --rehearsal gate2-execution-path
+
+# ~17:30 — criterion 6, under the DEPLOYED band. Tuesday into Wednesday into Thursday.
+# This is the run that finally exercises the overnight path. The flag is the whole point:
+# without it this is one session and the re-arming rule is never tested.
+python -m glassbox.live_loop --sessions 3
+```
+
+The second command is the only way criterion 6 reaches three sessions. Do not replace it
+with three separate one-session runs: a session the loop **misses** because nobody was
+there to start it is exactly the half of the overnight residual that one process across
+all three removes.
+
 #### A dry run must never share the deployed state directory
 
 ```powershell
