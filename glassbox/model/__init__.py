@@ -18,6 +18,7 @@ from glassbox.contracts.protocols import Forecaster
 from glassbox.model.fits import FITSForecaster
 from glassbox.model.ltsf import DLinearForecaster
 from glassbox.model.persistence import PersistenceForecaster
+from glassbox.model.wits import WITSForecaster
 
 ForecasterFactory = Callable[[Config, tuple[str, ...]], Forecaster]
 
@@ -48,10 +49,25 @@ def _fits(cfg: Config, channels: tuple[str, ...]) -> Forecaster:
     )
 
 
+def _wits(cfg: Config, channels: tuple[str, ...]) -> Forecaster:
+    return WITSForecaster(
+        input_len=cfg.window.input_len,
+        horizon=cfg.window.horizon,
+        channels=channels,
+        family=cfg.wits.family,
+        levels=cfg.wits.levels,
+        boundary=cfg.wits.boundary,
+        retained_bands=cfg.wits.retained_bands,
+        shift_invariant=cfg.wits.shift_invariant,
+        cfg=cfg,
+    )
+
+
 ALL_FORECASTERS: dict[str, ForecasterFactory] = {
     "persistence": _persistence,
     "dlinear": _dlinear,
     "fits": _fits,
+    "wits": _wits,
 }
 
 __all__ = [
@@ -60,4 +76,5 @@ __all__ = [
     "FITSForecaster",
     "ForecasterFactory",
     "PersistenceForecaster",
+    "WITSForecaster",
 ]

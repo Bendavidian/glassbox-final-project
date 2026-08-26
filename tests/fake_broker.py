@@ -17,11 +17,27 @@ paper API, verbatim, because a fake that accepts everything proves only that the
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from glassbox.engine.executor import BUY, SELL, BrokerOrder
 
 MIN_NOTIONAL = 1.00
+
+
+#: Statuses at which the broker releases the quantity a sell order was holding. Mirrors
+#: `live_loop.FINISHED`; a fake that released it earlier or later would be a different
+#: broker from the one the loop talks to.
+_FINISHED = frozenset(
+    {
+        "filled",
+        "canceled",
+        "cancelled",
+        "expired",
+        "rejected",
+        "done_for_day",
+        "replaced",
+    }
+)
 
 
 class FakeBrokerError(RuntimeError):
@@ -104,7 +120,19 @@ class FakeBroker:
         )
 
     def cancel_order(self, order_id: str) -> None:
+        """Record the cancel **and mark the order canceled**, as the broker does.
+
+        Recording the id alone was the second fidelity gap found on 25 Aug 2026: a
+        cancelled leg went on holding its quantity here, so cancel-then-sell - the only
+        sequence that can close a position carrying a live leg - failed in the fake and
+        succeeded against Alpaca. A fake that accepts a cancel without releasing what the
+        cancel was for cannot test the fix for the defect it was hiding.
+        """
         self.cancelled.append(order_id)
+        self.orders = [
+            replace(order, status="canceled") if order.id == order_id else order
+            for order in self.orders
+        ]
 
     def get_orders(self) -> list[BrokerOrder]:
         return list(self.orders)
@@ -123,9 +151,37 @@ class FakeBroker:
                 f"cost basis must be >= minimal amount of order {MIN_NOTIONAL:.0f}"
             )
 
+    def held_for_orders(self, symbol: str) -> float:
+        """Quantity already committed to live sell orders, as Alpaca counts it.
+
+        **Modelled because not modelling it hid a structural defect for four days.** Alpaca
+        holds the full quantity of a working sell order, so a second sell for the same
+        position is refused with ``insufficient qty available`` - which is why a fractional
+        position can carry a stop or a target and never both, and why rule 3's flatten
+        could not execute at all on 25 Aug 2026. Every test in this suite passed while the
+        live path was structurally broken, because this fake said yes where the broker says
+        no. A fake that is more permissive than the thing it stands in for cannot fail for
+        the reason the real one does.
+        """
+        return sum(
+            order.quantity
+            for order in self.orders
+            if order.symbol == symbol
+            and order.side == SELL
+            and order.status not in _FINISHED
+        )
+
     def _require_held(self, symbol: str, quantity: float) -> None:
         if quantity > self.positions.get(symbol, 0.0) + 1e-12:
             raise FakeBrokerError("fractional orders cannot be sold short")
+        available = self.positions.get(symbol, 0.0) - self.held_for_orders(symbol)
+        if quantity > available + 1e-12:
+            raise FakeBrokerError(
+                f"insufficient qty available for order (requested: {quantity}, "
+                f"available: {max(available, 0.0)}), existing_qty="
+                f"{self.positions.get(symbol, 0.0)}, held_for_orders="
+                f"{self.held_for_orders(symbol)}, symbol={symbol}"
+            )
 
     def _price(self, symbol: str) -> float:
         if symbol not in self.prices:

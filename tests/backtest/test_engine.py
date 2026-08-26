@@ -249,7 +249,12 @@ def test_a_target_exit_fills_at_the_target(cfg: Config) -> None:
     )
     signals = {bars.index[0]: [make_signal(engine.ENTER_LONG)]}
 
-    result = engine.run_backtest({SYMBOL: bars}, signals, fixed_notional, cfg)
+    result = engine.run_backtest(
+        {SYMBOL: bars},
+        signals,
+        fixed_notional,
+        replace(cfg, backtest=replace(cfg.backtest, target_in_loop=False)),
+    )
 
     assert len(result.trades) == 1
     assert result.trades[0].exit_reason == engine.TARGET
@@ -266,7 +271,12 @@ def test_a_gapped_target_fills_at_the_open(cfg: Config) -> None:
     )
     signals = {bars.index[0]: [make_signal(engine.ENTER_LONG)]}
 
-    result = engine.run_backtest({SYMBOL: bars}, signals, fixed_notional, cfg)
+    result = engine.run_backtest(
+        {SYMBOL: bars},
+        signals,
+        fixed_notional,
+        replace(cfg, backtest=replace(cfg.backtest, target_in_loop=False)),
+    )
 
     assert result.trades[0].exit_reason == engine.TARGET_GAP
     assert result.trades[0].exit_price == pytest.approx(108.00, abs=CENT)
@@ -863,3 +873,102 @@ def test_unsorted_bars_are_refused(cfg: Config) -> None:
 
     with pytest.raises(ValueError, match="sorted"):
         engine.run_backtest({SYMBOL: bars}, {}, fixed_notional, cfg)
+
+
+# ── GB-49: the target the live path can actually take ───────────────────────
+
+
+def _strategy(result: engine.BacktestResult) -> list:
+    """Decisions only. `strategy_exit` is False for administrative closes (GB-19)."""
+    return [t for t in result.trades if t.strategy_exit]
+
+
+def _target_scenario(cfg: Config, target_in_loop: bool) -> engine.BacktestResult:
+    """Enter on bar 1's open; bar 2's HIGH crosses the target; bar 3 opens lower.
+
+    The three opens are distinct so the recorded fill price says which rule fired.
+    """
+    bars = frame_from(
+        [
+            (100.0, 100.0, 100.0, 100.0),  # signal bar
+            (100.0, 100.0, 100.0, 100.0),  # entry fills here at 100
+            (101.0, 130.0, 101.0, 120.0),  # high crosses the +6% target (106)
+            (110.0, 111.0, 109.0, 110.0),  # the next open the loop can reach
+            (110.0, 111.0, 109.0, 110.0),
+        ]
+    )
+    signals = {bars.index[0]: [make_signal("enter_long")]}
+    return engine.run_backtest(
+        {SYMBOL: bars},
+        signals,
+        fixed_notional,
+        replace(cfg, backtest=replace(cfg.backtest, target_in_loop=target_in_loop)),
+    )
+
+
+def test_a_broker_side_target_fills_intraday_at_the_target_price(cfg: Config) -> None:
+    """`target_in_loop=false` - the classical backtest, and what every published number in
+    this study assumes: the order rests at the broker and fills the moment the high
+    crosses, at a price nobody had to observe to obtain."""
+    trades = _strategy(_target_scenario(cfg, target_in_loop=False))
+    assert [t.exit_reason for t in trades] == [engine.TARGET]
+    assert trades[0].exit_price == pytest.approx(106.0)
+
+
+def test_a_loop_side_target_fills_at_the_next_open(cfg: Config) -> None:
+    """**`target_in_loop=true` is the system that can be built, and it is a different one.**
+
+    Alpaca refuses every multi-leg order class on a fractional quantity - `bracket` and
+    `oco` both return ``{"code":42210000,"message":"fractional orders must be simple
+    orders"}``, measured on 25 Aug 2026 - and a working sell holds the whole position, so
+    one broker-side protective order is the ceiling and the stop is it. The target is
+    therefore the loop's, and the loop reads **completed daily bars only**:
+    `drop_incomplete_bar` is a ruling and GB-7 measured that `latest_quote` is refused on
+    this SIP subscription, so the intraday crossing is not observable at any price.
+
+    The exit is a market order at the next open - 110.0 here, four points below the 106.0
+    the broker-side arm records, and on a different day.
+    """
+    trades = _strategy(_target_scenario(cfg, target_in_loop=True))
+    assert [t.exit_reason for t in trades] == [engine.TARGET_IN_LOOP]
+    assert trades[0].exit_price == pytest.approx(110.0)
+    # A different bar, not merely a different price on the same one.
+    broker_side = _strategy(_target_scenario(cfg, target_in_loop=False))[0]
+    assert trades[0].exit_time > broker_side.exit_time
+
+
+def test_a_gap_through_the_target_collapses_into_the_same_rule(cfg: Config) -> None:
+    """**Under `target_in_loop` there is no gap case, and that is the point.**
+
+    ``TARGET_GAP`` exists because opening through a resting order fills at the open rather
+    than at a level that was never quoted. With no resting order there is nothing to gap
+    through: the loop could not have acted on that open either, so a bar that opens beyond
+    the target is handled by the ordinary rule - next open, one bar later.
+    """
+    bars = frame_from(
+        [
+            (100.0, 100.0, 100.0, 100.0),
+            (100.0, 100.0, 100.0, 100.0),  # entry at 100
+            (130.0, 131.0, 129.0, 130.0),  # OPENS beyond the 106 target
+            (120.0, 121.0, 119.0, 120.0),  # the loop's first reachable price
+            (120.0, 121.0, 119.0, 120.0),
+        ]
+    )
+    signals = {bars.index[0]: [make_signal("enter_long")]}
+
+    def run(flag: bool) -> list:
+        return _strategy(
+            engine.run_backtest(
+                {SYMBOL: bars},
+                signals,
+                fixed_notional,
+                replace(cfg, backtest=replace(cfg.backtest, target_in_loop=flag)),
+            )
+        )
+
+    resting, in_loop = run(False), run(True)
+
+    assert [t.exit_reason for t in resting] == [engine.TARGET_GAP]
+    assert resting[0].exit_price == pytest.approx(130.0)
+    assert [t.exit_reason for t in in_loop] == [engine.TARGET_IN_LOOP]
+    assert in_loop[0].exit_price == pytest.approx(120.0)

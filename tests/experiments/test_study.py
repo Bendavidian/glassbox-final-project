@@ -75,6 +75,9 @@ def test_the_star_departs_from_one_reference_on_every_axis() -> None:
     assert {c.lr for c in design} == set(study.LEARNING_RATES)
     assert {c.control for c in design} == set(study.CONTROLS)
     assert {c.cutoff for c in design} == set(study.CUTOFFS)
+    # Both execution models are in the design, and the centre is the buildable one.
+    assert {c.target_in_loop for c in design} == {True, False}
+    assert design[0].target_in_loop is True
 
     centre = design[0]
     for condition in design[1:]:
@@ -85,6 +88,10 @@ def test_the_star_departs_from_one_reference_on_every_axis() -> None:
                 ("lr", condition.lr != centre.lr),
                 ("control", condition.control != centre.control),
                 ("cutoff", condition.cutoff != centre.cutoff),
+                (
+                    "target_in_loop",
+                    condition.target_in_loop != centre.target_in_loop,
+                ),
             )
             if differs
         }
@@ -141,11 +148,15 @@ def test_the_plan_is_reportable_before_the_run(cfg: Config) -> None:
     star = study.plan(cfg)
     full = study.plan(cfg, full=True)
 
-    assert star.arms == 5  # six pairs at the centre, one deliberately skipped
-    assert len(star.conditions) == 13  # 7 as of GB-49, plus six COF spokes
-    assert star.cells == 7 * 5 + 6 * 1
+    assert star.arms == 6  # eight pairs at the centre, two deliberately skipped
+    assert len(star.conditions) == 14  # 7, plus six COF spokes, plus the
+    # execution-fidelity spoke added 25 Aug 2026 when the venue was measured
+    # Eight full-arm conditions: the seven of the original star plus the
+    # execution-fidelity spoke, which runs every arm because it is a claim about
+    # every arm's exits. The six COF spokes stay FITS-only.
+    assert star.cells == 8 * 6 + 6 * 1
     assert star.trainings == star.cells * cfg.walkforward.max_folds
-    assert full.cells == 27 * 5 + 81 * 1
+    assert full.cells == 27 * 6 + 81 * 1
     assert star.seconds() < full.seconds()
 
 
@@ -164,11 +175,17 @@ def test_the_estimate_prices_each_arm_at_what_it_measured(cfg: Config) -> None:
     assert fits_only.seconds() == pytest.approx(expected)
 
 
-def test_the_empty_cell_is_named_and_reasoned() -> None:
-    """Spec §6.4's deliberate hole. A blank cell reads as a run that failed."""
-    assert ("fits", "C2_hybrid") in study.SKIPPED
-    assert "6.4" in study.SKIPPED[("fits", "C2_hybrid")]
-    assert ("fits", "C2_hybrid") in study.arms()  # present, and skipped
+def test_every_empty_cell_is_named_and_reasoned() -> None:
+    """Spec §6.4's deliberate holes. A blank cell reads as a run that failed.
+
+    **Written over `SKIPPED` rather than over one named pair, because the named version
+    could not see a second hole arrive** - which is exactly what happened when GB-66 added
+    `("wits", "C2_hybrid")`, and is the same shape as the registry copy the AST scan found.
+    """
+    assert study.SKIPPED, "a study with no skipped cells should not have this test"
+    for pair, reason in study.SKIPPED.items():
+        assert pair in study.arms(), f"{pair} is skipped but is not an arm"
+        assert "6.4" in reason, f"{pair} is skipped without citing the spec section"
 
 
 # ── the null controls ────────────────────────────────────────────────────────
@@ -469,12 +486,12 @@ def test_one_fold_of_the_whole_grid_runs(cfg: Config, repo_root: Path) -> None:
     assert list(table.columns) == list(study.COLUMNS)
     # Seven centre conditions at six arms plus the market reference, and six COF spokes at
     # two arms plus it, one fold each.
-    assert len(table) == 7 * (len(study.arms()) + 1) + 6 * (
+    assert len(table) == 8 * (len(study.arms()) + 1) + 6 * (
         len(study.arms(("fits",))) + 1
     )
 
     market = table[table["model"] == study.BUY_AND_HOLD]
-    assert len(market) == 13  # once per condition, not once per arm
+    assert len(market) == 14  # once per condition, not once per arm
     assert market["mae"].isna().all()  # it makes no forecast, so the cell is empty
     assert market["total_return"].notna().all()
     assert (
@@ -482,14 +499,19 @@ def test_one_fold_of_the_whole_grid_runs(cfg: Config, repo_root: Path) -> None:
     )  # the cutoff is FITS geometry, not a study setting
 
     skipped = table[table["skipped"].astype(bool)]
-    assert len(skipped) == 13  # one per condition
-    assert (skipped["model"] == "fits").all()
+    # Two deliberately empty pairs on each full-arm condition since GB-66 - FITS and
+    # WITS are both univariate, so the C2_hybrid cell is redundant for each - and one on
+    # each COF spoke, which is FITS-only.
+    assert len(skipped) == 8 * 2 + 6 * 1
+    assert skipped["model"].isin(("fits", "wits")).all()
     assert (skipped["channels"] == "C2_hybrid").all()
     assert skipped["reason"].str.contains("6.4").all()
 
     real = study.reportable(table)
-    # Five real centre conditions x six, plus three real COF spokes x two.
-    assert len(real) == 5 * 6 + 3 * 2
+    # Six real full-arm conditions x seven (six live arms plus the market reference),
+    # plus three real COF spokes x two. Six rather than five since 25 Aug 2026: the
+    # execution-fidelity spoke runs on real data, so it is reportable.
+    assert len(real) == 6 * 7 + 3 * 2
 
     swept = real[(real["model"] == "fits") & (real["anchor"] == 0)]
     assert set(swept["cutoff_period_days"]) == set(study.CUTOFFS)
@@ -567,3 +589,27 @@ def test_a_cache_with_two_end_dates_is_refused_rather_than_maxed() -> None:
     message = str(caught.value)
     assert "2026-08-13" in message and "2026-08-21" in message
     assert "META" in message and "AAPL" in message  # both groups named, not just one
+
+
+def test_a_condition_is_identified_by_the_columns_it_writes() -> None:
+    """No two conditions may write the same identifying columns.
+
+    This is the guard for an axis added to :class:`Condition` and forgotten in
+    :attr:`Condition.columns`. A spoke differs from the centre in exactly one field, so an
+    unwritten field makes the two rows indistinguishable - which is not a cosmetic problem:
+    :data:`PAIR_KEYS` groups by these columns, and two conditions in one group means a
+    paired test comparing 32 folds against a 16-fold reference. That is how the
+    `target_in_loop` spoke broke the report on 26 Aug 2026.
+
+    It fails on the *design*, not on a results file, so it does not need the grid to run.
+    """
+    written = [tuple(sorted(c.columns.items())) for c in study.conditions()]
+
+    assert len(set(written)) == len(written), "two conditions write identical columns"
+
+
+def test_every_pair_key_is_a_column_the_grid_writes() -> None:
+    """`PAIR_KEYS` is read off `Condition.columns`, so this pins the other end: each of
+    them must survive into the results file, or the pairing groups by a column that is
+    not there."""
+    assert set(study.PAIR_KEYS) <= set(study.COLUMNS)

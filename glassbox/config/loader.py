@@ -28,6 +28,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import pywt
 import yaml
 from dotenv import load_dotenv
 
@@ -38,8 +39,18 @@ DEFAULT_SETTINGS_PATH = Path(__file__).with_name("settings.yaml")
 # a tunable — it is the boundary that keeps the system away from real money (spec 2.2).
 PAPER_ENDPOINT = "https://paper-api.alpaca.markets"
 
-VALID_MODELS = ("persistence", "dlinear", "fits")
+VALID_MODELS = ("persistence", "dlinear", "fits", "wits")
 VALID_SUPERVISION = ("F", "B+F")
+#: Boundary extensions WITS accepts (GB-66's second design question, measured as an axis).
+#: Defined here rather than in `model/wits.py` because the layer contract lets `model`
+#: import `config` and not the other way round, so this is the only side that both the
+#: validator and the model can read - one copy rather than the `VALID_MODELS` situation,
+#: which needs a test to hold two copies equal.
+#:
+#: `periodization` is deliberately absent: it changes the retained coefficient count (15
+#: against 21) and so the parameter count (480 against 882), which would confound boundary
+#: handling with capacity on an axis meant to isolate the boundary.
+VALID_BOUNDARIES = ("symmetric", "zero", "periodic")
 VALID_LIVE_MODES = ("auto", "co_pilot")
 
 # Keys of `channels` that name a channel set rather than the active selection.
@@ -89,6 +100,26 @@ class FitsConfig:
     """FITS spectral core: the cutoff period is the one hyperparameter."""
 
     cutoff_period_days: int
+    supervision: str
+    individual_weights: bool
+
+
+@dataclass(frozen=True)
+class WitsConfig:
+    """WITS wavelet core (GB-66): which basis, how deep, how much is kept, which edge.
+
+    `boundary` and `shift_invariant` are **axes the study measures**, not settings chosen
+    on convention - GB-66's second and third design questions. They live here rather than
+    as CLI flags because they shape the weights, which is what puts `wits` in
+    `MODEL_SHAPING_SECTIONS`: a checkpoint trained under one boundary must not be loaded
+    under another.
+    """
+
+    family: str
+    levels: int
+    retained_bands: int
+    boundary: str
+    shift_invariant: bool
     supervision: str
     individual_weights: bool
 
@@ -162,6 +193,28 @@ class BacktestConfig:
     initial_cash: float
     fee_bps: float
     slippage_bps: float
+    target_in_loop: bool
+    """Whether the take-profit is evaluated by the loop instead of resting at the broker.
+
+    **The axis GB-49 added on 25 Aug 2026, and it exists because the venue forced it.**
+    Alpaca refuses every multi-leg order class on a fractional quantity - `bracket` and
+    `oco` both return `{"code":42210000,"message":"fractional orders must be simple
+    orders"}`, measured - and a working sell holds the whole position, so a fractional
+    position can carry exactly one broker-side protective order. The stop is that order.
+
+    `false` is the classical backtest and what every published number in this study
+    assumes: the target rests at the broker and fills intraday at the target price the
+    moment the high crosses it.
+
+    `true` is the system that can actually be built: the loop evaluates the target against
+    **completed daily bars only** - `drop_incomplete_bar` is a ruling and GB-7 measured
+    that `latest_quote` is refused on this SIP subscription, so intraday is unreachable -
+    and the exit fills at the next available open.
+
+    It sits in `backtest` rather than `risk` because it changes how a simulated fill is
+    priced and nothing about the position's size or levels; and `backtest` is not in
+    `MODEL_SHAPING_SECTIONS`, so switching it refuses no checkpoint.
+    """
 
 
 @dataclass(frozen=True)
@@ -204,6 +257,7 @@ class Config:
     window: WindowConfig
     wavelet: WaveletConfig
     fits: FitsConfig
+    wits: WitsConfig
     channels: ChannelConfig
     model: ModelConfig
     signal: SignalConfig
@@ -424,6 +478,44 @@ def _build_fits(raw: Mapping[str, Any], window: WindowConfig) -> FitsConfig:
     )
 
 
+def _build_wits(raw: Mapping[str, Any], window: WindowConfig) -> WitsConfig:
+    section = _section(raw, "wits")
+    family = _as_str(section, "wits", "family")
+    if family not in pywt.wavelist(kind="discrete"):
+        _fail("wits.family", "a discrete wavelet pywt knows", family)
+    levels = _as_positive_int(section, "wits", "levels")
+    retained = _as_positive_int(section, "wits", "retained_bands")
+    if retained > levels + 1:
+        _fail(
+            "wits.retained_bands",
+            f"at most levels + 1 ({levels + 1}), one approximation band and one detail "
+            "band per level",
+            retained,
+        )
+    # **pywt's own criterion, asked rather than reimplemented.** The obvious check -
+    # `2**levels <= input_len` - is not merely weaker, it gives wrong advice: at L=30 it
+    # admits J=3, which pywt warns is boundary-dominated because db4's 8-tap filter leaves
+    # no coefficient untouched by the edge. Deriving the rule here would be a second copy
+    # of a fact pywt already holds, and this project has six instances of what that costs.
+    ceiling = pywt.dwt_max_level(window.input_len, pywt.Wavelet(family).dec_len)
+    if levels > ceiling:
+        _fail(
+            "wits.levels",
+            f"at most {ceiling} for a {family!r} filter over window.input_len "
+            f"{window.input_len}; deeper and every coefficient is a boundary effect",
+            levels,
+        )
+    return WitsConfig(
+        family=family,
+        levels=levels,
+        retained_bands=retained,
+        boundary=_as_choice(section, "wits", "boundary", VALID_BOUNDARIES),
+        shift_invariant=_as_bool(section, "wits", "shift_invariant"),
+        supervision=_as_choice(section, "wits", "supervision", VALID_SUPERVISION),
+        individual_weights=_as_bool(section, "wits", "individual_weights"),
+    )
+
+
 def _build_channels(raw: Mapping[str, Any]) -> ChannelConfig:
     section = _section(raw, "channels")
     if _ACTIVE_KEY not in section:
@@ -505,6 +597,7 @@ def _build_backtest(raw: Mapping[str, Any]) -> BacktestConfig:
         initial_cash=_as_positive_float(section, "backtest", "initial_cash"),
         fee_bps=_as_non_negative_float(section, "backtest", "fee_bps"),
         slippage_bps=_as_non_negative_float(section, "backtest", "slippage_bps"),
+        target_in_loop=_as_bool(section, "backtest", "target_in_loop"),
     )
 
 
@@ -573,6 +666,7 @@ def load_config(path: str | Path | None = None) -> Config:
         window=window,
         wavelet=_build_wavelet(raw),
         fits=_build_fits(raw, window),
+        wits=_build_wits(raw, window),
         channels=_build_channels(raw),
         model=_build_model(raw),
         signal=_build_signal(raw),
@@ -598,6 +692,28 @@ MODEL_SHAPING_SECTIONS = (
     "window",
     "wavelet",
     "fits",
+    # **`wits` is deliberately NOT here yet, and this is a dated hold rather than a
+    # judgement that it does not belong.** It does: the COF axis routes through `cfg.fits`
+    # precisely so two cells differing only in the cutoff are distinguishable by
+    # `model_config_hash` alone (`study._cell_config`), and GB-66's boundary axis needs the
+    # same property.
+    #
+    # Adding a section here changes `model_config_hash` for **every** configuration,
+    # including one running `model.active: dlinear` that never reads `wits:`. Measured on
+    # 25 Aug 2026: it moved the deployed hash from 234ab499... to 6f2a6978..., and
+    # `train.load_predictor` refuses a checkpoint whose model hash moved - so the deployed
+    # checkpoint would have been rejected and the GATE 2 rehearsal would not have started.
+    #
+    # Held until the grid re-run, on GB-61's precedent: the `universe:` flip and its grid
+    # re-run wait until the loop stops, because editing the deployed config under a live
+    # multi-day loop is GB-59's first defect. Nothing is lost meanwhile - a WITS checkpoint
+    # carries its own family, levels, boundary and retained_bands and `WITSForecaster.load`
+    # rebuilds from those, never from settings.yaml, so no checkpoint can be loaded at a
+    # geometry it was not trained at. What is missing is only hash-level distinguishability
+    # between two study cells that differ by boundary, and no such cell exists yet.
+    #
+    # `test_wits.py::test_the_boundary_axis_reaches_results_csv` is a strict xfail over
+    # exactly that pair, so the day the axis lands, this fails until it is added.
     "channels",
     "model",
 )

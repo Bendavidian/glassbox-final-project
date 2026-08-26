@@ -199,7 +199,7 @@ went another day without ever executing outside `FakeBroker`.
 
 ```powershell
 # 16:30 — criterion 2, the execution path, under a DELIBERATELY PERMISSIVE band.
-# Order, fill, adopt, arm, verify both legs, flatten, clean stop.
+# Order, fill, adopt, arm the STOP, verify it, flatten, clean stop.
 # Provenance is never 'live'; nothing this run records is reportable.
 python -m glassbox.live_loop --rehearsal gate2-execution-path
 
@@ -213,6 +213,25 @@ The second command is the only way criterion 6 reaches three sessions. Do not re
 with three separate one-session runs: a session the loop **misses** because nobody was
 there to start it is exactly the half of the overnight residual that one process across
 all three removes.
+
+**These two commands cannot both be running.** Since 26 Aug 2026 the loop takes an
+exclusive lock on its state directory, so the second launch is refused by name:
+
+```
+live_loop: PID 40040 (mode 'deployed') since 2026-08-25T21:49:07Z already holds
+checkpoints\live. Two loops on one state directory is two orders from one approval.
+Stop it first, or run against a different --state-dir.
+```
+
+Exit code **3**, distinct from `2`, so a script can tell "somebody is already running it"
+from "the config is wrong". Stop the running loop, or give the new one its own
+`--state-dir`. A lock whose process is gone is reclaimed automatically and the reclaim is
+logged — a hard kill never needs a file deleted by hand.
+
+This exists because on 25 Aug a stale terminal relaunched a rehearsal against the deployed
+session's state directory. It happened to be harmless: the bar it would have decided had
+already been decided, so the "one decision per completed bar" rule refused it. That was an
+accident, and it expires the moment a new bar completes.
 
 #### A dry run must never share the deployed state directory
 

@@ -118,11 +118,14 @@ def broker() -> FakeBroker:
 
 
 def test_approving_submits_and_arms_protection(cfg: Config, broker: FakeBroker) -> None:
+    """One protective order, and it is the stop (ruled 26 Aug 2026). The count changed;
+    what is being tested - that an approval arms protection rather than leaving the
+    position bare - did not."""
     submission = approve(broker, an_order(), "d1", cfg)
 
     assert submission.status == SUBMITTED
     assert submission.entry is not None
-    assert len(submission.protection) == 2
+    assert len(submission.protection) == 1
 
 
 def test_approval_ignores_the_mode_because_it_is_the_answer_to_it(

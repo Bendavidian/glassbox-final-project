@@ -84,6 +84,7 @@ from glassbox.features.builder import (
     history_requirement,
     min_history_bars,
 )
+from glassbox.live_lock import EXIT_REFUSED, LockRefused, acquire, release
 from glassbox.model.predict import Predictor, load_predictor, predict_window
 
 LOGGER = logging.getLogger("glassbox.live_loop")
@@ -127,6 +128,15 @@ DEFAULT_LOG_DIR = "logs"
 #: discovered when the terminal is gone and the file is all that is left.
 LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s %(message)s"
 
+#: **UTC, and it says so.** ``DailyLogFile`` names its file for the UTC day, but
+#: ``asctime`` defaults to local time, so on 26 Aug 2026 ``live-2026-08-25.log`` carried
+#: lines stamped ``2026-08-26 00:00``: a reader looking for 01:00 on the 26th opens the
+#: wrong file. Two places holding one fact - which day this record belongs to - in two
+#: timezones. The loop's own messages were already UTC (``heartbeat ...Z``), so the
+#: divergence was inside a single line. Pinned by
+#: ``test_the_record_stamp_and_the_filename_agree_on_the_day``.
+LOG_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
 REHEARSAL_NOTIONAL = 25.0
 REHEARSAL_CLOSE_OUT_MINUTES = 15
 
@@ -135,9 +145,25 @@ REHEARSAL_CLOSE_OUT_MINUTES = 15
 # is exactly what it is for.
 PERMISSIVE_LOWER = 1e-9
 
+#: The bar column the loop-side target reads. Named here rather than spelled at the
+#: comparison, so the one place it is used cannot drift from the canonical frame.
+HIGH = "high"
+
 STOP_LEG = "stop"
 TARGET_LEG = "target"
-LEGS = (STOP_LEG, TARGET_LEG)
+
+#: What the loop arms and verifies every cycle. **The stop, and only the stop** (ruled
+#: 26 Aug 2026): a working sell order holds the entire position at Alpaca, so a standalone
+#: stop and a standalone limit cannot both exist - the second is refused with
+#: ``insufficient qty available``, measured against a 97.38-share position, so this is not
+#: a fractional-only constraint. The stop is the one that bounds a loss, so the stop is the
+#: one that is armed; the target is evaluated by the loop on completed bars.
+LEGS = (STOP_LEG,)
+
+#: Both suffixes, because a leg is still *recognised* after it stopped being *armed*: the
+#: account can hold a limit leg from a session that ran before the ruling, and one this
+#: module could not identify would be a protective order nothing cancels and a fill nothing
+#: explains. Recognising more than we write is the safe direction.
 LEG_SUFFIX = {STOP_LEG: records.STOP_SUFFIX, TARGET_LEG: records.TARGET_SUFFIX}
 
 FINISHED = frozenset(
@@ -212,6 +238,27 @@ class SessionReport:
     On the report rather than only in the log, because the log is where it is easy to
     miss and the report is what the gate reads.
     """
+    closed_out: tuple[str, ...] = ()
+    """Symbols the **stop close-out** flattened, which no cycle can report.
+
+    `close_out_on_stop` runs in `run_session`'s `finally`, after the cycle list is closed,
+    so its work is invisible to `sum(len(c.flattened) for c in cycles)`. On 25 Aug 2026 a
+    rehearsal cancelled a stop and sold the position on shutdown and the summary said
+    `positions flattened : 0` - the gate's own evidence contradicting the run it describes,
+    on the very line that answers rehearsal condition 3.
+    """
+    close_out_failed: tuple[str, ...] = ()
+    """Symbols whose close-out sell did **not** reach the broker. Named, never counted."""
+    held_at_exit: tuple[str, ...] = ()
+    """Symbols the book still holds when the process ends.
+
+    **`open orders at exit : 0` is not the same statement and was read as though it were.**
+    A failed close-out cancels the protective legs and then fails to sell, leaving zero
+    working orders and a real position - the cleanest-looking line in the summary
+    describing the worst state the loop can end in. The two facts are printed together
+    because only the pair is an answer.
+    """
+
     held_at_open: tuple[str, ...] = ()
     """Symbols the book already held when this session started.
 
@@ -259,7 +306,16 @@ class SessionReport:
                 f"{sum(1 for c in self.cycles if c.unreachable)}"
                 " on an unreachable broker or feed"
             ),
-            f"  positions flattened  : {sum(len(c.flattened) for c in self.cycles)}",
+            (
+                "  positions flattened  : "
+                f"{sum(len(c.flattened) for c in self.cycles)} in-cycle (rule 3)"
+                + (
+                    ""
+                    if not self.closed_out
+                    else f", {len(self.closed_out)} by the stop close-out"
+                    f" - {', '.join(self.closed_out)}"
+                )
+            ),
         ]
         for cycle in failed:
             lines.append(
@@ -269,6 +325,22 @@ class SessionReport:
             f"  open orders at exit  : {len(self.open_orders)}"
             + ("" if not self.open_orders else " — " + "; ".join(self.open_orders))
         )
+        # Printed beside the orders, never instead of them: zero working orders and a
+        # position still held is the state a reader is most likely to mistake for a clean
+        # exit, and it is exactly the state a failed close-out produces.
+        lines.append(
+            "  positions at exit    : "
+            + (
+                "none; the book is empty"
+                if not self.held_at_exit
+                else f"{len(self.held_at_exit)} STILL HELD - {', '.join(self.held_at_exit)}"
+            )
+        )
+        for symbol in self.close_out_failed:
+            lines.append(
+                f"  CLOSE-OUT FAILED     : {symbol} is still held and its protective legs "
+                "were cancelled before the sell was refused. Close it by hand"
+            )
         return "\n".join(lines)
 
 
@@ -891,6 +963,10 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
 
         log("step 6/10 features: drop the in-progress bar, then the keystone builder")
         frames: dict[str, pd.DataFrame] = {}
+        # The completed OHLCV bars beside the feature frames, because they answer a
+        # different question: the builder's output is one column per channel and carries no
+        # price at all, and the loop-side target is a comparison against a high.
+        completed_bars: dict[str, pd.DataFrame] = {}
         stale: list[str] = []
         for symbol in sorted(bars):
             completed = drop_incomplete_bar(bars[symbol], state.cfg, when, symbol)
@@ -909,6 +985,7 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 stale.append(symbol)
                 continue
             frames[symbol] = build_feature_frame(completed, state.cfg)
+            completed_bars[symbol] = completed
 
         _seed_decided(state, when)
 
@@ -942,6 +1019,8 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 "already decided at this bar, not re-decided: "
                 + ", ".join(f"{s} at {bars_at[s]:%Y-%m-%d}" for s in settled)
             )
+
+        target_exits = _send_target_exits(state, completed_bars, orders, log)
 
         log(
             f"step 7/10 forecast: {len(undecided)} undecided, {len(settled)} settled, "
@@ -1092,6 +1171,7 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
             if submission is not None:
                 submissions.append(submission)
 
+        submissions.extend(target_exits)
         submissions.extend(_send_exits(state, orders, log))
 
         log("step 10/10 persist: book and entry fills")
@@ -1176,13 +1256,22 @@ def _rehearsal_close_out(state: LiveState, when: pd.Timestamp, log) -> bool:
     return True
 
 
-def _flatten_for_close(state: LiveState, symbol: str, holding: Holding, log) -> bool:
-    """Cancel both legs and sell at market. Idempotent through the client_order_id.
+def release_protective_legs(state: LiveState, symbol: str) -> tuple[str, ...]:
+    """Cancel every live protective leg on ``symbol``, and name the ones cancelled.
 
-    Returns whether the sell reached the broker. The caller needs to know: a close-out
-    that failed leaves a real position behind, and treating it as done would put the
-    reassuring line in the log for the one case that needs the alarming one.
+    **A sell cannot be submitted while another sell holds the quantity**, and the broker
+    holds the *whole* position for any working sell order. So every path that closes a
+    position has to release the legs first, and a path that does not is not a slower way
+    to close - it is a way that cannot close at all.
+
+    Extracted on 25 Aug 2026, when the rehearsal showed the two paths had diverged.
+    ``_flatten_for_close`` cancelled first and worked; ``_flatten`` - rule 3's remedy for a
+    position that has lost its protection - sold directly and failed on every attempt, so
+    the escape hatch was unreachable under exactly the condition it exists to escape. Two
+    implementations of one operation differing in the step that makes it work is the
+    two-places defect at its purest, so this is the one implementation and both call it.
     """
+    cancelled = []
     for order in state.broker.get_orders():
         if (
             order.symbol == symbol
@@ -1191,6 +1280,18 @@ def _flatten_for_close(state: LiveState, symbol: str, holding: Holding, log) -> 
             and order.status not in FINISHED
         ):
             state.broker.cancel_order(order.id)
+            cancelled.append(order.id)
+    return tuple(cancelled)
+
+
+def _flatten_for_close(state: LiveState, symbol: str, holding: Holding, log) -> bool:
+    """Cancel both legs and sell at market. Idempotent through the client_order_id.
+
+    Returns whether the sell reached the broker. The caller needs to know: a close-out
+    that failed leaves a real position behind, and treating it as done would put the
+    reassuring line in the log for the one case that needs the alarming one.
+    """
+    release_protective_legs(state, symbol)
     try:
         sold = state.broker.submit_market_order(
             symbol=symbol,
@@ -1484,6 +1585,71 @@ def _send_exits(
     return submissions
 
 
+def _send_target_exits(
+    state: LiveState,
+    completed_bars: dict[str, pd.DataFrame],
+    orders: Sequence[BrokerOrder],
+    log,
+) -> list[Submission]:
+    """The target, evaluated by the loop, because it cannot be an order at the broker.
+
+    **The second half of the ruling of 26 Aug 2026.** A working sell holds the whole
+    position at Alpaca, so the one protective order is the stop; the take-profit is
+    therefore not a resting limit but a level this function watches. When a **completed**
+    daily bar's high has reached it, the position is closed at market - which in a session
+    that polls from the open means the fill lands at the open, and that is exactly what
+    `backtest.engine`'s ``target_in_loop`` arm models. The study's headline arm and the
+    live path describe one system.
+
+    **Completed bars only, and that is the whole of the causality argument here.** The
+    in-progress bar is dropped upstream by ``drop_incomplete_bar``, so the high this reads
+    is a fact about a session that has ended. Reading an intraday high would be the live
+    path quietly acquiring information the backtest never had, and every number in the
+    study would then describe something else.
+
+    A stale symbol is skipped: its frame has no bar for the last completed session, so
+    there is nothing to evaluate. It keeps its stop, per the stale-data ruling - the target
+    is an opportunity and the stop is the risk control, and only one of them may depend on
+    fresh data.
+    """
+    already = {records.client_order_id(order) for order in orders}
+    submissions: list[Submission] = []
+    for symbol in sorted(state.book.managed):
+        bars = completed_bars.get(symbol)
+        if bars is None or bars.empty:
+            continue
+        holding = state.book.managed[symbol]
+        high = float(bars[HIGH].iloc[-1])
+        if high < holding.take_profit:
+            continue
+
+        client_order_id = f"{holding.decision_id}{records.TARGET_IN_LOOP_SUFFIX}"
+        if client_order_id in already:
+            continue
+
+        LOGGER.info(
+            "%s: target %.4f reached on the completed bar %s (high %.4f). Closing at "
+            "market - the target is the loop's, not the broker's",
+            symbol,
+            holding.take_profit,
+            f"{bars.index[-1]:%Y-%m-%d}",
+            high,
+        )
+        try:
+            submission = exit_position(state, symbol, client_order_id, log)
+        except Exception as failure:  # noqa: BLE001 - retried next cycle, never fatal
+            LOGGER.error(
+                "%s: the target exit failed to submit (%s). The position is still held "
+                "and its stop is still live; this is re-sent on the next poll",
+                symbol,
+                failure,
+            )
+            continue
+        if submission is not None:
+            submissions.append(submission)
+    return submissions
+
+
 def answer_pending(
     cfg: Config,
     broker: Broker,
@@ -1589,8 +1755,11 @@ def protect_book(
         legs = live.get(symbol, {})
 
         if symbol in filled_leg:
-            # Rule 4: one leg filled, so cancel the other in this cycle and verify the
-            # cancellation rather than assuming the fill implies it.
+            # A protective order filled, so the position is gone or going. Nothing should
+            # remain, but a limit leg armed before the ruling of 26 Aug 2026 can still be
+            # live - and a sell order outliving the position it protected is a naked sell.
+            # Cancelled here and the cancellation verified, rather than assumed from the
+            # fill. Under the current policy `legs` is empty and this loop does nothing.
             for leg, order in sorted(legs.items()):
                 state.broker.cancel_order(order.id)
                 log(
@@ -1676,23 +1845,23 @@ def _next_arming(orders: Sequence[BrokerOrder], decision_id: str) -> int:
 def _arm_leg(
     state: LiveState, symbol: str, holding: Holding, leg: str, log, attempt: int = 1
 ) -> None:
+    if leg != STOP_LEG:
+        # Not a defensive nicety: until 26 Aug 2026 this function armed a limit here, and
+        # the refusal it earned counted as an arming failure - two of which flatten the
+        # position. A caller that reintroduces the second leg should fail here, loudly,
+        # rather than have `insufficient qty available` liquidate a healthy position.
+        raise LiveError(
+            f"{leg!r} is not armed at the broker: a working sell holds the whole "
+            "position, so the stop is the only protective order (ruled 26 Aug 2026)"
+        )
     client_order_id = f"{holding.decision_id}#{attempt}{LEG_SUFFIX[leg]}"
-    if leg == STOP_LEG:
-        order = state.broker.submit_stop_order(
-            symbol=symbol,
-            quantity=holding.quantity,
-            stop_price=holding.stop_loss,
-            client_order_id=client_order_id,
-        )
-        log(f"{symbol}: stop re-armed id={order.id} at {holding.stop_loss:.4f}")
-    else:
-        order = state.broker.submit_limit_order(
-            symbol=symbol,
-            quantity=holding.quantity,
-            limit_price=holding.take_profit,
-            client_order_id=client_order_id,
-        )
-        log(f"{symbol}: target re-armed id={order.id} at {holding.take_profit:.4f}")
+    order = state.broker.submit_stop_order(
+        symbol=symbol,
+        quantity=holding.quantity,
+        stop_price=holding.stop_loss,
+        client_order_id=client_order_id,
+    )
+    log(f"{symbol}: stop re-armed id={order.id} at {holding.stop_loss:.4f}")
 
 
 def _flatten(state: LiveState, symbol: str, holding: Holding, log) -> None:
@@ -1703,6 +1872,14 @@ def _flatten(state: LiveState, symbol: str, holding: Holding, log) -> None:
         symbol,
         ARMING_STRIKES,
     )
+    # The legs first, or this sell cannot be placed at all: whichever leg is still live
+    # holds the entire quantity, so a market sell for that quantity is refused with
+    # `insufficient qty available`. Measured on 25 Aug 2026 - 13 consecutive cycles tried
+    # to flatten NVDA and every one failed here, while the close-out path, which cancels
+    # first, closed the same position on its first attempt.
+    released = release_protective_legs(state, symbol)
+    if released:
+        log(f"{symbol}: cancelled {len(released)} protective leg(s) before flattening")
     order = state.broker.submit_market_order(
         symbol=symbol,
         quantity=holding.quantity,
@@ -1975,7 +2152,9 @@ def run_session(
         # unexpected exception alike - every way this run can end while holding something.
         # A no-op unless a rehearsal is active; the deployed loop must hold overnight or it
         # is not the strategy the backtest evaluated.
-        close_out_on_stop(state, clock())
+        before_close_out = set(state.book.managed)
+        close_out_failed = close_out_on_stop(state, clock())
+        closed_out = tuple(sorted(before_close_out - set(state.book.managed)))
 
     open_orders = _open_orders(state)
     state.save()
@@ -1987,6 +2166,9 @@ def run_session(
         stopped_by=stopping["reason"] or CLOSED,
         held_at_open=held_at_open,
         config_drifted=drifted,
+        closed_out=closed_out,
+        close_out_failed=close_out_failed,
+        held_at_exit=tuple(sorted(state.book.managed)),
     )
 
 
@@ -2268,6 +2450,21 @@ class DailyLogFile(logging.FileHandler):
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
+def launch_mode(args: argparse.Namespace) -> str:
+    """What kind of run this is, in the words the lock file and the refusal will use.
+
+    The three are not interchangeable and the refusal has to say which, because the two
+    that matter look identical in a process list: a deployed session and a rehearsal both
+    read the same book and write the same ``pending.json``, and it is the rehearsal's
+    permissive band that makes the pair dangerous rather than merely redundant.
+    """
+    if args.rehearsal is not None:
+        # Through records rather than by concatenation: the mode a person reads in the
+        # refusal is then literally the provenance those records would have carried.
+        return records.rehearsal_provenance(args.rehearsal)
+    return "dry-run" if args.dry_run else "deployed"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
@@ -2277,10 +2474,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         # that refuses to start, and refusing costs nothing here: nothing has traded yet.
         print(f"live_loop: cannot open the session log: {failure}", file=sys.stderr)
         return 2
+    # Built once and given to both handlers rather than left to `basicConfig`, because the
+    # UTC converter is an attribute of a formatter instance and there is no `basicConfig`
+    # argument for it. Set on the instance, not on `logging.Formatter`, so importing this
+    # module never changes how somebody else's logging prints.
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+    formatter.converter = time.gmtime
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(formatter)
+    log_file.setFormatter(formatter)
     logging.basicConfig(
         level=logging.INFO,
-        format=LOG_FORMAT,
-        handlers=[logging.StreamHandler(sys.stdout), log_file],
+        handlers=[console, log_file],
         # `basicConfig` is a silent no-op when the root logger already has a handler, and
         # a silent no-op here means no session log at all - the exact failure this is
         # fixing, reintroduced by anything that touches logging before main does. As the
@@ -2288,6 +2493,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         force=True,
     )
     LOGGER.info("session log: %s", log_file.baseFilename)
+
+    # Before the config, before the checkpoint, before anything that could take a second:
+    # the whole point is that a launch which must not happen does not get far enough to
+    # read a book it must not touch. Logged as well as printed, because "a second launch
+    # was refused" is exactly the sort of thing a gate log should be able to show.
+    try:
+        holder = acquire(args.state_dir, mode=launch_mode(args))
+    except LockRefused as refusal:
+        LOGGER.error("%s", refusal)
+        print(f"live_loop: {refusal}", file=sys.stderr)
+        return EXIT_REFUSED
+    LOGGER.info(
+        "state directory %s locked by PID %d (%s)",
+        args.state_dir,
+        holder.pid,
+        holder.mode,
+    )
+
     try:
         reports = run_sessions(
             load_config(),
@@ -2309,6 +2532,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (LiveError, FileNotFoundError, ValueError) as failure:
         print(f"live_loop: {failure}", file=sys.stderr)
         return 2
+    finally:
+        release(args.state_dir, holder)
 
     # Through the logger, not print, and line by line as the banner already is: the
     # summary IS the gate evidence - cycles completed, decisions recorded, open orders at
@@ -2430,6 +2655,7 @@ __all__ = [
     "market_session",
     "overnight_residual",
     "permissive_band",
+    "release_protective_legs",
     "run_cycle",
     "run_session",
     "run_sessions",

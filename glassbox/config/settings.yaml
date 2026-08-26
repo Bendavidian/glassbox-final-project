@@ -24,13 +24,23 @@ fits:
   supervision: "B+F"    # "F" = forecast only, "B+F" = backcast + forecast
   individual_weights: false   # false = one shared model across the universe
 
+wits:
+  # GB-66. The wavelet core, in the position FITS gives the rFFT.
+  family: db4           # 4 vanishing moments: details annihilate the window mean
+  levels: 3             # J. Retained bands are L/2**J coefficients long
+  retained_bands: 2     # cA3 + cD3; the fast bands are discarded as the LPF discards bins
+  boundary: symmetric   # symmetric | zero | periodic -- an AXIS, measured, not a default
+  shift_invariant: false  # true selects SWT: shift-invariant, redundant, 29,760 reals
+  supervision: "B+F"    # as FITS, so the comparison isolates the transform
+  individual_weights: false   # false = one shared model across the universe
+
 channels:
   C0_base:    [close_logret, rsi14, vol_z, mom10, ma_dist20]
   C2_hybrid:  [close_logret, rsi14, vol_z, mom10, ma_dist20, wav_a1, wav_a2, wav_a3]
   active: C0_base       # updated after the study picks a winner
 
 model:
-  active: dlinear       # persistence | dlinear | fits
+  active: dlinear       # persistence | dlinear | fits | wits
   epochs: 100
   patience: 10
   lr: 0.001
@@ -53,6 +63,11 @@ backtest:
   initial_cash: 100000.0  # matches the Alpaca paper account, so the two are comparable
   fee_bps: 1.0
   slippage_bps: 2.0
+  # GB-49 axis. false = the classical backtest: the target rests at the broker and fills
+  # intraday at the target price. true = the system that can be built: the loop evaluates
+  # the target on COMPLETED DAILY BARS and exits at the next open. Alpaca refuses every
+  # multi-leg class on a fractional quantity (code 42210000), so `true` is the live path.
+  target_in_loop: true
 
 walkforward:
   train_months: 24

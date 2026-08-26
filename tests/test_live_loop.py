@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -298,7 +299,9 @@ def test_a_stale_symbol_keeps_its_protection(
     assert "MSFT" in report.stale
     assert "MSFT" in report.rearmed
     assert "stop" in broker.submitted_kinds
-    assert "limit" in broker.submitted_kinds
+    # One protective order, and it is the stop. A stale symbol keeps the thing that bounds
+    # its loss; the target is an opportunity and cannot be evaluated without a fresh bar.
+    assert "limit" not in broker.submitted_kinds
 
 
 def test_every_symbol_stale_is_a_no_op_that_still_reconciles(
@@ -407,7 +410,7 @@ def test_a_missing_leg_is_rearmed(
     assert report.rearmed == ("AAPL",)
     armed = [records.client_order_id(o) for o in broker.orders if o.side == SELL]
     assert "d1#1-stop" in armed
-    assert "d1#1-target" in armed
+    assert not any(name.endswith("-target") for name in armed)
 
 
 def test_two_consecutive_arming_failures_flatten_the_position(
@@ -496,9 +499,186 @@ def test_a_fill_is_protected_in_the_cycle_that_saw_it(
 
     assert report.submissions
     assert "stop" in broker.submitted_kinds
-    assert "limit" in broker.submitted_kinds
+    assert "limit" not in broker.submitted_kinds
     assert state.book.managed  # taken into the book in the same cycle
     assert set(state.entry_fills) == set(state.book.managed)
+
+
+# ── GB-26 / 26 Aug 2026: the target is the loop's, not the broker's ─────────
+
+
+def a_managed_position(
+    state: live_loop.LiveState,
+    symbol: str = "AAPL",
+    *,
+    take_profit: float,
+    quantity: float = 3.0,
+) -> None:
+    state.broker.positions[symbol] = quantity
+    state.book = Book(
+        managed={
+            symbol: Holding(
+                symbol=symbol,
+                quantity=quantity,
+                decision_id="d1",
+                entry_price=PRICE,
+                stop_loss=97.0,
+                take_profit=take_profit,
+            )
+        }
+    )
+
+
+def test_a_target_reached_on_the_completed_bar_closes_the_position(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """The half of the ruling that is a capability rather than a removal.
+
+    The take-profit stopped being an order at the broker because a working sell holds the
+    whole position, so it has to be a level the loop watches. Without this the live system
+    would have no target exit at all - and `backtest.engine`'s `target_in_loop` arm, which
+    is now the study's default, would describe a system nobody built.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    state = a_state(auto, tmp_path, broker)
+    high = float(stub_bars["frames"]["AAPL"]["high"].iloc[-1])
+    a_managed_position(state, take_profit=high - 1.0)
+
+    report = live_loop.run_cycle(state, NOW)
+
+    sells = [
+        o
+        for o in broker.orders
+        if o.symbol == "AAPL"
+        and o.side == SELL
+        and records.client_order_id(o).endswith(records.TARGET_IN_LOOP_SUFFIX)
+    ]
+    assert len(sells) == 1, "the loop-side target did not close the position"
+    assert report.submissions
+
+
+def test_a_target_not_yet_reached_leaves_the_position_alone(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    state = a_state(auto, tmp_path, broker)
+    high = float(stub_bars["frames"]["AAPL"]["high"].iloc[-1])
+    a_managed_position(state, take_profit=high + 10.0)
+
+    live_loop.run_cycle(state, NOW)
+
+    assert not any(
+        records.client_order_id(o).endswith(records.TARGET_IN_LOOP_SUFFIX)
+        for o in broker.orders
+    )
+
+
+def test_the_target_exit_is_sent_once_however_many_cycles_run(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """A market sell repeated every 60s would sell a position the loop no longer holds.
+
+    Answered from the broker's order history rather than a flag, for the reason
+    `_send_exits` is: the id is a function of the position, so a restart reads it correctly
+    where a flag in memory would say "not sent" and send a second one.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    state = a_state(auto, tmp_path, broker)
+    high = float(stub_bars["frames"]["AAPL"]["high"].iloc[-1])
+    a_managed_position(state, take_profit=high - 1.0)
+
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+
+    sent = [
+        o
+        for o in broker.orders
+        if records.client_order_id(o).endswith(records.TARGET_IN_LOOP_SUFFIX)
+    ]
+    assert len(sent) == 1
+
+
+def test_a_stale_symbol_does_not_take_a_target_exit(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """The stale-data ruling, applied to the new path: no fresh bar, no target.
+
+    The asymmetry is deliberate and it is the same one as before - a stale window may not
+    justify acting on an opportunity, and may not suspend the stop that bounds the loss.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    high = float(stub_bars["frames"]["MSFT"]["high"].iloc[-1])
+    stub_bars["frames"]["MSFT"] = stub_bars["frames"]["MSFT"].iloc[:-3]
+    state = a_state(auto, tmp_path, broker)
+    a_managed_position(state, "MSFT", take_profit=high - 50.0)
+
+    report = live_loop.run_cycle(state, NOW)
+
+    assert "MSFT" in report.stale
+    assert "MSFT" in report.rearmed, "a stale symbol still keeps its stop"
+    assert not any(
+        records.client_order_id(o).endswith(records.TARGET_IN_LOOP_SUFFIX)
+        for o in broker.orders
+    )
+
+
+def test_the_target_exit_cancels_the_stop_before_selling(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """The defect that cost 13 consecutive cycles on 25 Aug 2026, in its new place.
+
+    A working sell holds the whole position, so a market sell placed while the stop is live
+    is refused with `insufficient qty available`. That is the same constraint that removed
+    the limit leg, and the target exit is the newest thing that could trip over it.
+    """
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    state = a_state(auto, tmp_path, broker)
+    high = float(stub_bars["frames"]["AAPL"]["high"].iloc[-1])
+    a_managed_position(state, take_profit=high - 1.0)
+    live_loop._arm_leg(
+        state, "AAPL", state.book.managed["AAPL"], live_loop.STOP_LEG, lambda m: None
+    )
+
+    live_loop.run_cycle(state, NOW)
+
+    assert broker.positions.get("AAPL", 0.0) == pytest.approx(0.0)
+    assert not [
+        o
+        for o in broker.orders
+        if o.symbol == "AAPL" and o.side == SELL and o.status not in live_loop.FINISHED
+    ]
+
+
+def test_a_limit_leg_is_refused_by_the_armer_rather_than_by_the_broker(
+    cfg: Config, broker: FakeBroker, tmp_path: Path
+) -> None:
+    """Reintroducing the second leg must fail here, not at Alpaca.
+
+    At the broker it fails as `insufficient qty available`, which the loop counts as an
+    arming failure - and `ARMING_STRIKES` of those flatten a perfectly healthy position.
+    That is how a 97.38-share NVDA position was liquidated on 25 Aug 2026.
+    """
+    state = a_state(cfg, tmp_path, broker)
+    a_managed_position(state, take_profit=106.0)
+
+    with pytest.raises(live_loop.LiveError, match="only protective order"):
+        live_loop._arm_leg(
+            state,
+            "AAPL",
+            state.book.managed["AAPL"],
+            live_loop.TARGET_LEG,
+            lambda m: None,
+        )
+
+
+def test_the_high_column_is_the_one_the_canonical_frame_carries(cfg: Config) -> None:
+    """`HIGH` is a second copy of a column name that `data.historical` owns. Pinned rather
+    than trusted: a rename there would make the target silently unreachable, and nothing
+    else in the loop reads a price column."""
+    from glassbox.data.historical import OHLCV_COLUMNS
+
+    assert live_loop.HIGH in OHLCV_COLUMNS
 
 
 # ── the session ──────────────────────────────────────────────────────────────
@@ -1498,7 +1678,7 @@ def test_an_adopted_position_is_protected_in_the_cycle_that_adopts_it(
         if o.side == SELL and o.symbol == "AAPL"
     ]
     assert any(name.endswith("-stop") for name in armed)
-    assert any(name.endswith("-target") for name in armed)
+    assert not any(name.endswith("-target") for name in armed)
 
 
 def test_a_position_with_no_decision_behind_it_stays_quarantined(
@@ -2068,6 +2248,36 @@ def test_the_file_is_retargeted_when_the_day_turns(
     assert "after midnight" in second and "before midnight" not in second
 
 
+def test_the_record_stamp_and_the_filename_agree_on_the_day(tmp_path: Path) -> None:
+    """The day this record belongs to is written twice - in the filename and in the line -
+    and until 26 Aug 2026 the two were in different timezones.
+
+    `live-2026-08-25.log` held lines stamped `2026-08-26 00:00`, because the handler rolls
+    on the UTC day and `asctime` defaulted to local time. Harmless to the run and exactly
+    the confusion a gate log must not have: a reader looking for 01:00 on the 26th opens
+    the wrong file. Asserted rather than commented, because the two copies are three hours
+    apart here and would be zero apart on a UTC machine - where a convention would look
+    fine and stay wrong.
+    """
+    handler = live_loop.DailyLogFile(tmp_path)
+    formatter = logging.Formatter(
+        live_loop.LOG_FORMAT, datefmt=live_loop.LOG_DATE_FORMAT
+    )
+    formatter.converter = time.gmtime
+    handler.setFormatter(formatter)
+    try:
+        handler.handle(
+            logging.LogRecord("x", logging.INFO, "f", 1, "a cycle ran", None, None)
+        )
+    finally:
+        handler.close()
+
+    written = next(tmp_path.glob("live-*.log"))
+    day_in_the_name = written.stem.removeprefix("live-")
+    day_in_the_line = written.read_text(encoding="utf-8").split("T")[0]
+    assert day_in_the_line == day_in_the_name
+
+
 def test_the_summary_reaches_the_file_and_not_only_stdout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bare_root_logger
 ) -> None:
@@ -2083,7 +2293,13 @@ def test_the_summary_reaches_the_file_and_not_only_stdout(
     )
     monkeypatch.setattr(live_loop, "run_sessions", lambda *a, **k: (report,))
 
-    assert live_loop.main(["--log-dir", str(tmp_path)]) == 0
+    # A named state directory, not the default: the default is the deployed session's,
+    # and `main` now takes a lock on it. A test that reaches for the real one would
+    # either be refused by a running loop or take a lock on a live directory.
+    exit_code = live_loop.main(
+        ["--log-dir", str(tmp_path), "--state-dir", str(tmp_path / "state")]
+    )
+    assert exit_code == 0
 
     day = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d")
     text = (tmp_path / f"live-{day}.log").read_text(encoding="utf-8")
@@ -2101,7 +2317,118 @@ def test_both_handlers_share_one_format(
     )
     monkeypatch.setattr(live_loop, "run_sessions", lambda *a, **k: (report,))
 
-    live_loop.main(["--log-dir", str(tmp_path)])
+    live_loop.main(["--log-dir", str(tmp_path), "--state-dir", str(tmp_path / "state")])
 
     formats = {h.formatter._fmt for h in bare_root_logger.handlers}
     assert formats == {live_loop.LOG_FORMAT}
+    assert {h.formatter.datefmt for h in bare_root_logger.handlers} == {
+        live_loop.LOG_DATE_FORMAT
+    }
+    assert {h.formatter.converter for h in bare_root_logger.handlers} == {time.gmtime}
+
+
+# ── GB-40 / 25 Aug 2026: rule 3's remedy must be reachable ──────────────────
+
+
+def test_rule_3_flatten_releases_the_legs_and_ends_flat(
+    cfg: Config, broker: FakeBroker, tmp_path: Path
+) -> None:
+    """**The escape hatch has to be reachable under the condition it escapes.**
+
+    Found live on 25 Aug 2026, on the first order this system ever placed. NVDA's entry
+    filled, the stop armed, and the target was refused - the broker holds the *whole*
+    position for any working sell order, so the second leg had no quantity to claim. Rule
+    3 then did what it promises and flattened at market, and **the flatten was refused for
+    the same reason**: it is also a sell. Thirteen consecutive cycles tried and failed,
+    each logged as an unreachable broker, and the loop decided nothing for twenty minutes
+    while holding a real position.
+
+    The close-out path had been right all along - it cancels the legs and then sells - so
+    the fix is one implementation instead of two rather than new behaviour.
+
+    The state is built directly rather than by running cycles, because with the fix in
+    place a cycle no longer *leaves* a position in this condition: it flattens it. The
+    condition under test is a position holding one working leg, which is what rule 3 meets.
+
+    This test could not have existed before ``FakeBroker`` modelled ``held_for_orders``:
+    the fake permitted a second sell the broker refuses, so the suite stayed green while
+    the live path could not execute at all.
+    """
+    state = a_state(cfg, tmp_path, broker)
+    symbol, quantity = "AAPL", 0.118742281
+    broker.positions[symbol] = quantity
+    holding = Holding(
+        symbol=symbol,
+        quantity=quantity,
+        decision_id="20260824-AAPL",
+        entry_price=PRICE,
+        stop_loss=97.0,
+        take_profit=106.0,
+    )
+    state.book = Book(managed={symbol: holding})
+    # One live leg, holding the entire position - exactly the live shape.
+    broker.submit_stop_order(
+        symbol=symbol,
+        quantity=quantity,
+        stop_price=97.0,
+        client_order_id=f"{holding.decision_id}{records.STOP_SUFFIX}",
+    )
+    assert broker.held_for_orders(symbol) == pytest.approx(quantity)
+    with pytest.raises(FakeBrokerError, match="insufficient qty"):
+        broker.submit_market_order(symbol, quantity, SELL, "would-fail")
+
+    live_loop._flatten(state, symbol, holding, log=lambda message: None)
+
+    assert broker.get_positions().get(symbol, 0.0) == pytest.approx(0.0, abs=1e-12)
+    assert not [
+        order
+        for order in broker.get_orders()
+        if order.symbol == symbol
+        and order.side == SELL
+        and order.status not in live_loop.FINISHED
+    ], "a protective leg is still working after the flatten"
+
+
+def test_the_summary_reports_the_close_out_flatten_and_what_is_still_held() -> None:
+    """**The gate reads this line, and on 25 Aug 2026 it was false.**
+
+    A rehearsal cancelled a stop and sold the position on shutdown, and the summary said
+    `positions flattened : 0` - because `close_out_on_stop` runs in `run_session`'s
+    `finally`, after the cycle list is closed, so no `CycleReport` can carry it. The one
+    line answering rehearsal condition 3 contradicted the run it described.
+
+    `open orders at exit : 0` is the same defect one line down. It was **right by luck**:
+    it is computed after the close-out cancelled the legs, so a close-out that cancelled
+    and then failed to sell would print zero working orders beside a real position - the
+    cleanest-looking summary the loop can produce for the worst state it can end in.
+    """
+    flattened = live_loop.SessionReport(
+        session_id="s",
+        banner="",
+        cycles=(),
+        open_orders=(),
+        stopped_by="SIGINT",
+        closed_out=("NVDA",),
+        held_at_exit=(),
+    )
+    summary = flattened.summary()
+    assert "1 by the stop close-out" in summary
+    assert "NVDA" in summary
+    assert "positions at exit    : none" in summary
+
+    # And the state that must never read as clean: legs cancelled, sell refused.
+    stranded = live_loop.SessionReport(
+        session_id="s",
+        banner="",
+        cycles=(),
+        open_orders=(),
+        stopped_by="SIGINT",
+        closed_out=(),
+        close_out_failed=("NVDA",),
+        held_at_exit=("NVDA",),
+    )
+    stranded_summary = stranded.summary()
+    assert "open orders at exit  : 0" in stranded_summary
+    assert "STILL HELD - NVDA" in stranded_summary
+    assert "CLOSE-OUT FAILED" in stranded_summary
+    assert "Close it by hand" in stranded_summary

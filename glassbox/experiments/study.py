@@ -95,7 +95,17 @@ SKIPPED = {
     ("fits", "C2_hybrid"): (
         "deliberately empty (spec 6.4): FITS is univariate and filters frequencies "
         "itself, so pre-filtered wavelet bands are redundant"
-    )
+    ),
+    # GB-66. The same ruling, and the case is stronger rather than merely analogous:
+    # `C2_hybrid` adds wav_a1..a3, which are causal rolling DWT bands, to a model whose
+    # first act is a causal DWT. That is not redundancy of the FITS kind - a filter fed
+    # pre-filtered input - but the *same transform applied twice*, and the second pass
+    # would decompose bands that are already single-scale. Filling the cell to square the
+    # table is exactly what spec 6.4 says not to do.
+    ("wits", "C2_hybrid"): (
+        "deliberately empty (spec 6.4): WITS is univariate and its first act is a DWT, so "
+        "feeding it the wav_a1..a3 DWT bands applies the same transform twice"
+    ),
 }
 
 # Trading days. One third of `step_months` at the configured 3, which is the offset the
@@ -125,6 +135,16 @@ PER_FOLD_SECONDS = {
     "persistence": 0.39,
     "dlinear": 1.46,
     "fits": 4.16,
+    # GB-66. **Anchored rather than measured on the grid, and the difference is stated
+    # because it matters for the ten-minute rule.** WITS has no grid run yet, so this is
+    # FITS's grid figure scaled by a ratio measured locally on a 2,505-window fold with a
+    # warmup run discarded: fits 2.40s (sd 0.11) against wits 2.75s (sd 0.07) over four
+    # repeats, a ratio of 1.146. Replace it with the grid's own number when GB-66's arm
+    # runs - the acceptance criteria ask for the wall time reported either way.
+    #
+    # **Slower than FITS on fewer parameters**, which is worth not being surprised by: 882
+    # reals against 1,200, but 64 epochs before early stopping against 51.
+    "wits": 4.77,
     "buy_and_hold": 0.07,
 }
 
@@ -143,8 +163,8 @@ RESULTS_FILE = "results.csv"
 # The columns that identify one condition, and therefore the columns a paired test may
 # not cross. GB-51 pairs by fold *within* a condition: fold 3 at anchor 21 and fold 3 at
 # anchor 0 are different windows, and pairing them would compare two periods rather than
-# two arms.
-PAIR_KEYS = ("anchor", "lr", "control", "cutoff_period_days")
+# two arms. Derived from `Condition.columns` below rather than listed again - see its
+# docstring for what a second list of the axes costs.
 
 # `mae` and `flatness` are adjacent and in this order, per 7.3. The pairing is expressed
 # here, in the one place that builds the row, rather than remembered at each table.
@@ -152,6 +172,10 @@ COLUMNS = (
     "anchor",
     "lr",
     "control",
+    # Execution fidelity: whose target it is. Beside the other axes because it identifies
+    # a condition, and in PAIR_KEYS for the same reason - pairing a loop-side fold against
+    # a broker-side one would compare two execution models rather than two arms.
+    "target_in_loop",
     # The COF axis and the two quantities it decides, adjacent for the same reason `mae`
     # and `flatness` are: `cutoff_period_days` is a number nobody can interpret without
     # them. `cof` is the retained bin count and `dead_row_fraction` the share of the layer
@@ -192,6 +216,45 @@ class Condition:
     lr: float
     control: str
     cutoff: int = CUTOFFS[0]
+    target_in_loop: bool = True
+    """Whether the take-profit is the loop's or the broker's. **Default `True`, and that
+    is a ruling rather than a preference** (25 Aug 2026).
+
+    Alpaca refuses every multi-leg order class on a fractional quantity - `bracket` and
+    `oco` both return `{"code":42210000,"message":"fractional orders must be simple
+    orders"}`, measured - so a fractional position carries one broker-side protective
+    order and it is the stop. The target is therefore evaluated by the loop against
+    completed daily bars and fills at the next open.
+
+    `False` is the classical backtest and it is a **spoke**, not the centre. It is not a
+    fantasy - whole-share sizing permits brackets - but it is a different design point
+    with its own cost, so it is reported as the comparison rather than as the headline.
+    A centre of `False` would mean every published number described a system that cannot
+    be built at this venue while the caveat lived where nobody reads it.
+    """
+
+    @property
+    def columns(self) -> dict[str, object]:
+        """The columns that identify this condition in a results row. **One list.**
+
+        Every writer of a results row derives from this - `_row`, `_skipped_row`, and any
+        fixture that builds a table with the shape the grid writes. On 26 Aug 2026 the
+        report fixture re-listed the axes by hand, so `target_in_loop` was absent from
+        every synthetic row; the spoke and the centre then differed in no column at all,
+        collapsed into one group, and the paired tests read 32 folds where there are 16.
+        Each list was internally consistent, which is why nothing caught it until the
+        pairing crashed - the two-places family, with the second place in a test.
+
+        `cof` and `dead_row_fraction` are not here: they are FITS geometry derived from
+        the config that actually ran, and `_geometry` owns them.
+        """
+        return {
+            "anchor": self.anchor,
+            "lr": self.lr,
+            "control": self.control,
+            "target_in_loop": self.target_in_loop,
+            "cutoff_period_days": self.cutoff,
+        }
 
     @property
     def is_reference(self) -> bool:
@@ -200,6 +263,7 @@ class Condition:
             and self.lr == LEARNING_RATES[0]
             and self.control == REAL
             and self.cutoff == CUTOFFS[0]
+            and self.target_in_loop
         )
 
     @property
@@ -213,6 +277,15 @@ class Condition:
         eventually averages.
         """
         return MODELS if self.cutoff == CUTOFFS[0] else ("fits",)
+
+
+#: The columns a paired test may not cross - which is exactly the set that identifies a
+#: condition, so it is read off :attr:`Condition.columns` rather than written again. An
+#: axis added to `Condition` therefore joins the pairing by construction; the alternative
+#: is a second list that stays correct until somebody adds the axis to only one of them.
+PAIR_KEYS: tuple[str, ...] = tuple(
+    Condition(anchor=ANCHORS[0], lr=LEARNING_RATES[0], control=REAL).columns
+)
 
 
 @dataclass(frozen=True)
@@ -287,6 +360,12 @@ def conditions(full: bool = False) -> tuple[Condition, ...]:
             for cutoff in CUTOFFS[1:]
             for control in (REAL, NOISE)
         ),
+        # **The execution-fidelity spoke.** `target_in_loop=False` is the broker-side
+        # target every published number in this study assumed before 25 Aug 2026. It is
+        # kept as a departure from the centre so the report can state the difference,
+        # which is the chapter's turning quantity - not because it describes a system
+        # this venue supports for fractional sizing.
+        replace(reference, target_in_loop=False),
     )
 
 
@@ -649,6 +728,7 @@ def _cell_config(cfg: Config, condition: Condition) -> Config:
         cfg,
         model=replace(cfg.model, lr=condition.lr),
         fits=replace(cfg.fits, cutoff_period_days=condition.cutoff),
+        backtest=replace(cfg.backtest, target_in_loop=condition.target_in_loop),
     )
 
 
@@ -658,17 +738,16 @@ def _geometry(model: str, cfg: Config) -> dict:
     Derived from ``model.fits`` rather than recomputed here - the fifth instance of the
     two-places family arrived from a copy that was locally correct, and ``COF = L // c``
     is exactly the kind of arithmetic that gets written down twice.
+
+    ``cutoff_period_days`` is **not** here: it identifies the condition and
+    :attr:`Condition.columns` writes it, so that a reader of the row and a paired test
+    agree on which cell they are looking at without two sources for the same number.
     """
     if model != "fits":
-        return {
-            "cutoff_period_days": cfg.fits.cutoff_period_days,
-            "cof": math.nan,
-            "dead_row_fraction": math.nan,
-        }
+        return {"cof": math.nan, "dead_row_fraction": math.nan}
     length, horizon = cfg.window.input_len, cfg.window.horizon
     cutoff = cfg.fits.cutoff_period_days
     return {
-        "cutoff_period_days": cutoff,
         "cof": fits.cof_for(length, cutoff),
         "dead_row_fraction": fits.dead_row_fraction(length, horizon, cutoff),
     }
@@ -703,9 +782,7 @@ def _row(
     # 0.015 - which is the failure the flag exists to prevent.
     forecast_error = arm.forecasts
     return {
-        "anchor": condition.anchor,
-        "lr": condition.lr,
-        "control": condition.control,
+        **condition.columns,
         **_geometry(model, cfg),
         "model": model,
         "channels": channels,
@@ -742,9 +819,7 @@ def _skipped_row(
     row = dict.fromkeys(COLUMNS, math.nan)
     row.update(
         {
-            "anchor": condition.anchor,
-            "lr": condition.lr,
-            "control": condition.control,
+            **condition.columns,
             **_geometry(model, cfg),
             "model": model,
             "channels": channels,

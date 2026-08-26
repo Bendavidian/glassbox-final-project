@@ -486,12 +486,26 @@ def protect(
     decision_id: str,
     record,
 ) -> tuple[BrokerOrder, ...]:
-    """Attach a stop and a target to a **filled** entry, as two standalone day orders.
+    """Attach **one** protective order to a filled entry, and it is the stop.
 
-    The fractional bracket substitute. It runs only on the quantity actually filled: arming
-    protection for shares the account does not hold would be a short sale, which Alpaca
-    refuses on fractional quantities anyway
-    (``{"message":"fractional orders cannot be sold short"}``, measured).
+    **Ruled 26 Aug 2026, from a measurement rather than from a preference.** Alpaca refuses
+    every multi-leg order class on a fractional quantity - `bracket` and `oco` both return
+    ``{"code":42210000,"message":"fractional orders must be simple orders"}`` - and a
+    *working sell order holds the whole position*, so a standalone stop and a standalone
+    limit cannot coexist either: the second is refused with ``insufficient qty available``.
+    That is not a fractional-specific constraint. It was measured against a **97.38-share**
+    position, so whole-share sizing does not lift it; what fractional removes is the
+    bracket that would otherwise have been the workaround.
+
+    Two protective orders are therefore not available at this venue at any size, and the
+    stop is the one that must exist, because it is the one that bounds a loss. The target
+    is evaluated by the loop against completed daily bars and fills at the next open -
+    which is the `target_in_loop=True` arm of the study, so the published numbers describe
+    the system that can actually be built.
+
+    It runs only on the quantity actually filled: arming protection for shares the account
+    does not hold would be a short sale, which Alpaca refuses on fractional quantities
+    anyway (``{"message":"fractional orders cannot be sold short"}``, measured).
 
     Returns an empty tuple when nothing filled - which is the normal case for an order
     submitted after the close, where the fill happens at the next open and protection is
@@ -504,7 +518,6 @@ def protect(
         )
         return ()
 
-    protection: list[BrokerOrder] = []
     stop = broker.submit_stop_order(
         symbol=order.symbol,
         quantity=entry.filled_quantity,
@@ -512,22 +525,12 @@ def protect(
         client_order_id=f"{decision_id}-stop",
     )
     record(
-        f"stop armed id={stop.id} at {order.stop_loss:.4f} (day order, expires at close)"
+        f"stop armed id={stop.id} at {order.stop_loss:.4f} (day order, expires at close). "
+        f"The target {order.take_profit:.4f} is NOT at the broker: a working sell holds "
+        "the whole position, so a second protective order cannot exist. The loop evaluates "
+        "it on completed bars and exits at the next open"
     )
-    protection.append(stop)
-
-    target = broker.submit_limit_order(
-        symbol=order.symbol,
-        quantity=entry.filled_quantity,
-        limit_price=order.take_profit,
-        client_order_id=f"{decision_id}-target",
-    )
-    record(
-        f"target armed id={target.id} at {order.take_profit:.4f} (day order, expires at "
-        "close). NOT linked to the stop: if one fills the other must be cancelled"
-    )
-    protection.append(target)
-    return tuple(protection)
+    return (stop,)
 
 
 class AlpacaBroker:

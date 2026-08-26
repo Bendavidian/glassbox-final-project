@@ -26,6 +26,7 @@ SPEC_MODULES = (
     "model/persistence.py",
     "model/ltsf.py",
     "model/fits.py",
+    "model/wits.py",
     "model/train.py",
     # GB-15: the per-epoch loss record. A module of its own because `ltsf.py` produces it
     # and `train.py` writes it, and `train.py` already imports `ltsf` through the package
@@ -68,6 +69,10 @@ SPEC_MODULES = (
     # harness - it is named in the forbidden-import contract for that reason.
     "records.py",
     "live_loop.py",
+    # GB-26 / 26 Aug 2026: the one-loop-per-state-directory lock. Its own module
+    # because it must be importable and callable before `live_loop` has loaded a
+    # config, and because it imports nothing from `glassbox` in return.
+    "live_lock.py",
     "replay.py",
     "smoke_offline.py",
     "dashboard/app.py",

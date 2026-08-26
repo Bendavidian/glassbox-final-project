@@ -73,11 +73,24 @@ STOP = "stop"
 STOP_GAP = "stop_gap"
 TARGET = "target"
 TARGET_GAP = "target_gap"
+#: The only target exit the live path can take (ruled 26 Aug 2026): noticed on a completed
+#: daily bar and filled at the next open, because Alpaca refuses every multi-leg order
+#: class on a fractional quantity and the one broker-side protective order is the stop.
+#: Distinct from `TARGET` and `TARGET_GAP`, which describe a broker-side limit filling
+#: intraday - a different fill at a different moment, and a reader counting "target exits"
+#: must be able to tell which system produced them.
+TARGET_IN_LOOP = "target_in_loop"
 SIGNAL = "signal"
 
-# The suffixes `executor.protect` gives its two legs, which is how a fill is attributed.
+# The suffix `executor.protect` gives the stop, which is how a fill is attributed.
 STOP_SUFFIX = "-stop"
+#: **No longer armed.** Kept because the account can still hold a limit leg from a session
+#: that ran before the ruling of 26 Aug 2026, and a fill this module cannot attribute is a
+#: trade the report explains wrongly. Recognised, never written.
 TARGET_SUFFIX = "-target"
+#: The loop's own target exit: a market sell, so the suffix is what separates it from a
+#: signal exit. It does not end with `TARGET_SUFFIX`, so the two never collide.
+TARGET_IN_LOOP_SUFFIX = "-target-in-loop"
 
 FILLED = frozenset({"filled", "partially_filled"})
 SELL = "sell"
@@ -594,6 +607,11 @@ def exit_reason_for(order: BrokerOrder, stop_loss: float, take_profit: float) ->
     client_id = client_order_id(order)
     fill = float(order.filled_price or 0.0)
 
+    if client_id.endswith(TARGET_IN_LOOP_SUFFIX):
+        # Tested before TARGET_SUFFIX only for the reader's sake - the two suffixes cannot
+        # both match - and it takes no gap variant: it is a market order at the open, so
+        # "filled away from the level" is the whole of what it is, not a special case.
+        return TARGET_IN_LOOP
     if client_id.endswith(STOP_SUFFIX):
         return STOP_GAP if fill < stop_loss else STOP
     if client_id.endswith(TARGET_SUFFIX):
@@ -666,6 +684,8 @@ __all__ = [
     "STOP_GAP",
     "TARGET",
     "TARGET_GAP",
+    "TARGET_IN_LOOP",
+    "TARGET_IN_LOOP_SUFFIX",
     "DuplicateDecision",
     "amend_decision",
     "client_order_id",

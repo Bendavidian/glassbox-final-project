@@ -71,19 +71,42 @@ def test_auto_submits_a_market_order_and_reports_the_fill(auto: Config) -> None:
     assert broker.positions[SYMBOL] > 0
 
 
-def test_a_filled_entry_is_protected_by_two_standalone_orders(auto: Config) -> None:
-    """The fractional bracket substitute, because Alpaca refuses a bracket on a fraction.
+def test_a_filled_entry_is_protected_by_one_order_and_it_is_the_stop(
+    auto: Config,
+) -> None:
+    """**Replaces `test_a_filled_entry_is_protected_by_two_standalone_orders`,** which was
+    deleted rather than fixed on 26 Aug 2026 because its premise was measured impossible.
 
-    Measured: `{"code":42210000,"message":"fractional orders must be simple orders"}`. So
-    protection is a stop and a limit, submitted separately against the filled quantity.
+    That test asserted a stop *and* a limit as "the fractional bracket substitute". The
+    substitute does not exist: a working sell order holds the **whole** position at Alpaca,
+    so the second protective order is refused with `insufficient qty available` - measured
+    against a **97.38-share** position, so it is not a fractional-only rule and whole-share
+    sizing would not lift it. What fractional removes is the bracket that would have been
+    the workaround.
+
+    It passed for a week against a FakeBroker that allowed what the API forbids, in exactly
+    the dimension the protection policy depends on. Deleting it is the finding.
     """
     broker = FakeBroker(prices={SYMBOL: PRICE})
 
     submission = executor.execute(broker, an_order(), DECISION, auto)
 
-    assert broker.submitted_kinds == ["market", "stop", "limit"]
-    assert len(submission.protection) == 2
+    assert broker.submitted_kinds == ["market", "stop"]
+    assert len(submission.protection) == 1
     assert all(order.side == executor.SELL for order in submission.protection)
+
+
+def test_no_limit_order_is_ever_armed_as_protection(auto: Config) -> None:
+    """The property, stated so it cannot come back by accident.
+
+    The deleted test's assertion would have passed again the moment somebody re-added the
+    limit, and against the old FakeBroker it would have looked correct. This one fails.
+    """
+    broker = FakeBroker(prices={SYMBOL: PRICE})
+
+    executor.execute(broker, an_order(), DECISION, auto)
+
+    assert "limit" not in broker.submitted_kinds
 
 
 def test_protection_covers_the_filled_quantity_and_not_the_requested_one(

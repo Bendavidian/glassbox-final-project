@@ -29,10 +29,12 @@ def a_results_file(snapshot: str = "2026-08-13") -> pd.DataFrame:
                 row = dict.fromkeys(study.COLUMNS, math.nan)
                 row.update(
                     {
-                        "anchor": condition.anchor,
-                        "lr": condition.lr,
-                        "control": condition.control,
-                        "cutoff_period_days": condition.cutoff,
+                        # From the condition, never re-listed here: on 26 Aug 2026 this
+                        # fixture named four axes by hand and `target_in_loop` was not one
+                        # of them, so every synthetic row left it blank, the spoke and the
+                        # centre became the same condition, and the paired tests saw 32
+                        # folds where there are 16.
+                        **condition.columns,
                         "model": model,
                         "channels": channels,
                         "fold": fold,

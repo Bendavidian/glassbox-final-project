@@ -454,6 +454,7 @@ def test_the_exit_vocabulary_matches_the_backtesters_exactly() -> None:
     assert records.STOP_GAP == engine.STOP_GAP
     assert records.TARGET == engine.TARGET
     assert records.TARGET_GAP == engine.TARGET_GAP
+    assert records.TARGET_IN_LOOP == engine.TARGET_IN_LOOP
     assert records.SIGNAL == engine.SIGNAL
 
 
@@ -633,3 +634,33 @@ def test_an_amendment_leaves_the_other_records_untouched(tmp_path: Path) -> None
     stored = records.load_decisions("2026-08-01", "2026-08-31", tmp_path)
     assert [record.symbol for record in stored] == ["AAPL", "MSFT", "NVDA"]
     assert [record.narrative for record in stored].count("answered") == 1
+
+
+def test_the_loop_target_is_attributed_to_the_loop_and_not_to_a_signal() -> None:
+    """A market sell is a market sell; only the id says which one it is.
+
+    Without this the loop's own target exit would land in the trade log as `signal`, and
+    GB-57 could not separate "the model said sell" from "the take-profit was reached and
+    the loop acted at the open" - which is the whole of what the `target_in_loop` arm
+    measures.
+    """
+    broker = FakeBroker(prices={SYMBOL: 100.0})
+    broker.positions[SYMBOL] = 100.0
+    broker.submit_market_order(
+        SYMBOL, 100.0, SELL, f"{DECISION}{records.TARGET_IN_LOOP_SUFFIX}"
+    )
+
+    [order] = broker.get_orders()
+
+    assert records.exit_reason_for(order, STOP_LEVEL, TARGET_LEVEL) == (
+        records.TARGET_IN_LOOP
+    )
+
+
+def test_the_loop_target_suffix_cannot_be_read_as_the_broker_target() -> None:
+    """The two suffixes are matched by `endswith`, so they must not nest. If
+    `TARGET_IN_LOOP_SUFFIX` ever ended with `TARGET_SUFFIX`, every loop-side exit would be
+    reported as a broker-side limit fill and the two execution models would be
+    indistinguishable in the one file that is supposed to tell them apart."""
+    assert not records.TARGET_IN_LOOP_SUFFIX.endswith(records.TARGET_SUFFIX)
+    assert not records.TARGET_SUFFIX.endswith(records.TARGET_IN_LOOP_SUFFIX)

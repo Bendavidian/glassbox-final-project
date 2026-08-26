@@ -85,6 +85,14 @@ STOP = "stop"
 STOP_GAP = "stop_gap"
 TARGET = "target"
 TARGET_GAP = "target_gap"
+#: The target exit the LIVE path can actually take: noticed on a completed daily bar, filled
+#: at the next open. Distinct from TARGET and TARGET_GAP because it is a different fill at a
+#: different moment, and a reader counting "target exits" must be able to tell which system
+#: produced them.
+TARGET_IN_LOOP = "target_in_loop"
+#: Internal marker: the high crossed the target on this bar and the loop will act at the
+#: next open. Never reaches a `Trade`.
+_TARGET_PENDING = "_target_pending"
 SIGNAL = "signal"
 END_OF_DATA = "end_of_data"
 
@@ -157,6 +165,12 @@ class _OpenPosition:
     target: float
     last_mark: float
     last_mark_time: pd.Timestamp
+    target_pending: bool = False
+    """Set when a completed bar's high crossed the target under `target_in_loop`.
+
+    The loop cannot see intraday, so the crossing is only knowable once the bar closes;
+    the exit is therefore a market order at the next open, exactly as a signal is.
+    """
 
 
 def run_backtest(
@@ -272,7 +286,10 @@ def run_backtest(
             bar = _bar(bars, symbol, timestamp)
             if bar is None:
                 continue
-            exit_price, reason = _exit_level(held, bar)
+            exit_price, reason = _exit_level(held, bar, cfg.backtest.target_in_loop)
+            if reason == _TARGET_PENDING:
+                held.target_pending = True
+                continue
             if reason is None:
                 continue
             del positions[symbol]
@@ -323,7 +340,9 @@ def round_trip_cost_bps(cfg: Config) -> float:
     return 2.0 * (cfg.backtest.fee_bps + cfg.backtest.slippage_bps)
 
 
-def _exit_level(held: _OpenPosition, bar: pd.Series) -> tuple[float, str | None]:
+def _exit_level(
+    held: _OpenPosition, bar: pd.Series, target_in_loop: bool = False
+) -> tuple[float, str | None]:
     """The price and reason this position exits on this bar, or ``(nan, None)``.
 
     Long-only, so there are two rules and both are written in the direction the reference
@@ -340,7 +359,21 @@ def _exit_level(held: _OpenPosition, bar: pd.Series) -> tuple[float, str | None]
             return float(bar["open"]), STOP_GAP
         return held.stop, STOP
 
+    # A target the loop is already carrying fills at this open, the first price it can
+    # reach. Tested after the stop for the reason above, and note the two agree whenever
+    # the bar gaps down: both fill at the open, so only the recorded reason differs.
+    if held.target_pending:
+        return float(bar["open"]), TARGET_IN_LOOP
+
     if bar["high"] >= held.target:
+        if target_in_loop:
+            # **The crossing is not knowable until this bar closes.** The loop reads
+            # completed daily bars only, so it cannot fill at the target and it cannot
+            # fill at this open either - both are inside a bar it has not seen yet. It
+            # acts at the next open, and the gap case collapses into this one rather than
+            # being separate: under this rule there is nothing special about opening
+            # through the level, because the loop could not have acted on it either way.
+            return math.nan, _TARGET_PENDING
         if bar["open"] >= held.target:
             return float(bar["open"]), TARGET_GAP
         return held.target, TARGET
@@ -513,6 +546,7 @@ __all__ = [
     "STOP_GAP",
     "TARGET",
     "TARGET_GAP",
+    "TARGET_IN_LOOP",
     "BacktestResult",
     "PositionSizer",
     "Trade",

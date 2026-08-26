@@ -5072,6 +5072,99 @@ and nothing technical may spill into it.
 
 ---
 
+## 2026-08-26 — One protective order at the broker, and it is the stop
+
+**Decision.** `executor.protect` arms a stop and nothing else. The take-profit is
+evaluated by the live loop against **completed daily bars** and executed at market, which
+means it fills at the next open and carries the exit reason `target_in_loop`. Rules 2, 3
+and 4 of the GB-26 protection policy are rewritten accordingly.
+
+**Reasoning.** Measured, not reasoned from GB-22's bracket result. Alpaca refuses every
+multi-leg order class on a fractional quantity — `bracket` **and** `oco` both return
+`{"code":42210000,"message":"fractional orders must be simple orders"}` — and, separately,
+**a working sell order holds the whole position**, so a standalone stop and a standalone
+limit cannot coexist either: the second is refused with `insufficient qty available`. That
+second constraint was measured against a **97.38-share** position, so it is not
+fractional-specific. Whole-share sizing would not lift it; what fractional removes is the
+bracket that would have been the workaround. Two broker-side protective orders are
+unavailable at this venue at any size. Of the two, the stop is the one that must exist,
+because it is the one that bounds a loss.
+
+**Consequence.** `LEGS = (STOP_LEG,)`; `_arm_leg` raises on a target leg rather than
+letting the broker's refusal count as an arming failure — two of which flatten a healthy
+position, which is what happened to NVDA on 25 Aug. `TARGET_SUFFIX` is still *recognised*
+so a leg armed under the old policy is cancelled and attributed rather than orphaned. The
+study reports both `target_in_loop` arms and `true` is the default. The first attempt to
+describe this was wrong and the correction is part of the record: rule 3's remedy was said
+to be blocked by the same constraint, and it is not — the close-out cancels before selling
+and succeeded on its first attempt.
+
+---
+
+## 2026-08-26 — The lock file: one loop per state directory
+
+**Decision.** `glassbox/live_lock.py`. `main` takes an exclusive lock on the state
+directory before loading a config; a second launch names the holding PID and mode and
+exits `3`. A lock whose PID is not running is reclaimed and the reclaim is logged.
+
+**Reasoning.** On 25 Aug a stale terminal relaunched a rehearsal against the deployed
+session's state directory. It was harmless only because the bar it would have decided was
+already decided — the "one decision per completed bar" rule refusing it by accident. A new
+bar completes every session, so that protection expires. Two loops sharing `pending.json`
+is two orders from one approval.
+
+**Consequence.** The deployed run predates the lock, and restarting it to make it take one
+would have destroyed the multi-session evidence GATE 2 criterion 6 needs. `adopt` writes a
+lock *for* a running PID instead; when that run ends the file is reclaimed by the stale
+path, so the transitional case degrades into the designed case. Liveness is probed with
+`OpenProcess`/`GetExitCodeProcess`, **never** `os.kill(pid, 0)`, which on Windows calls
+`TerminateProcess` and would kill the process it asks about. Every unresolvable case —
+an unreadable lock, a process that cannot be queried — refuses rather than proceeds.
+
+---
+
+## 2026-08-26 — Execution fidelity as a study axis, not a caveat
+
+**Decision.** `target_in_loop` is an axis in `results.csv`. `true` (the loop's target,
+filled at the next open) is the **default**; `false` (broker-side, filling intraday) is a
+spoke. Both arms are reported.
+
+**Reasoning.** 39 of 166 trades at the reference condition were target exits worth
++25,434.01, and **none of them is reachable by the live loop**, which cannot see intraday
+at all. Publishing `false` as the headline would mean every number described a system that
+cannot be built at this venue, with the caveat living where nobody reads it. `false` is not
+a fantasy — whole-share sizing permits brackets — so it stays as a measured comparison
+rather than being deleted.
+
+**Consequence.** Measured at the reference condition, paired per fold over 16 folds:
+DLinear −0.003119 → −0.003948, FITS +0.004188 → +0.007019, WITS +0.001801 → +0.004564;
+trade counts fall 166→140, 242→208, 218→155. **The difference is inside fold noise** —
+mean/(sd/√16) is −0.52, +1.27 and +0.47 — so the write-up reports it as a measured
+divergence that 16 folds cannot resolve, not as a result. Direction, MAE and flatness are
+byte-identical across arms, which is the check that the axis touches execution and nothing
+else. `false` is a spoke, so it runs at anchor 0 only: the divergence has **no grid
+sensitivity measurement** and the report must say so.
+
+---
+
+## 2026-08-26 — The scheduling-constraint pattern: hold the change, not the plan
+
+**Decision.** When a change cannot land because something is running, the change is
+**held as code on disk** with its tests, and the *hold* is what is written down — never a
+plan to make the change later.
+
+**Reasoning.** Three instances in two days. (a) The universe flip could not run while the
+grid was running. (b) The model config-hash split could not land while a checkpoint was in
+use. (c) The `wits:` config section could not land while the deployed session held a
+config it would invalidate. Each time the alternative was "remember to do this after", and
+a thing to remember is the failure mode CLAUDE.md's principle is entirely about.
+
+**Consequence.** A held change is complete, tested and red-free before it is held. The
+holding note names what must finish first and what will unblock it, and it lives in
+`PROGRESS.md` where the next session reads it — not in a message.
+
+---
+
 ## Template
 
 ## YYYY-MM-DD — <short title>

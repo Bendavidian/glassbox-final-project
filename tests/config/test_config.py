@@ -551,6 +551,16 @@ def test_every_config_section_is_classified_as_shaping_or_not() -> None:
         "backtest",
         "walkforward",
         "live",
+        # **`wits` shapes weights and is still listed here, which is the one entry in this
+        # set that is a dated hold rather than a verdict.** GB-66's boundary and level keys
+        # decide a WITS weight, so on the merits the section belongs in
+        # MODEL_SHAPING_SECTIONS - and the comment there says so and says when it moves.
+        # Adding it changes `model_config_hash` for every configuration, which on
+        # 25 Aug 2026 would have had `load_predictor` refuse the deployed checkpoint hours
+        # before the GATE 2 rehearsal. Held until the grid re-run, on GB-61's precedent.
+        # A WITS checkpoint carries its own geometry and is rebuilt from it, so nothing can
+        # load at a geometry it was not trained at meanwhile.
+        "wits",
     }
     sections = {field.name for field in fields(load_config())}
 

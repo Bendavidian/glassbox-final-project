@@ -85,3 +85,32 @@ Data cost, microstructure effects, roughly 5x the complexity.
 ## New ideas
 
 _Add below. Date, one paragraph, and an honest cost estimate._
+
+## 2026-08-26 — Whole-share sizing as a declared design point
+
+Fractional sizing is what forces the loop-side target: Alpaca refuses every multi-leg
+order class on a fractional quantity, so no bracket. Whole-share sizing would permit a
+bracket — but **not two independent protective orders**, because a working sell holds the
+whole position regardless of size (measured against 97.38 shares). So it buys the bracket,
+not the constraint's removal.
+
+**The cost, measured rather than estimated** (20-symbol universe, `max_position_pct 0.10`
+of 100k = $10,000 target notional, flooring to whole shares):
+
+| symbol | at the last bar | mean over the study history | worst single bar |
+|---|---|---|---|
+| AAPL | 2.32% | 0.61% | 3.30% |
+| AMZN | 1.90% | 0.64% | 2.67% |
+| GOOGL | 3.02% | 0.56% | 3.87% |
+| MSFT | 0.62% | 1.17% | 4.98% |
+| NVDA | 0.87% | 0.22% | 2.12% |
+
+**0.6%–3.0% at current prices, mean 1.75%; up to 4.98% on a single bar.** The history
+means are lower because NVDA's split-adjusted history includes sub-dollar prices, where
+flooring costs almost nothing — so **the trade-off is time-varying, not constant**:
+whole-share sizing was nearly free for most of the study period and is expensive now.
+
+**Deliberately not an arm on the grid.** It would confound sizing with execution model,
+and the grid already carries the axis that matters. Cost if taken up: a sizing flag, a
+`risk.shares_for` branch, and a full grid re-run.
+
