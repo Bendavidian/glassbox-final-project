@@ -5165,6 +5165,49 @@ holding note names what must finish first and what will unblock it, and it lives
 
 ---
 
+## 2026-08-26 — Restart the deployed loop before session 3
+
+**Decision.** PID 40040 → 9256 stopped at 13:42 local and relaunched as 39900 → 9836,
+same `--sessions 3` command, ~3 hours before the session.
+
+**Reasoning.** Criterion 6 asks for *two or three separate live sessions*, not for one
+process — Monday, Tuesday and tonight are three. The running process predated the ruling of
+26 Aug and would have armed two protective legs under a policy measured impossible, failed,
+and filled the gate log with errors already diagnosed and already fixed. That is noise in
+the evidence, not evidence. And the overnight re-arm — which has never executed outside
+`FakeBroker` — would have exercised a policy that cannot run.
+
+**Consequence.** Session 3 has the fixed code, an active state lock, and UTC in both the
+filename and the line stamps. State was verified clean before the stop (no positions, no
+working orders, empty book, empty `pending.json`), so nothing was lost; a forced stop was
+required because Windows cannot deliver a console interrupt to another process's console.
+Three mechanisms were demonstrated on the real system rather than in a test: the stale-lock
+reclaim ran and logged, the lock is held by the **worker** rather than the launcher stub,
+and the timezone fix is visible inside one file — `2026-08-26 13:40:01,140` from the old
+process and `2026-08-26T10:42:20Z` from the new one, the same instant three hours apart.
+Recorded in the GATE 2 log, including that sessions 1 and 2 ran under the pre-ruling code.
+
+---
+
+## 2026-08-26 — The two network outages were a local hotspot, not Alpaca
+
+**Decision.** Recorded as **operator environment**, not as a broker or feed defect, and
+GB-39's resilience is reported as *exercised by accident* rather than as *tested*.
+
+**Reasoning.** Both outages during the GATE 2 window traced to an iPhone personal hotspot
+the machine was using, not to Alpaca or to the data feed. Attributing them to the venue
+would put a fault in the report that the venue does not have.
+
+**Consequence.** The honest claim is narrow and worth making anyway: **GB-39's retry and
+backoff path ran against a real outage rather than a fixture**, which no test can
+demonstrate. The **second** outage is the stronger evidence, because it was bounded by the
+45-second read timeout added the same week — before it, a single unbounded `get_orders`
+cost **59m 49s** on 24 Aug. A skipped cycle is logged loudly and the session continues, and
+that is what happened. **This is not a claim that the loop survives a long outage
+unattended**; it is a claim that two short ones cost two cycles. GB-57 says which.
+
+---
+
 ## Template
 
 ## YYYY-MM-DD — <short title>

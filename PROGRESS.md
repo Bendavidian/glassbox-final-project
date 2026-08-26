@@ -312,6 +312,153 @@ depends on nothing in the model layer.
 
 ---
 
+## The result, for GB-57 (measured 26 Aug 2026, snapshot 2026-08-13)
+
+### The turning sentence
+
+> The published backtest describes a system that cannot be built at this venue:
+> fractional orders must be simple orders, so a fractional position cannot carry a
+> broker-side target. Under the buildable model the trade count falls in every arm —
+> **16%, 14%, 29%** — because a delayed exit holds capital and entries that would have
+> followed never happen. The return difference is **not resolvable at sixteen folds**.
+> The buildable system is measurably **different**, not measurably worse.
+
+**And the structural point, which is what makes the null robust rather than lucky.**
+`direction` is a forecast metric and therefore **invariant to the execution axis** —
+verified byte-identical across both arms, along with `mae` and `flatness`. The buildable
+model could not have rescued the null and did not damage it. The result is the same one,
+now established for the system that can actually be built.
+
+**The correction is part of the record.** The first description of this divergence was
+"32.7% worse", from a single whole-universe run. Paired per fold it is
+`mean/(sd/√16)` = **−0.52, +1.27, +0.47** — all far under 2. The point estimate stands as
+a point estimate; the difference is inside fold noise. That is the **fifth** time a first
+description in this family has been narrowed by a measurement, and the second time one
+already adopted was narrowed rather than merely corrected.
+
+### The headline: the null, and the control that proves the instrument works
+
+Direction accuracy under `target_in_loop=true`, anchor 0, mean over folds and conditions:
+
+| model | real | noise | shuffled | noise − real | shuf − real |
+|---|---|---|---|---|---|
+| **buy_and_hold** | 0.5560 | **0.5064** | 0.5418 | **−0.0495** | −0.0142 |
+| dlinear | 0.5006 | 0.5006 | 0.5021 | +0.0000 | +0.0014 |
+| fits | 0.4958 | **0.5041** | 0.5039 | **+0.0083** | +0.0081 |
+| wits | 0.5031 | **0.5050** | 0.5074 | **+0.0018** | +0.0043 |
+
+Always-long reference: **0.5395** (anchor 0), 0.5523 (21), 0.5654 (42).
+
+**FITS scores 0.0083 better on white noise than on the market. WITS 0.0018. DLinear is
+identical to four decimals — 0.5006 on real data and 0.5006 on noise.** No model reaches
+the always-long bar at any anchor, and the pattern is flat across all three:
+
+| model | anchor 0 | anchor 21 | anchor 42 |
+|---|---|---|---|
+| dlinear | 0.5006 | 0.4973 | 0.5006 |
+| fits | 0.4958 | 0.5056 | 0.5095 |
+| wits | 0.5031 | 0.5067 | 0.5066 |
+
+**`buy_and_hold` is the only arm that degrades on noise, and that is the control working.**
+It is the one arm whose entire content is drift, so it is the one arm that must lose
+something when the drift is destroyed — and it loses 4.95 points. A control that moves the
+right way for exactly one arm, and for the arm whose mechanism predicts it, is what turns
+*"we found nothing"* into ***"we measured that there was nothing to find, and the
+instrument can detect something when it is there."***
+
+### The two arms, reference condition, paired per fold (n = 16)
+
+| model | arm | trades | mean fold return | Sharpe | max DD | vs buy&hold |
+|---|---|---|---|---|---|---|
+| dlinear | false | 166 | −0.003119 | −0.3296 | 0.01321 | −0.08046 |
+| dlinear | **true** | 140 | −0.003948 | −0.5900 | 0.01302 | −0.08128 |
+| fits | false | 242 | +0.004188 | +0.3774 | 0.01823 | −0.07315 |
+| fits | **true** | 208 | +0.007019 | +0.3023 | 0.01622 | −0.07032 |
+| wits | false | 218 | +0.001801 | +0.8180 | 0.01642 | −0.07554 |
+| wits | **true** | 155 | +0.004564 | +0.7203 | 0.01187 | −0.07277 |
+| buy&hold | both | 0 | +0.077337 | +1.3889 | 0.10390 | — |
+
+Paired difference (`true − false`): dlinear −0.000829 (sd 0.006392), fits +0.002832
+(sd 0.008933), wits +0.002763 (sd 0.023358).
+
+**Limit that must be stated:** `false` is a spoke, so it runs at **anchor 0 only**. The
+divergence itself has no grid-sensitivity measurement. Reporting it as if three anchors
+supported it would be the error §7.4 exists to prevent.
+
+### The empty cells are deliberate and say so
+
+**22 rows skipped, every one with its reason in the file:** FITS × `C2_hybrid` ×14, and
+WITS × `C2_hybrid` ×8. FITS is univariate and filters frequencies itself, so pre-filtered
+wavelet bands are redundant; WITS is univariate and its **first act is a DWT**, so feeding
+it the `wav_a1..a3` DWT bands applies the same transform twice. A study that records *why*
+a cell is empty is a study a reviewer can check — and the alternative, filling the cells to
+square the table, is exactly what spec §6.4 forbids.
+
+**Provenance for every number above:** snapshot `2026-08-13`, 1,110 rows, 768 reportable,
+28 conditions, 16 folds, `C0_base` unless stated.
+
+---
+
+## GATE 2 — the process was restarted before session 3 (26 Aug 2026, 13:42 local / 10:42Z)
+
+**Recorded here because the gate log has to say what produced its evidence, and tonight's
+session was produced by different code from the two before it.**
+
+**What was restarted.** PID 40040 → 9256, launched 25 Aug 17:47 local under
+`--sessions 3`, stopped at 13:42 local on 26 Aug after 19h 52m uptime. Relaunched
+immediately as PID 39900 → 9836, same command. **The state was verified clean before the
+stop and nothing was lost:** no broker positions, no working orders, `book.json` empty,
+`entry_fills.json` empty, `pending.json` empty. A forced stop was required — Windows
+cannot deliver a console interrupt to another process's console — and cost only the
+summary lines of a session that had not started.
+
+**Sessions 1 and 2 ran under the pre-ruling code. Session 3 does not.** The stopped
+process was launched before the ruling of 26 Aug and would have armed **two** protective
+legs on any filled entry: a stop and a limit. That is the configuration measured
+impossible — a working sell holds the whole position, so the limit is refused with
+`insufficient qty available` — and the refusal counts as an arming failure, two of which
+flatten a healthy position. Tonight it would have produced a gate log full of errors that
+were **already diagnosed and already fixed**, which is noise in the evidence rather than
+evidence.
+
+**Criterion 6 is not compromised by the restart.** It asks for *two or three separate live
+sessions*, not for one process. Monday 24 Aug was a session, Tuesday 25 Aug was a session,
+and tonight is the third. The `--sessions 3` flag remains the mechanism that stops a
+session being **missed** because nobody was there to start it, and the restarted process
+carries it.
+
+**What the restart bought, none of which the old process could have.** The one protective
+order is now the stop and the target is the loop's, so the policy the overnight re-arm
+would exercise is one that can actually run — and Wednesday into Thursday is the first
+time that re-arm is exercised anywhere but `FakeBroker`. The state directory is locked, so
+a stray rehearsal is refused rather than stopped by luck. And the session log is UTC in
+both the filename and the line stamps.
+
+**Three things the restart itself demonstrated, on the real system rather than in a test.**
+The stale-lock path ran for the first time: the adopted lock naming a dead PID 40040 was
+reclaimed and said so —
+
+```
+2026-08-26T10:42:20Z WARNING glassbox.live_lock reclaiming a stale lock on
+    checkpoints\live: PID 40040 (mode 'deployed') ... is no longer running
+2026-08-26T10:42:20Z INFO    glassbox.live_loop state directory checkpoints/live
+    locked by PID 9836 (deployed)
+```
+
+The timezone fix is visible **inside one file**, which is the clearest form the evidence
+could take — `live-2026-08-26.log` carries `2026-08-26 13:40:01,140` from the old process
+and `2026-08-26T10:42:20Z` from the new one, three hours apart and the same instant. And
+the lock is held by the **worker** (9836) rather than the launcher stub, which is the
+process whose death should release it.
+
+**What the gate log must still say about the accidental protection.** On 25 Aug a stray
+rehearsal was refused by the *one decision per completed bar* rule, not by any mechanism
+built to refuse it. That protection expired today, when a new bar completed. It is now a
+lock, and the lock was proven by running the real hazard command against the live state
+directory and being refused by name with exit 3.
+
+---
+
 ## Scope boundary — the live dashboard pass (ruled 24 Aug 2026, before it starts)
 
 **Recorded before tomorrow, so it is a decision rather than a judgement made while
@@ -487,7 +634,7 @@ line is answered by running something; nothing here is asserted.
 | Every decision carries an exact attribution, visible in the dashboard | **PASS** | 75 records live + replay; worst `abs(sum(per_channel) − forecast_total)` = **1.248e-08** against a 1e-5 tolerance. Every record has channels, every one renders, all visible in the table, the bars and the expander titles. |
 | Replay reproduces a recorded day offline | **PASS** | Fold 13, 14 bars → 14 cycles, 0 failed, 70 decisions, with `load_live_bars` and `AlpacaBroker` **replaced by functions that raise**. Offline is measured, not assumed. |
 | Co-Pilot approve and reject | **PASS, replayed** | 2 queued by the loop; one approved → submitted, both legs armed; one declined → broker order count unchanged. 70 records after, not 72, because an answer amends. Never exercised against Alpaca. |
-| Two or three separate live sessions (`SOLO_BUILD_PLAN` §4.1) | **FAIL** | One completed bar decided live: 2026-08-17. |
+| Two or three separate live sessions (`SOLO_BUILD_PLAN` §4.1) | **FAIL as walked 20 Aug; in progress since 24 Aug** | One completed bar decided live at the walk: 2026-08-17. Since: Monday 24 Aug, Tuesday 25 Aug, and Wednesday 26 Aug in progress — **two or three, which is what the criterion asks**. Sessions 1 and 2 ran under the pre-ruling two-leg policy; the process was restarted before session 3 and the reason is logged above. |
 
 **The three failures reduce to two causes, and neither is a defect:** the deployed band
 stands aside, so no order and no recommendation can exist; and the plan's own floor of two
