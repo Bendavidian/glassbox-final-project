@@ -35,7 +35,8 @@ needs a dependence assumption nobody here has checked. **The raw ``p`` stays in 
 beside it**: an adjusted value alone hides how much of the adjustment the family size did.
 
 **A floor worth knowing before reading any of it.** The exact two-sided signed-rank test
-on 16 folds cannot return a p below ``2 / 2**16 = 3.05e-5``, so no claim in this study can
+on ``n`` folds cannot return a p below ``2**(1-n)`` - 3.05e-5 at the 16 this grid runs,
+and the printed bound is computed rather than quoted - so no claim in this study can
 be significant past that however large its effect. Holm over a family of 50 leaves a
 smallest achievable adjusted value of about 1.5e-3, which is still comfortably
 significant - the correction is survivable, and a claim that does not survive it was not
@@ -303,10 +304,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     with pd.option_context("display.width", 200, "display.max_rows", None):
         print(shown.to_string(index=False))
     print()
+    # Derived, not written down. The exact two-sided Wilcoxon on n pairs cannot go below
+    # 2**(1-n); stating "16 folds" and "3.05e-5" as literals made the bound a claim about
+    # a grid rather than about this one, and a re-run with a different fold count would
+    # have printed a false bound with nothing to catch it (27 Aug 2026).
+    pairs = int(table["n_folds"].max()) if len(table) else 0
+    floor = 2.0 ** (1 - pairs) if pairs else float("nan")
     print(
         f"{len(table)} tests in the family. `p` is uncorrected; `p_holm` is "
         f"Holm-Bonferroni over all {len(table)} of them, controlling the family-wise "
-        "error rate. The exact test on 16 folds cannot return a p below 3.05e-5."
+        f"error rate. The exact test on {pairs} folds cannot return a p below {floor:.3g}."
     )
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)

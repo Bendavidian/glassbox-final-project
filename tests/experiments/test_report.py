@@ -146,8 +146,67 @@ def test_the_rank_correlations_are_printed_with_the_table(frame, tmp_path) -> No
 def test_the_correlations_are_measured_not_quoted(frame) -> None:
     ranks = report.correlations(frame)
 
-    assert set(ranks) == {"flatness", "direction"}
-    assert all(-1.0 <= value <= 1.0 for value in ranks.values())
+    assert set(ranks) == {"across_arms", "across_arm_folds"}
+    for level in ranks.values():
+        assert set(level) == {"flatness", "direction"}
+        assert all(-1.0 <= value <= 1.0 for value in level.values())
+
+
+def test_both_aggregation_levels_are_reported(frame, tmp_path) -> None:
+    """**The defect this pins, found 27 Aug 2026 while drafting GB-57.**
+
+    The report printed one coefficient, computed over arm-folds, under a fixed sentence
+    describing the arm-level relationship. On the real grid they are +0.109 and +1.000 —
+    a number and a sentence disagreeing about what they describe, in the artefact the
+    results chapter is generated from. Both levels are now printed and labelled.
+    """
+    text = report.render(frame, tmp_path, dpi=60).read_text(encoding="utf-8")
+
+    assert "across the" in text and "arms" in text
+    assert "pooled over the" in text
+    assert "arm-level" in text
+
+
+def test_the_prose_never_claims_more_than_the_coefficient(frame, tmp_path) -> None:
+    """The mechanism, not the fix: the wording is derived from the number.
+
+    A fixed string cannot be wrong about a number it never reads. Deriving it means a
+    weakening relationship weakens the sentence with it, and nobody has to notice.
+    """
+    text = report.render(frame, tmp_path, dpi=60).read_text(encoding="utf-8")
+    rho = report.correlations(frame)["across_arms"]["flatness"]
+
+    assert report.describe_correlation(rho) in text
+    if abs(rho) < report._MONOTONE:
+        assert "close to a monotone" not in text
+
+
+@pytest.mark.parametrize(
+    ("rho", "expected"),
+    [
+        (1.0, "close to a monotone increasing function"),
+        (-0.95, "close to a monotone decreasing function"),
+        (0.8, "strongly related but not monotone"),
+        (0.5, "moderately related"),
+        (0.1, "weakly related at best"),
+        (float("nan"), "not computable here"),
+    ],
+)
+def test_the_wording_follows_the_coefficient(rho: float, expected: str) -> None:
+    assert report.describe_correlation(rho) == expected
+
+
+def test_the_significance_floor_is_derived_from_the_folds_present(
+    frame, tmp_path
+) -> None:
+    """`3.05e-5` was written down beside "16 folds", both as literals. The exact
+    two-sided Wilcoxon floor is `2**(1-n)`, so a grid with a different fold count would
+    have printed a bound that was simply false."""
+    text = report.render(frame, tmp_path, dpi=60).read_text(encoding="utf-8")
+    folds = int(stats.wilcoxon(study.reportable(frame))["n_folds"].max())
+
+    assert f"on {folds} folds" in text
+    assert f"{2.0 ** (1 - folds):.3g}" in text
 
 
 # ── every metric against its own reference ───────────────────────────────────

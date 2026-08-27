@@ -101,12 +101,16 @@ CLAIMS: tuple[Claim, ...] = (
         "points vs always-long",
     ),
     Claim(
-        "FITS beats DLinear on direction",
+        # Interrogative, not declarative. A heading that asserts its own outcome is
+        # printed unchanged when the number under it inverts - the same defect as the
+        # hardcoded Spearman sentence, one level up. "No arm beats..." is left as it
+        # stands because it is the study's null hypothesis, not a predicted finding.
+        "Does FITS beat DLinear on direction?",
         lambda cell: _gap(cell, ("fits", "C0_base"), ("dlinear", "C0_base")),
         "points",
     ),
     Claim(
-        "The wavelets help DLinear",
+        "Do the wavelets help DLinear?",
         lambda cell: _gap(cell, ("dlinear", "C2_hybrid"), ("dlinear", "C0_base")),
         "points",
     ),
@@ -255,23 +259,70 @@ def _lookup(tests: pd.DataFrame, key: tuple, column: str) -> float:
         return math.nan
 
 
-def correlations(frame: pd.DataFrame) -> dict[str, float]:
-    """Spearman of MAE against flatness and against direction, over every arm-fold.
+#: How a Spearman coefficient is allowed to be described in prose. Derived from the
+#: number rather than asserted beside it - see :func:`describe_correlation`.
+_MONOTONE = 0.9
+_STRONG = 0.7
+_MODERATE = 0.4
 
-    **Printed with every MAE table**, per §7.3 as amended: across arms MAE is close to a
-    monotone function of how flat the forecast is and carries almost no information about
-    accuracy, and a reader who is not shown that will read the MAE column as accuracy.
+
+def describe_correlation(rho: float) -> str:
+    """The strongest wording a coefficient of ``rho`` licenses.
+
+    **This exists because the report asserted a conclusion next to a number that did not
+    support it** (found 27 Aug 2026 while drafting GB-57). The sentence *"MAE is close to
+    a monotone function of how flat the forecast is"* was a fixed string, printed whatever
+    the coefficient turned out to be. Deriving the wording from the value means the prose
+    cannot outrun the measurement: if the relationship weakens, the sentence weakens with
+    it, and nobody has to notice.
+    """
+    if math.isnan(rho):
+        return "not computable here"
+    size = abs(rho)
+    direction = "monotone increasing" if rho > 0 else "monotone decreasing"
+    if size >= _MONOTONE:
+        return f"close to a {direction} function"
+    if size >= _STRONG:
+        return "strongly related but not monotone"
+    if size >= _MODERATE:
+        return "moderately related"
+    return "weakly related at best"
+
+
+def correlations(frame: pd.DataFrame) -> dict[str, dict[str, float]]:
+    """Spearman of MAE against flatness and against direction, at **two** levels.
+
+    **The level is the finding, and computing only one of them is how the report came to
+    print a number that disagreed with the sentence above it** (27 Aug 2026). §7.3's claim
+    is about *arms* - it says a results table's MAE column ranks whole arms the way a
+    flatness column would - so the arm-level coefficient is the one that tests it. Pooling
+    every arm-fold instead answers a different question, *does a fold with higher error
+    also have a flatter forecast*, and on this grid the two disagree sharply: **+1.000
+    across the six arms against +0.109 across the 624 arm-folds.**
+
+    Both are returned and both are printed. The arm-level figure is the one the chapter
+    uses; the pooled one is shown beside it so a reader can see that within-arm variation
+    swamps the between-arm ordering, which is itself worth knowing and is not a defect.
+
+    Returns:
+        ``{"across_arms": {...}, "across_arm_folds": {...}}``, each mapping ``flatness``
+        and ``direction`` to a Spearman coefficient.
     """
     real = study.reportable(frame).dropna(subset=["mae"])
-    out: dict[str, float] = {}
-    for against in ("flatness", "direction"):
-        pair = real.dropna(subset=[against])
-        out[against] = (
-            float(scipy_stats.spearmanr(pair["mae"], pair[against]).statistic)
-            if len(pair) > 2
-            else math.nan
-        )
-    return out
+    by_arm = real.groupby(["model", "channels"], dropna=False)[
+        ["mae", "flatness", "direction"]
+    ].mean()
+
+    def _rho(table: pd.DataFrame, against: str) -> float:
+        pair = table.dropna(subset=["mae", against])
+        if len(pair) <= 2:
+            return math.nan
+        return float(scipy_stats.spearmanr(pair["mae"], pair[against]).statistic)
+
+    return {
+        "across_arms": {a: _rho(by_arm, a) for a in ("flatness", "direction")},
+        "across_arm_folds": {a: _rho(real, a) for a in ("flatness", "direction")},
+    }
 
 
 # ── the claims, at every anchor and against both nulls ───────────────────────
@@ -488,6 +539,9 @@ def render(frame: pd.DataFrame, out_dir: Path, dpi: int = DEFAULT_DPI) -> Path:
     """Write the report and its figures. Returns the path of the markdown file."""
     out_dir.mkdir(parents=True, exist_ok=True)
     ranks = correlations(frame)
+    _rankable = study.reportable(frame).dropna(subset=["mae"])
+    n_arms = len(_rankable.groupby(["model", "channels"], dropna=False))
+    n_arm_folds = len(_rankable)
     lines = ["# GlassBox Trader — study results", "", *header(frame), ""]
 
     lines += [
@@ -501,11 +555,19 @@ def render(frame: pd.DataFrame, out_dir: Path, dpi: int = DEFAULT_DPI) -> Path:
         _md(summary(frame)),
         "",
         (
-            f"**Spearman(MAE, flatness) = {ranks['flatness']:+.3f}** against "
-            f"**Spearman(MAE, direction) = {ranks['direction']:+.3f}** — MAE across these "
-            "arms is close to a monotone function of how flat the forecast is and carries "
-            "almost no information about accuracy (§7.3). `flatness` is the column beside "
-            "it."
+            f"**Spearman(MAE, flatness) = {ranks['across_arms']['flatness']:+.3f} across "
+            f"the {n_arms} arms** "
+            f"({ranks['across_arm_folds']['flatness']:+.3f} pooled over the "
+            f"{n_arm_folds} individual arm-folds), against **Spearman(MAE, direction) = "
+            f"{ranks['across_arms']['direction']:+.3f} across arms** "
+            f"({ranks['across_arm_folds']['direction']:+.3f} pooled). §7.3's claim is the "
+            "**arm-level** one — a results table compares whole arms — and that is the "
+            "figure this report uses. At that level, MAE against flatness is "
+            f"{describe_correlation(ranks['across_arms']['flatness'])}; MAE against "
+            "directional accuracy is "
+            f"{describe_correlation(ranks['across_arms']['direction'])}. So the MAE "
+            "column is a flatness column unless `flatness` is beside it, which is why it "
+            "always is."
         ),
         "",
         "## Every claim, at every anchor and against both nulls",
@@ -524,15 +586,20 @@ def render(frame: pd.DataFrame, out_dir: Path, dpi: int = DEFAULT_DPI) -> Path:
     lines += ["## The COF sweep", "", _md(cof_curve(frame)), ""]
 
     tests = stats.wilcoxon(study.reportable(frame))
+    # Derived, not written down: the exact two-sided Wilcoxon on n pairs cannot go below
+    # 2**(1-n), so the sentence below has to move if the fold count ever does. `max`
+    # rather than the mode, because the floor of the LARGEST test is the family's floor.
+    n_pairs = int(tests["n_folds"].max()) if len(tests) else 0
+    p_floor = 2.0 ** (1 - n_pairs) if n_pairs else math.nan
     lines += [
         "## Paired Wilcoxon signed-rank",
         "",
         (
             f"**{len(tests)} tests in the family**, and the family is every test in this "
             "table. `p` is uncorrected and `p_holm` is Holm-Bonferroni over all of them, "
-            "controlling the family-wise error rate. The exact two-sided test on 16 folds "
-            "cannot return a p below **3.05e-5**, so no claim here can be significant "
-            "past that however large its effect."
+            f"controlling the family-wise error rate. The exact two-sided test on {n_pairs}"
+            f" folds cannot return a p below **{p_floor:.3g}**, so no claim here can be "
+            "significant past that however large its effect."
         ),
         "",
         _md(tests.drop(columns=["skipped"])),
