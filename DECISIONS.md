@@ -5208,6 +5208,49 @@ unattended**; it is a claim that two short ones cost two cycles. GB-57 says whic
 
 ---
 
+## 2026-08-27 — The status palette, settled before GB-63 starts
+
+**Decision.** Two status colours, and only two:
+
+| role | hex | name |
+|---|---|---|
+| gain | `#2E9E6B` | jade |
+| loss | `#B03A5B` | rose |
+
+**The three-role rule stands and is the reason this is a short list.** Status colour never
+appears inside a data-encoding chart, where the ramp owns meaning; and it never carries
+information alone — every gain and loss is redundant with a sign and a glyph, so the panel
+reads in greyscale. A colour that is the only carrier of a fact is a fact a colour-blind
+reader does not have.
+
+**Reasoning.** CIE76 ΔE against every existing role, computed from the constants in
+`dashboard/app.py` rather than sampled from a screenshot. Threshold 25; both clear it
+against all thirteen roles.
+
+- `#2E9E6B` — nearest role is **MUTED `#7A7A80` at 49.82**. Chrome orange 104.86, ramp
+  light end 55.21.
+- `#B03A5B` — nearest role is **ORANGE_DIM `#8A3219` at 31.87**. Chrome orange 47.65,
+  ramp dark end 63.66.
+- The two status colours are **95.57** apart, so they are unmistakable from each other.
+
+**The loss colour leans magenta deliberately.** The chrome accent is an orange-vermillion,
+so an ordinary red separates on the number and not in the eye — and the eye is what matters
+on a P&L figure. `#B03A5B` holds 47.65 from chrome where a conventional red would collapse
+toward it.
+
+**Consequence.** The tightest pair in the whole palette is **loss against ORANGE_DIM at
+31.87**, not loss against the accent, and it is the only pair on the board inside 40. If a
+dimmed control is ever placed adjacent to a P&L figure that is the pair to re-check; nothing
+else sits below 47.
+
+**Two corrections to the figures this was proposed with**, both immaterial and both recorded
+because a number nobody re-derived is a number nobody can check. The chrome accent is
+`#E8542A`, not `#E8552A` — worth ΔE 0.47. And loss-to-ramp-dark is 63.66 rather than the
+61.8 estimated from a screenshot. Three of the four proposed figures were right to within
+0.4; sampling a screenshot cost less than a digit of error here, and would not always.
+
+---
+
 ## Template
 
 ## YYYY-MM-DD — <short title>
