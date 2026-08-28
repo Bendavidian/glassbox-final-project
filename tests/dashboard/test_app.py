@@ -282,15 +282,6 @@ def test_the_decision_log_is_newest_first_and_carries_the_cancellation() -> None
 # ── the design language ──────────────────────────────────────────────────────
 
 
-def test_the_stylesheet_is_the_near_black_ground_with_dashed_hairlines() -> None:
-    css = app.stylesheet()
-
-    assert app.INK in css
-    assert "dashed" in css
-    assert "letter-spacing" in css
-    assert "uppercase" in css
-
-
 def test_the_rtl_narrative_rule_moves_to_the_other_side() -> None:
     """A left border on a right-to-left paragraph sits at the end of the sentence."""
     css = app.stylesheet()
@@ -1130,3 +1121,89 @@ def test_a_card_states_the_range_of_its_own_data_not_the_pages() -> None:
     assert (
         source.count("from_daily") == 5
     ), "a daily-sourced card is using the wrong pill"
+
+
+# ── GB-63c: the starfield and the flat language ─────────────────────────────
+
+
+def test_the_starfield_is_identical_on_every_render() -> None:
+    """**This is the whole design, not a nicety.**
+
+    Streamlit re-executes the script and rebuilds the DOM on every rerun, so the field is
+    re-injected once a minute. A field seeded from the clock would reshuffle each time,
+    which is an animation of something that has not changed - the one thing this console
+    refuses to do. Determinism is what makes re-injection equivalent to injecting once.
+    """
+    assert app.starfield() == app.starfield()
+    assert app.starfield(seed=1337) != app.starfield(
+        seed=7
+    ), "the seed is not reaching the field; determinism would be an accident"
+
+
+def test_every_star_carries_a_negative_delay() -> None:
+    """The subtler half. A CSS animation restarts when its node is replaced, so without a
+    seeded negative delay each rerun would reset every star to the start of its drift -
+    deterministic in position and random in phase, which is a reshuffle by another name.
+    """
+    field = app.starfield()
+
+    assert field.count("<i ") == app.STAR_COUNT
+    assert field.count("animation-delay:-") == app.STAR_COUNT
+
+
+def test_the_starfield_is_hidden_from_assistive_technology() -> None:
+    """It carries no information. A screen reader announcing forty-eight empty elements
+    would be worse than the decoration is worth."""
+    field = app.starfield()
+
+    assert 'aria-hidden="true"' in field
+    assert "pointer-events: none" in app.stylesheet()
+
+
+def test_reduced_motion_stops_the_drift_and_keeps_the_field() -> None:
+    """The field stays; the drift stops. Removing the points as well would take something
+    away to answer a question that was asked about motion."""
+    css = app.stylesheet()
+
+    assert "@media (prefers-reduced-motion: reduce)" in css
+    # Sliced to the end of the block rather than by a character count: the block opens
+    # with a comment explaining why the field stays, and a fixed-width slice landed inside
+    # it. A test that reads a fixed number of characters of CSS is a test that breaks when
+    # somebody explains themselves.
+    block = css.split("@media (prefers-reduced-motion: reduce)")[1]
+    block = block[: block.index("}", block.index(".gb-stars"))]
+    assert "animation: none" in block
+
+
+def test_nothing_is_filled_and_nothing_is_rounded() -> None:
+    """**No cards.** Every fill must be the ground itself or a `transparent` that removes
+    one of Streamlit's, and every radius must be an explicit 0 - except the star dots,
+    which are 1px circles and the one place a radius means something."""
+    css = app.stylesheet()
+
+    fills = re.findall(r"background:\s*([^;]+);", css)
+    assert set(fills) <= {app.GROUND, "transparent"}, f"a fill crept back: {fills}"
+
+    radii = re.findall(r"border-radius:\s*([^;]+);", css)
+    assert set(radii) <= {"0", "50%"}, f"a rounded container crept back: {radii}"
+    assert radii.count("50%") == 1, "only the star dots are round"
+
+
+def test_the_type_is_one_monospace_family_with_tabular_figures() -> None:
+    """Tabular figures are a readability requirement in a dense monospace table: a reader
+    compares magnitudes by scanning a column, and proportional digits break that."""
+    css = app.stylesheet()
+
+    assert "IBM Plex Mono" in css
+    assert "font-variant-numeric: tabular-nums" in css
+    assert "ui-monospace" in css, "the fallback stack must survive a font failure"
+
+
+def test_the_narrative_keeps_its_own_stack_and_its_rtl_rule() -> None:
+    """Monospace is for the English chrome and the numerals. A Hebrew sentence set in IBM
+    Plex Mono would fall back anyway, and this rule was dropped once already in a rewrite
+    and restored by a test."""
+    css = app.stylesheet()
+
+    assert '.gb-narrative[dir="rtl"]' in css
+    assert "border-right: 2px solid" in css

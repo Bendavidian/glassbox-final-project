@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import sys
 import time
 from collections.abc import Sequence
@@ -56,58 +57,67 @@ import pandas as pd
 from glassbox import records
 from glassbox.config.loader import Config, config_hash, load_config
 from glassbox.contracts.schemas import Attribution, DecisionRecord
+from glassbox.dashboard.tokens import (
+    ACCENT,
+    DIM,
+    GAIN,
+    GROUND,
+    HEBREW_SANS,
+    LOSS,
+    MONO,
+    RULE,
+    RULE_FAINT,
+    STAR_A,
+    STAR_B,
+    TEXT,
+)
 from glassbox.engine.reconcile import Book
 from glassbox.engine.signal import Thresholds
 from glassbox.explain.channel import cancellation, shares
 
 # ── the palette ──────────────────────────────────────────────────────────────
 
-INK = "#0B0E11"  # page ground
-PANEL = "#12161B"  # card fill
-HAIRLINE = "#1E252D"  # card border, 1px, subtle
-PAPER = "#E6EAF0"  # primary text
-MUTED = "#8A94A6"  # labels, axes, secondary text
+# The values live in `tokens.py`, which is where the contrast test walks them. These are
+# aliases, kept under their old names because ~40 SVG builders below thread `ORANGE` and
+# `MUTED` through as arguments - renaming them would be forty edits for no change in
+# meaning, and the meaning is what these names still carry.
+#
+# **`PANEL` is now the ground.** There are no panels: every region sits directly on
+# `#0E1116`, separated by rules and space. Pointing the name at the ground removes every
+# fill in one edit rather than in forty, and the alias stays so the SVG builders that fill
+# their own background with it keep drawing on the same colour the page does.
+INK = GROUND
+PANEL = GROUND
+HAIRLINE = RULE
+PAPER = TEXT
+MUTED = DIM
 
-# Neutral emphasis and selection ONLY. Not a third status colour: nothing on this console
-# encodes a value in blue outside the ramp, and an accent that started carrying meaning
-# would be the second data family the ramp already refuses to become.
-ACCENT = "#3B82F6"
-
-# Kept under their old names because the SVG builders below take colours as arguments and
-# `ORANGE` is threaded through several of them as "the chrome colour". The hue changed;
-# the role did not.
+# Chrome, and only chrome: section rules, active states, the symbol column, selection.
+# **A number is never vermillion and a rule is never green.** The two families answer
+# different questions - what kind of thing is this, and which way did it go - and a mark
+# that could belong to either is a mark the reader has to decode.
 ORANGE = ACCENT
-ORANGE_DIM = "#1E3A5F"
+ORANGE_DIM = RULE
 
-# Data. Dark for slow, light for fast — the spectral ramp, applied to channels ordered by
-# how much history each one looks back over.
+# Data. Dark for slow, light for fast. **Deliberately NOT in `tokens.py`**: those are
+# chrome and status, which carry text a reader must resolve and are therefore held to a
+# contrast floor. A ramp entry is a mark inside a chart that encodes *which* channel or
+# *which* band - a quantity, not a value and not a label - and holding it to the text
+# floor would flatten the ramp into six colours of the same lightness, destroying the one
+# thing it encodes.
+#
+# Its territory is exactly two charts, the attribution bars and the spectral panel.
+# `test_the_ramp_stays_inside_attribution_and_spectral` holds both directions: the ramp
+# appears nowhere else, and status colour appears nowhere inside those two.
 RAMP = ("#0A2239", "#123F63", "#1B6CA8", "#2E97D4", "#6FC3EC", "#B7E3F7")
 
-# Status. Gain and loss, and nothing else. Ruled 27 Aug 2026; see DECISIONS for the
-# CIE76 distances against every other role, measured from the constants above rather
-# than sampled from a screenshot.
-#
-# **Two rules travel with these two colours, and both are enforced by tests rather than
-# remembered.** (1) Status colour never appears inside a data-encoding chart: the ramp
-# owns meaning there, and a third family would make a reader ask what green means on an
-# axis that is already spending colour on frequency. (2) Status colour never carries
-# information alone — every gain and loss is redundant with a sign and a glyph, so the
-# panel reads in greyscale. A colour that is the only carrier of a fact is a fact a
-# colour-blind reader does not have.
-#
-# The loss colour leans magenta deliberately. ORANGE is an orange-vermillion, so an
-# ordinary red separates on the number and not in the eye — and the eye is what matters
-# on a P&L figure. `#B03A5B` holds ΔE 47.65 from it where a conventional red would not.
-GAIN = "#22C55E"
-LOSS = "#EF4444"
-
-#: Area fills under the equity curves. 15%, between the 12-18% the design calls for: light
-#: enough that a gridline reads through it, solid enough to carry the sign at a glance.
+#: Area fills under the equity curves, at 15% - light enough that a rule reads through,
+#: solid enough to carry the sign at a glance.
 GAIN_FILL = "rgba(34,197,94,0.15)"
 LOSS_FILL = "rgba(239,68,68,0.15)"
 
-#: Every surface that encodes data with colour. `test_status_colour_never_enters_a_data
-#: _chart` renders each one and refuses to find GAIN or LOSS in it.
+#: Every surface that encodes data with colour. The ramp's territory is exactly two charts;
+#: `test_the_ramp_stays_inside_attribution_and_spectral` holds both directions of that.
 STATUS_COLOURS = (GAIN, LOSS)
 
 # Channels from slowest to fastest, which is the order the ramp is assigned in. The ramp
@@ -1799,151 +1809,194 @@ def expander_title(record: DecisionRecord) -> str:
 # ── the design language, as CSS ──────────────────────────────────────────────
 
 
+#: The seed. Fixed, and the whole design rests on it - see :func:`starfield`.
+STAR_SEED = 1337
+STAR_COUNT = 48
+
+
+def starfield(seed: int = STAR_SEED, count: int = STAR_COUNT) -> str:
+    """A fixed field of faint points behind the content.
+
+    **It cannot be injected once, and the seed is why that does not matter.** Streamlit
+    re-executes the script on every rerun and rebuilds the DOM; there is no primitive that
+    survives that. What makes re-injection *equivalent* to injecting once is determinism:
+    the same points at the same coordinates with the same animation parameters every
+    render, so the browser is handed an identical subtree. A field that reshuffled would
+    be an animation, and this project does not animate things that have not changed.
+
+    **The negative delay is the part that is easy to get wrong.** A CSS animation restarts
+    when its node is replaced, so without it every rerun would reset each star to the start
+    of its drift - the field would be deterministic in *position* and non-deterministic in
+    *phase*, which is a reshuffle by another name. Each star's delay is drawn from the same
+    seed, so the phase at injection is a function of the seed rather than of when the page
+    loaded. Between reruns the field drifts; at a rerun it returns to the same phase.
+    Claiming smooth continuous drift would be claiming something Streamlit cannot deliver.
+
+    At 1.57:1 and 1.94:1 against the ground none of this is visible, which is the intent:
+    if a reader notices a star while reading a number, it is too strong.
+    """
+    points = random.Random(seed)
+    dots = []
+    for index in range(count):
+        left = points.uniform(0, 100)
+        top = points.uniform(0, 100)
+        colour = STAR_B if points.random() < 0.4 else STAR_A
+        drift = points.uniform(10, 16)
+        duration = points.uniform(25, 40)
+        delay = -points.uniform(0, duration)
+        dots.append(
+            f'<i style="left:{left:.2f}%;top:{top:.2f}%;background:{colour};'
+            f"--drift:{drift:.1f}px;animation-duration:{duration:.1f}s;"
+            f'animation-delay:{delay:.1f}s"></i>'
+        )
+    return f'<div class="gb-stars" aria-hidden="true">{"".join(dots)}</div>'
+
+
 def stylesheet() -> str:
-    """The console's whole visual language, as one stylesheet.
+    """The whole visual language: three rule weights, one family, and space.
 
-    **Card equal-height is the only part that fights Streamlit.** `st.columns` renders each
-    column as a flex child of a row, so a card that is `height:100%` inside a column that
-    is `display:flex` fills the row's tallest card without any measurement. Targeting
-    Streamlit's own `data-testid` attributes is load-bearing rather than cosmetic here, and
-    it is the reason a card must be one `st.markdown` call: a second call inserts another
-    wrapper between the column and the card, and the height chain breaks at it.
+    **No fills anywhere.** No panel backgrounds, no borders on four sides, no rounded
+    containers, no shadows. A region that needs to feel distinct gets more space, not a
+    box. The entire chrome vocabulary is a 2px accent rule above a section label, a 1px
+    rule between sub-regions, a 1px faint rule between table rows, and whitespace.
 
-    Reflow needs no media queries. Streamlit stacks columns below its own breakpoint, so
-    the grid collapses to one column on a narrow viewport on its own; only the type scale
-    is adjusted.
+    **Tabular figures are a requirement, not a preference.** In a dense monospace table a
+    reader compares magnitudes by scanning a column, and proportional digits break that at
+    the one place the design is asking them to do it.
     """
     return f"""
 <style>
-  .stApp {{ background: {INK}; }}
-  html, body, [class*="css"] {{
-      color: {PAPER};
-      font-family: Inter, "SF Pro Text", -apple-system, "Segoe UI", sans-serif;
-      font-feature-settings: "tnum" 1, "cv05" 1;
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+  .stApp {{ background: {GROUND}; }}
+  html, body, [class*="css"], .stMarkdown, p, div, span, td, th {{
+      font-family: {MONO};
+      color: {TEXT};
+      font-variant-numeric: tabular-nums;
+      -webkit-font-smoothing: antialiased;
   }}
-  .block-container {{ padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1800px; }}
+  .block-container {{ padding-top: 1.4rem; padding-bottom: 4rem; max-width: 1800px; }}
   #MainMenu, footer, header {{ visibility: hidden; }}
 
-  /* ── cards ───────────────────────────────────────────────────────────── */
-  [data-testid="stColumn"] {{ display: flex; }}
-  [data-testid="stColumn"] > div {{ width: 100%; display: flex; }}
-  .gb-card {{
-      background: {PANEL}; border: 1px solid {HAIRLINE}; border-radius: 10px;
-      padding: .85rem 1rem .9rem; width: 100%; height: 100%;
-      display: flex; flex-direction: column; margin-bottom: .85rem;
+  /* ── the starfield ───────────────────────────────────────────────────── */
+  .gb-stars {{
+      position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden;
   }}
-  .gb-card-head {{
-      display: flex; align-items: center; justify-content: space-between;
-      gap: .6rem; margin-bottom: .7rem;
+  .gb-stars i {{
+      position: absolute; width: 1px; height: 1px; border-radius: 50%;
+      animation-name: gb-drift; animation-timing-function: linear;
+      animation-iteration-count: infinite; animation-direction: alternate;
   }}
-  .gb-card-title {{
-      font-size: .74rem; letter-spacing: .1em; text-transform: uppercase;
-      color: {MUTED}; font-weight: 600;
+  @keyframes gb-drift {{
+      from {{ transform: translate(0, 0); }}
+      to   {{ transform: translate(var(--drift), calc(var(--drift) * -0.6)); }}
   }}
-  .gb-card-body {{ flex: 1; display: flex; flex-direction: column; justify-content: center; }}
-  .gb-card-note {{
-      margin-top: .6rem; padding-top: .55rem; border-top: 1px solid {HAIRLINE};
-      font-size: .68rem; color: {MUTED};
+  @media (prefers-reduced-motion: reduce) {{
+      /* The field stays; the drift stops. Removing the points as well would take away
+         something a reader may be relying on for depth, to solve a problem they asked
+         about motion. */
+      .gb-stars i {{ animation: none; }}
+  }}
+  [data-testid="stAppViewContainer"] {{ position: relative; z-index: 1; }}
+
+  /* ── the rule vocabulary: three weights and nothing else ─────────────── */
+  .gb-region {{ margin: 2.1rem 0 0; }}
+  .gb-region-rule {{ border-top: 2px solid {ACCENT}; }}
+  .gb-region-head {{
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: .8rem; padding: .5rem 0 .7rem;
+  }}
+  .gb-label {{
+      font-size: 9px; letter-spacing: .16em; text-transform: uppercase; color: {DIM};
+  }}
+  .gb-sub-rule {{ border-top: 1px solid {RULE}; margin: .9rem 0; }}
+  .gb-note {{
+      font-size: 9px; letter-spacing: .1em; color: {DIM}; padding-top: .6rem;
   }}
 
-  /* The source pill. Every card carries one; a card cannot be built without it. */
+  /* ── type scale ──────────────────────────────────────────────────────── */
+  .gb-body, .gb-meta {{ font-size: 11.5px; color: {TEXT}; }}
+  .gb-meta {{ color: {DIM}; }}
+  .gb-emph {{ font-size: 13px; }}
+  .gb-figure {{
+      font-size: 26px; font-weight: 500; letter-spacing: -.01em; line-height: 1.1;
+  }}
+
+  /* ── the source pill ─────────────────────────────────────────────────── */
   .gb-pill {{
-      border: 1px solid; border-radius: 999px; padding: .1rem .5rem;
-      font-size: .58rem; letter-spacing: .1em; font-weight: 700; white-space: nowrap;
+      border: 1px solid; padding: .05rem .45rem; font-size: 9px; letter-spacing: .14em;
+      white-space: nowrap; border-radius: 0;
   }}
-  .gb-pill-detail {{
-      color: {MUTED}; font-weight: 400; letter-spacing: .04em; margin-left: .4rem;
-  }}
+  .gb-pill-detail {{ color: {DIM}; letter-spacing: .08em; margin-left: .4rem; }}
 
-  /* A card with too little data says how little. It never borrows from the other
-     source to fill itself, so this state has to be legible rather than apologetic. */
-  .gb-empty {{
-      color: {MUTED}; font-size: .78rem; text-align: center; padding: 2.2rem .5rem;
-      border: 1px dashed {HAIRLINE}; border-radius: 8px;
-  }}
-
-  /* ── the session strip ────────────────────────────────────────────────── */
-  .gb-strip {{
-      display: flex; flex-wrap: wrap; gap: 1.6rem; align-items: baseline;
-      background: {PANEL}; border: 1px solid {HAIRLINE}; border-radius: 10px;
-      padding: .8rem 1.1rem; margin-bottom: .85rem;
-  }}
-  .gb-stat {{ display: flex; flex-direction: column; gap: .18rem; }}
-  .gb-stat-key {{
-      font-size: .58rem; letter-spacing: .12em; text-transform: uppercase; color: {MUTED};
-  }}
-  .gb-stat-value {{ font-size: .95rem; font-weight: 600; color: {PAPER}; }}
-  .gb-stat-value.dim {{ color: {MUTED}; font-weight: 400; font-size: .8rem; }}
-
-  .gb-state {{
-      border-radius: 999px; padding: .15rem .7rem; font-size: .7rem; font-weight: 700;
-      letter-spacing: .08em; border: 1px solid;
-  }}
-
-  /* ── numbers ──────────────────────────────────────────────────────────── */
-  .gb-big {{ font-size: 2.1rem; font-weight: 700; line-height: 1.05; }}
-  .gb-sub {{ font-size: .74rem; color: {MUTED}; margin-top: .3rem; }}
-
-  /* ── tables ───────────────────────────────────────────────────────────── */
-  .gb-table {{ width: 100%; border-collapse: collapse; font-size: .78rem; }}
+  /* ── tables and the row language ─────────────────────────────────────── */
+  .gb-table {{ width: 100%; border-collapse: collapse; font-size: 11.5px; }}
   .gb-table th {{
-      text-align: left; font-size: .58rem; letter-spacing: .11em; font-weight: 600;
-      text-transform: uppercase; color: {MUTED}; padding: .35rem .6rem .45rem;
-      border-bottom: 1px solid {HAIRLINE};
+      text-align: left; font-size: 9px; letter-spacing: .20em; text-transform: uppercase;
+      color: {DIM}; font-weight: 400; padding: .3rem .6rem .5rem;
+      border-bottom: 1px solid {RULE};
   }}
   .gb-table td {{
-      padding: .45rem .6rem; border-bottom: 1px solid {HAIRLINE}; color: {PAPER};
+      padding: .4rem .6rem; border-bottom: 1px solid {RULE_FAINT}; color: {TEXT};
   }}
   .gb-table tr:last-child td {{ border-bottom: none; }}
-  .gb-table td.num, .gb-table th.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  .gb-table td.num, .gb-table th.num {{ text-align: right; }}
+  /* Vermillion marks the symbol column and selection - never a value. */
   .gb-table td.gb-flag {{ color: {ACCENT}; }}
 
-  /* ── stale and status chrome ──────────────────────────────────────────── */
-  .gb-stale {{
-      color: {MUTED}; border: 1px solid {HAIRLINE}; border-radius: 6px;
-      padding: .12rem .5rem; font-size: .62rem; letter-spacing: .06em;
+  /* Every row states what the system did, as a 2px left border. It is an ACCENT on a
+     fact the WHAT column already carries in words: a reader who cannot see the border
+     loses nothing, which is what `test_action_is_recoverable_from_the_row_text` holds.
+     border-radius stays 0 - a single-sided border with rounded corners renders as a
+     defect rather than as a choice. */
+  .gb-table tr.gb-row td:first-child {{ padding-left: 8px; border-radius: 0; }}
+  .gb-row-gain td:first-child {{ border-left: 2px solid {GAIN}; }}
+  .gb-row-loss td:first-child {{ border-left: 2px solid {LOSS}; }}
+  .gb-row-hold td:first-child {{ border-left: 2px solid {RULE}; }}
+  .gb-row-hold td {{ color: {DIM}; }}
+  .gb-row-accent td:first-child {{ border-left: 2px solid {ACCENT}; }}
+
+  /* ── staleness ───────────────────────────────────────────────────────── */
+  .gb-stale {{ color: {DIM}; font-size: 9px; letter-spacing: .12em; }}
+  .gb-not-responding {{ color: {LOSS}; font-size: 9px; letter-spacing: .12em; }}
+  .gb-empty {{
+      color: {DIM}; font-size: 11.5px; padding: 1.6rem 0; letter-spacing: .06em;
   }}
-  /* The Hebrew narrative flips its rule to the other side. Restored 28 Aug 2026 after
-     the rebuild dropped it: the direction is decided by looking for Hebrew letters, and a
-     rule that stayed on the left would sit at the end of the sentence rather than its
-     start. Caught by test_the_rtl_narrative_rule_moves_to_the_other_side, which is the
-     only thing that noticed. */
+
+  /* ── the status strip ────────────────────────────────────────────────── */
+  .gb-strip {{ display: flex; flex-wrap: wrap; gap: 20px; align-items: baseline; }}
+  .gb-stat-key {{
+      font-size: 9px; letter-spacing: .16em; text-transform: uppercase; color: {DIM};
+      margin-right: .4rem;
+  }}
+  .gb-stat-value {{ font-size: 11.5px; color: {TEXT}; }}
+
+  /* ── the narrative keeps its own stack and its RTL rule ──────────────── */
   .gb-narrative {{
-      font-size: .92rem; line-height: 1.55; color: {PAPER};
+      font-family: {HEBREW_SANS}; font-size: 12.5px; line-height: 1.6; color: {TEXT};
       border-left: 2px solid {ACCENT}; padding: .2rem 0 .2rem .8rem;
   }}
   .gb-narrative[dir="rtl"] {{
       border-left: none; border-right: 2px solid {ACCENT};
       padding: .2rem .8rem .2rem 0;
   }}
-  .gb-figure {{ color: {PAPER}; font-size: 1.4rem; font-weight: 700; }}
-  .gb-label {{
-      font-size: .72rem; letter-spacing: .1em; text-transform: uppercase;
-      color: {MUTED}; margin: 1.1rem 0 .5rem; font-weight: 600;
-  }}
-  .gb-meta {{ font-size: .72rem; color: {MUTED}; }}
 
-  /* ── expanders: the one widget that stays, reskinned ──────────────────── */
+  /* ── expanders ───────────────────────────────────────────────────────── */
   [data-testid="stExpander"] details {{
-      background: {PANEL}; border: 1px solid {HAIRLINE}; border-radius: 10px;
-      margin-bottom: .5rem;
+      background: transparent; border: none; border-top: 1px solid {RULE_FAINT};
+      border-radius: 0;
   }}
-  [data-testid="stExpander"] summary {{ color: {PAPER}; font-size: .76rem; }}
+  [data-testid="stExpander"] summary {{ color: {TEXT}; font-size: 11.5px; }}
   [data-testid="stExpander"] summary:hover {{ color: {ACCENT}; }}
-  [data-testid="stExpander"] summary svg {{ fill: {MUTED}; }}
-  [data-testid="stExpander"] details > div {{ background: {PANEL}; border: none; }}
+  [data-testid="stExpander"] summary svg {{ fill: {DIM}; }}
+  [data-testid="stExpander"] details > div {{ background: transparent; border: none; }}
 
-  /* ── buttons ──────────────────────────────────────────────────────────── */
+  /* ── buttons: unfilled everywhere except Co-Pilot, which fills them ──── */
   .stButton > button {{
-      background: {PANEL}; color: {PAPER}; border: 1px solid {HAIRLINE};
-      border-radius: 8px; font-size: .76rem; font-weight: 600;
+      background: transparent; color: {TEXT}; border: 1px solid {RULE};
+      border-radius: 0; font-family: {MONO}; font-size: 11.5px; letter-spacing: .08em;
   }}
   .stButton > button:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
-
-  @media (max-width: 900px) {{
-      .gb-big {{ font-size: 1.6rem; }}
-      .gb-strip {{ gap: 1rem; }}
-  }}
 </style>
 """
 
@@ -2152,7 +2205,11 @@ def main(
     cfg = load_config()
     now = pd.Timestamp.now(tz="UTC")
     st.set_page_config(page_title="GlassBox Trader", layout="wide")
-    st.markdown(stylesheet(), unsafe_allow_html=True)
+    # One call, so the field and the rules it depends on arrive as a single node. Two
+    # calls would let Streamlit insert a wrapper between them, and the field is
+    # position:fixed behind everything - a wrapper with its own stacking context would
+    # put it in front of the content it is meant to sit behind.
+    st.markdown(stylesheet() + starfield(), unsafe_allow_html=True)
 
     read_broker = st.cache_data(ttl=BROKER_TTL_SECONDS, show_spinner=False)(
         _broker_view
