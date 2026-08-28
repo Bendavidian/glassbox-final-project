@@ -1946,6 +1946,146 @@ def test_a_rehearsal_stopped_cleanly_mid_session_leaves_nothing_behind(
     assert not state.book.managed
 
 
+class _UnreachableOnOrders:
+    """A broker that answers nothing, the way DNS failure does.
+
+    Wraps a real `FakeBroker` and fails only `get_orders`, because that is the call that
+    actually raised on 27 Aug 2026: `release_protective_legs` reads the order list before
+    it cancels anything, so the close-out died one line before the guarded `try`.
+    """
+
+    def __init__(self, inner: FakeBroker) -> None:
+        self._inner = inner
+
+    def get_orders(self):
+        raise faults.Unavailable(
+            "get_orders failed after 3 attempts: getaddrinfo failed"
+        )
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def test_a_close_out_that_cannot_reach_the_broker_reports_instead_of_raising(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """**The defect of 27 Aug 2026, and it cost an unprotected overnight hold.**
+
+    `close_out_on_stop` runs in `run_session`'s `finally`. Every other broker path in this
+    loop treats an unreachable broker as a skipped cycle; this one let `Unavailable` out,
+    so it escaped `run_session`, escaped `main`, and the process died with a traceback
+    instead of a session report. Two rehearsal positions were left open at the broker, and
+    their DAY stops expired at the close with no process alive to re-arm them.
+
+    The close-out must therefore be *reporting* code, not raising code: whatever it cannot
+    close, it names.
+    """
+    state = rehearsing(cfg, tmp_path, broker)
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+    assert state.book.managed, "the rehearsal opened nothing; harness problem"
+    held = sorted(state.book.managed)
+
+    state.broker = _UnreachableOnOrders(broker)
+    failed = live_loop.close_out_on_stop(state, NOW, log=lambda message: None)
+
+    assert sorted(failed) == held, "the unreachable close-out must name every symbol"
+    assert sorted(state.book.managed) == held, (
+        "a position that was not sold must stay in the book - a position the book has "
+        "forgotten is worse than one it still shows"
+    )
+
+
+def test_one_symbol_that_cannot_be_closed_does_not_stop_the_others(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """The close-out is the last thing between a rehearsal and an overnight hold, so it
+    tries every symbol even after one has failed."""
+    state = rehearsing(cfg, tmp_path, broker)
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+    held = sorted(state.book.managed)
+    if len(held) < 2:
+        pytest.skip("needs two open rehearsal positions to say anything")
+
+    doomed = held[0]
+    real_submit = broker.submit_market_order
+
+    def refuse_one(*, symbol: str, **kwargs):
+        if symbol == doomed:
+            raise faults.Unavailable("submit_market_order failed after 3 attempts")
+        return real_submit(symbol=symbol, **kwargs)
+
+    broker.submit_market_order = refuse_one
+    failed = live_loop.close_out_on_stop(state, NOW, log=lambda message: None)
+
+    assert list(failed) == [doomed]
+    assert doomed in state.book.managed
+    for symbol in held[1:]:
+        assert (
+            symbol not in state.book.managed
+        ), "a reachable symbol was left unflattened"
+
+
+def test_the_process_exits_non_zero_naming_what_it_could_not_flatten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bare_root_logger
+) -> None:
+    """**A failed close-out must produce a record, not a traceback - and not a green exit.**
+
+    A wrapper reading `$?` learned nothing on 27 Aug: the process died on an unhandled
+    exception, which is indistinguishable from any other crash, and the one fact that
+    mattered - two positions are open and nothing is managing them - reached no channel at
+    all. The report names them and so does the exit status.
+    """
+    report = live_loop.SessionReport(
+        session_id="s",
+        banner="",
+        cycles=(),
+        open_orders=(),
+        stopped_by="the market closed",
+        close_out_failed=("GOOGL", "NVDA"),
+    )
+    monkeypatch.setattr(live_loop, "run_sessions", lambda *a, **k: (report,))
+
+    code = live_loop.main(
+        ["--log-dir", str(tmp_path), "--state-dir", str(tmp_path / "state")]
+    )
+
+    assert code == live_loop.EXIT_CLOSE_OUT_FAILED
+    assert code != 0
+
+    # Asserted against the file rather than `caplog`, and not by preference: `main` owns
+    # the root logger and calls `basicConfig(force=True)`, which drops caplog's handler.
+    # The file is the channel that matters anyway - it is what the gate reads.
+    day = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d")
+    written = (tmp_path / f"live-{day}.log").read_text(encoding="utf-8")
+    assert "GOOGL" in written and "NVDA" in written
+    assert "RISK EVENT" in written
+    assert "Close by hand" in written
+
+
+def test_a_clean_close_out_still_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bare_root_logger
+) -> None:
+    """The other half: the new exit code must mean what it says, not fire on every run."""
+    report = live_loop.SessionReport(
+        session_id="s",
+        banner="",
+        cycles=(),
+        open_orders=(),
+        stopped_by="the market closed",
+        closed_out=("GOOGL",),
+    )
+    monkeypatch.setattr(live_loop, "run_sessions", lambda *a, **k: (report,))
+
+    assert (
+        live_loop.main(
+            ["--log-dir", str(tmp_path), "--state-dir", str(tmp_path / "state")]
+        )
+        == 0
+    )
+
+
 def test_a_deployed_session_stopped_cleanly_does_NOT_flatten(
     cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
 ) -> None:

@@ -77,6 +77,7 @@ from glassbox.engine.reconcile import Book, Holding, reconcile
 from glassbox.engine.signal import ENTER_LONG, EXIT, Thresholds, decide
 from glassbox.explain.channel import attribute
 from glassbox.explain.narrate import EN, narrate
+from glassbox.explain.spectral import Spectral, explain_spectral
 from glassbox.faults import Unavailable
 from glassbox.features.builder import (
     TARGET_CHANNEL,
@@ -122,6 +123,11 @@ DEFAULT_STATE_DIR = "checkpoints/live"
 #: settings key would become a value in every model's config hash, and where a log file
 #: lands says nothing about what any model learned.
 DEFAULT_LOG_DIR = "logs"
+
+#: ``main`` returns this when a run ended holding positions it could not flatten. Distinct
+#: from the general failure code because the operator action is different and urgent: a
+#: position is open at the broker and nothing is managing it.
+EXIT_CLOSE_OUT_FAILED = 4
 
 #: One format for both handlers. A second copy of a format string is a second thing to
 #: change, and stdout and the file quietly diverging is the kind of drift that is only
@@ -1096,7 +1102,20 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 continue
 
             forecast = forecasts[symbol]
-            found = attribute(
+            # **GB-53's spectral view was built, tested, rendered by the dashboard, and
+            # never populated** (found 28 Aug 2026 while taking the screenshots the
+            # architecture report is blocked on). `explain_spectral` had no caller
+            # anywhere in `glassbox/`, so every decision record carried
+            # `per_frequency=None` and the panel could not draw from a real record under
+            # any model. Structural, not nominal: a model that cannot enumerate its own
+            # frequency maps takes the channel view unchanged, so this is inert for
+            # DLinear and persistence rather than branching on a name.
+            explain_with = (
+                explain_spectral
+                if isinstance(state.predictor.model, Spectral)
+                else attribute
+            )
+            found = explain_with(
                 state.predictor.model,
                 _window_of(state, frames[symbol], symbol, forecast.as_of),
                 state.cfg.channels.active_channels,
@@ -1290,9 +1309,17 @@ def _flatten_for_close(state: LiveState, symbol: str, holding: Holding, log) -> 
     Returns whether the sell reached the broker. The caller needs to know: a close-out
     that failed leaves a real position behind, and treating it as done would put the
     reassuring line in the log for the one case that needs the alarming one.
+
+    **`release_protective_legs` is inside the `try`, and on 27 Aug 2026 it was not.** It
+    reads `get_orders` and calls `cancel_order` - two network calls - so an unreachable
+    broker raised `Unavailable` from the line *before* the guarded one. That escaped
+    `close_out_on_stop`, escaped `run_session`'s `finally`, and left `main` with a
+    traceback instead of a session report. Every other broker path in this loop treats
+    unreachability as a skipped cycle; this one treated it as fatal, and it is the path
+    that runs when nobody is watching.
     """
-    release_protective_legs(state, symbol)
     try:
+        release_protective_legs(state, symbol)
         sold = state.broker.submit_market_order(
             symbol=symbol,
             quantity=holding.quantity,
@@ -1348,7 +1375,22 @@ def close_out_on_stop(
     )
     failed: list[str] = []
     for symbol, holding in sorted(state.book.managed.items()):
-        if _flatten_for_close(state, symbol, holding, log):
+        # Belt and braces around `_flatten_for_close`, which already catches. The point is
+        # structural rather than defensive: this runs in a `finally`, it is the last thing
+        # standing between a rehearsal and an unprotected overnight hold, and **anything**
+        # it raises costs the session report as well as the flatten. One symbol that
+        # cannot be closed must not stop the loop trying the next one.
+        try:
+            closed = _flatten_for_close(state, symbol, holding, log)
+        except Exception as failure:  # noqa: BLE001 - reported, never fatal
+            LOGGER.error(
+                "RISK EVENT: the close-out for %s raised (%s). The position is still open "
+                "at the broker and its DAY legs expire at the close",
+                symbol,
+                failure,
+            )
+            closed = False
+        if closed:
             state.book.managed.pop(symbol, None)
         else:
             failed.append(symbol)
@@ -2542,6 +2584,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     for report in reports:
         for line in report.summary().splitlines():
             LOGGER.info(line)
+
+    # **A failed close-out must produce a record, not a traceback - and not a green exit
+    # either.** The report above already names the symbols; this makes the process status
+    # say so too, so a supervisor, a cron wrapper or a person reading `echo $?` learns
+    # that positions were left open without having to parse the log.
+    unclosed = sorted({s for report in reports for s in report.close_out_failed})
+    if unclosed:
+        LOGGER.error(
+            "RISK EVENT: this run ended without flattening %s. %s open at the broker with "
+            "no protective order once the DAY legs expire at the close, and no process is "
+            "managing %s. Close by hand",
+            ", ".join(unclosed),
+            "It is" if len(unclosed) == 1 else "They are",
+            "it" if len(unclosed) == 1 else "them",
+        )
+        return EXIT_CLOSE_OUT_FAILED
     return 0
 
 

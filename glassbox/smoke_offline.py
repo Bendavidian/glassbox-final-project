@@ -146,16 +146,37 @@ class ArmRun:
     """
 
 
+def _for_model(cfg: Config, model: str | None) -> Config:
+    """The config with ``model.active`` set, or unchanged when no arm was named.
+
+    ``None`` means *whatever the config says*, which is what ``--model``'s default
+    documents. Anything else is the caller overriding it, and the override has to reach
+    the checkpoint or the flag is a note.
+    """
+    if model is None or model == cfg.model.active:
+        return cfg
+    return replace(cfg, model=replace(cfg.model, active=model))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point. Returns a process exit code rather than raising."""
     args = _parse_args(argv)
     try:
+        # `--model` reaches every path, not only the smoke run. It did not until
+        # 28 Aug 2026: both prepare flags called `load_config()` directly, so
+        # `--model fits --prepare-replay 13 DIR` parsed the flag, printed no warning and
+        # wrote a **DLinear** checkpoint. Found while preparing GB-63's spectral
+        # screenshot, which came back with no frequency decomposition because the arm
+        # that produces one was never trained. Same family as GB-24's argparse defect: a
+        # flag that exists, is documented in `--help`, and is silently dropped on the
+        # path that uses it.
+        cfg = _for_model(load_config(), args.model)
         if args.prepare_live:
-            prepare_live(load_config(), args.prepare_live, log=print)
+            prepare_live(cfg, args.prepare_live, log=print)
             return 0
         if args.prepare_replay:
             fold, directory = args.prepare_replay
-            prepare_replay(load_config(), int(fold), directory, log=print)
+            prepare_replay(cfg, int(fold), directory, log=print)
             return 0
         table, summary = run(
             load_config(), model=args.model, n_folds=args.folds, log=print

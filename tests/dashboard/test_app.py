@@ -329,20 +329,255 @@ def test_the_rtl_narrative_rule_moves_to_the_other_side() -> None:
     assert "border-right" in css
 
 
-def test_no_traffic_light_colours_anywhere() -> None:
-    """Sign is geometry and a glyph. A green/red pair would be a second data family."""
-    surfaces = (
-        app.stylesheet(),
-        app.contributions_svg(an_attribution(close_logret=0.08, rsi14=-0.06)),
-        app.forecast_svg(
+def data_surfaces() -> dict[str, str]:
+    """Every surface that encodes data with colour, rendered.
+
+    The spectral panel is included with a FITS-shaped attribution rather than an empty
+    one, because an empty panel is a string that trivially contains no colour and would
+    pass this rule by rendering nothing.
+    """
+    return {
+        "contributions": app.contributions_svg(
+            an_attribution(close_logret=0.08, rsi14=-0.06)
+        ),
+        "forecast": app.forecast_svg(
             HISTORY, app.price_path(103.5, [0.01]), Thresholds.never(), "AAPL"
         ),
-    )
-    banned = ("green", "#0f0", "#00ff00", "red", "#f00", "#ff0000")
+        "spectral": app.spectral_panel(a_spectral_attribution()),
+        "sparkline": app.sparkline_svg(
+            pd.Series([100.0, 99.0, 98.0, 97.0]),
+            app.PositionRow(
+                "AAPL", 1.0, 100.0, 97.0, True, stop_loss=94.0, take_profit=112.0
+            ),
+        ),
+    }
 
-    for surface in surfaces:
+
+def test_status_colour_never_enters_a_data_encoding_chart() -> None:
+    """**Rule one of the three-role palette** (DECISIONS, 27 Aug 2026).
+
+    Chrome labels, the ramp encodes data, status says gain or loss. Inside a chart the
+    ramp already owns meaning, so a third family there would make a reader ask what green
+    encodes on an axis that is spending colour on frequency. This replaces a test that
+    banned the *strings* "green" and "red" - which would have passed a chart drawn in
+    `#2E9E6B`, since the ban was on the words rather than on the rule.
+    """
+    for name, surface in data_surfaces().items():
         lowered = surface.lower()
-        assert not [word for word in banned if word in lowered]
+        found = [c for c in app.STATUS_COLOURS if c.lower() in lowered]
+        assert not found, f"{name} encodes data and contains status colour {found}"
+
+
+def test_the_data_chart_rule_can_fail(monkeypatch) -> None:
+    """Proof the guard bites, on a **real** chart, because a guard nobody has seen fail
+    is a note.
+
+    The status colour is pushed into the data ramp and the contributions chart is rendered
+    again through its own code path. If the check above cannot reject that, it cannot
+    reject anything - `STATUS_COLOURS` could be emptied, or the surfaces list could stop
+    covering the charts, and every assertion would still pass in green.
+    """
+    monkeypatch.setattr(app, "RAMP", (app.GAIN,) * len(app.RAMP))
+    (
+        app.channel_colour.cache_clear()
+        if hasattr(app.channel_colour, "cache_clear")
+        else None
+    )
+
+    violating = app.contributions_svg(
+        an_attribution(close_logret=0.08, rsi14=-0.06)
+    ).lower()
+    found = [c for c in app.STATUS_COLOURS if c.lower() in violating]
+
+    assert found, "a chart drawn entirely in the gain colour passed the data-chart rule"
+
+
+# ── GB-63: the live elements ─────────────────────────────────────────────────
+
+
+def a_position(price: float, stop: float = 94.0, target: float = 112.0):
+    return app.PositionRow(
+        "AAPL", 1.0, 100.0, price, True, stop_loss=stop, take_profit=target
+    )
+
+
+@pytest.mark.parametrize(
+    ("price", "expected"),
+    [
+        (100.0, app.ORDINARY),  # at entry, all the room unspent
+        (98.0, app.ORDINARY),  # 67% left
+        (97.0, app.APPROACHING),  # exactly half - the boundary belongs to the warning
+        (95.5, app.CLOSE),  # exactly a quarter - likewise
+        (93.0, app.CLOSE),  # through the stop
+    ],
+)
+def test_the_stop_bands_are_fractions_of_the_room_the_position_was_given(
+    price: float, expected: str
+) -> None:
+    """A 2% move means something different against a 3% stop than against a 10% one, and
+    a percentage of price cannot tell them apart. Both boundaries belong to the more
+    serious band: a threshold that reads 'ordinary' exactly at half is one that has to be
+    crossed before it warns."""
+    assert a_position(price).stop_proximity == expected
+
+
+def test_only_the_innermost_band_says_what_happens_next() -> None:
+    """Emphasis says *look*; the innermost band has to say *why*, while there is still
+    time to act on it."""
+    assert app.stop_note(a_position(98.0)) == ""
+    assert app.stop_note(a_position(97.0)) == ""
+
+    near = app.stop_note(a_position(95.0))
+    assert "STOP FILL IS NEAR" in near and "MARKET" in near
+    through = app.stop_note(a_position(93.0))
+    assert "AT OR THROUGH ITS STOP" in through
+
+
+def test_a_quarantined_position_claims_no_stop_room() -> None:
+    from glassbox.engine.reconcile import Book
+
+    row = app.position_rows(Book(), {"AAPL": 1.0}, {"AAPL": 310.0})[0]
+
+    assert math.isnan(row.stop_room)
+    assert row.stop_proximity == app.ORDINARY, "an unknown stop is not an alarm"
+
+
+def test_the_cycle_countdown_is_measured_from_the_loops_own_write(tmp_path) -> None:
+    """Not from the panel's refresh timer, which would tick smoothly past a dead loop."""
+    assert math.isinf(app.cycle_age(tmp_path, pd.Timestamp.now(tz="UTC")))
+
+    (tmp_path / "book.json").write_text("{}", encoding="utf-8")
+    age = app.cycle_age(tmp_path, pd.Timestamp.now(tz="UTC"))
+
+    assert 0.0 <= age < 30.0
+
+
+def test_a_silent_loop_outranks_a_stale_broker_read() -> None:
+    """Two different silences: old numbers, versus a system that is not running."""
+    assert app.staleness_html(0, 900) == ""
+    assert "STALE" in app.staleness_html(12, 900)
+    assert "LOOP NOT RESPONDING" in app.staleness_html(2000, 900)
+
+
+def test_the_equity_curve_survives_a_half_written_line(tmp_path) -> None:
+    """It is appended on every refresh and read on the next, so a torn line is a real
+    possibility and losing the session's curve to it would be the wrong trade."""
+    now = pd.Timestamp.now(tz="UTC")
+    app.append_equity(tmp_path, now - pd.Timedelta(minutes=2), 100_000.0)
+    with (tmp_path / app.EQUITY_FILE).open("a", encoding="utf-8") as stream:
+        stream.write('{"at": "not a tim\n')
+    app.append_equity(tmp_path, now, 100_050.0)
+
+    curve = app.load_equity(tmp_path, now)
+
+    assert len(curve) == 2
+    assert float(curve.iloc[-1]) == 100_050.0
+
+
+def test_a_nan_equity_is_never_written(tmp_path) -> None:
+    """A failed broker read must not enter the curve as a point."""
+    app.append_equity(tmp_path, pd.Timestamp.now(tz="UTC"), float("nan"))
+
+    assert not (tmp_path / app.EQUITY_FILE).exists()
+
+
+def test_the_equity_curve_is_coloured_by_its_own_sign() -> None:
+    now = pd.Timestamp.now(tz="UTC")
+    index = pd.date_range(now - pd.Timedelta(minutes=4), periods=5, freq="min")
+
+    rising = app.equity_svg(pd.Series([100.0, 101, 102, 103, 104], index=index))
+    falling = app.equity_svg(pd.Series([104.0, 103, 102, 101, 100], index=index))
+
+    assert app.GAIN in rising and app.LOSS not in rising
+    assert app.LOSS in falling and app.GAIN not in falling
+
+
+def test_the_header_names_the_directory_it_is_bound_to(cfg_stub) -> None:
+    """The GATE 2 defect, as a test. A panel reading a different directory from the one
+    the loop is writing is worse than one showing nothing: an empty queue and no
+    recommendations render identically."""
+    html = app.header_html(
+        cfg_stub,
+        "RUNNING",
+        None,
+        state_dir="checkpoints/rehearsal",
+        source="rehearsal:gate2-execution-path",
+    )
+
+    assert "checkpoints/rehearsal" in html
+    assert "REHEARSAL:GATE2-EXECUTION-PATH" in html.upper()
+
+
+def test_a_decision_is_marked_new_for_exactly_one_refresh() -> None:
+    """A badge that persisted would stop meaning *this arrived while you were looking*."""
+
+    a = a_record(day="2025-07-07", symbol="AAPL")
+    b = a_record(day="2025-07-08", symbol="MSFT")
+
+    first, seen = app.newly_written([a], set())
+    assert first == set(), "the first render marks nothing; everything is new"
+
+    second, seen = app.newly_written([a, b], seen)
+    assert second == {(b.as_of, b.symbol)}
+
+    third, _ = app.newly_written([a, b], seen)
+    assert third == set(), "the mark survived into a second refresh"
+
+
+def test_every_status_colour_is_redundant_with_a_sign_and_a_glyph() -> None:
+    """**Rule two.** Colour never carries the fact alone, so the panel reads in greyscale.
+
+    Asserted on `status_html`, which is the only producer of status colour in the module -
+    the redundancy is a property of that function rather than a convention each call site
+    remembers, which is what makes this one assertion sufficient.
+    """
+    for value, glyph in ((1.25, "▲"), (-1.25, "▼"), (0.0, "—")):
+        rendered = app.status_html(value, f"{value:+.2f}")
+        assert glyph in rendered, f"{value} rendered without its glyph"
+        assert f"{value:+.2f}" in rendered, f"{value} rendered without its sign"
+
+
+def test_a_quarantined_gain_gets_no_arrow_it_cannot_justify() -> None:
+    """NaN is not a direction. An arrow on an unknown PnL asserts a sign nobody measured."""
+    rendered = app.status_html(float("nan"), app.EM_DASH)
+
+    assert "▲" not in rendered and "▼" not in rendered
+    assert app.MUTED in rendered
+
+
+def test_only_module_built_html_reaches_a_raw_column() -> None:
+    """`table_html(raw=...)` skips escaping, so its blast radius is pinned here.
+
+    Named in `table_html`'s own docstring, and written because a docstring that cites a
+    test which does not exist is the defect this project keeps finding in other forms.
+    Escaping is the default for every cell that came from a file, a broker or a record;
+    `raw` exists so the status colour can reach one column at all. The guard is on the
+    module's source: exactly one call site may pass it.
+    """
+    source = Path(app.__file__).read_text(encoding="utf-8")
+
+    assert source.count("raw=(") == 1, "a second caller is opting out of escaping"
+    assert "raw=(5,)" in source, "the raw column is no longer UNREALISED"
+
+
+def test_a_raw_column_still_escapes_every_other_cell() -> None:
+    """The opt-out is per column, not per table."""
+    html = app.table_html(
+        ("A", "B"), [("<script>alert(1)</script>", "<b>ok</b>")], raw=(1,)
+    )
+
+    assert "&lt;script&gt;" in html, "a non-raw cell was not escaped"
+    assert "<b>ok</b>" in html, "the raw cell was escaped"
+
+
+def test_the_status_pair_is_the_one_recorded_in_decisions() -> None:
+    """The palette is a ruling, so the constants are pinned to it rather than adjustable.
+
+    A colour changed here and not in DECISIONS would put the report and the product in
+    two different palettes, which is the two-places family in a place nobody greps.
+    """
+    assert (app.GAIN, app.LOSS) == ("#2E9E6B", "#B03A5B")
+    assert app.STATUS_COLOURS == (app.GAIN, app.LOSS)
 
 
 # ── GB-53: the spectral panel ────────────────────────────────────────────────
@@ -591,7 +826,14 @@ def test_a_quarantined_position_shows_em_dashes_rather_than_zeros() -> None:
     )
 
     assert "QUARANTINED" in html
-    assert html.count(app.EM_DASH) == 2  # no entry basis, and therefore no PnL
+
+    # Three columns, and the count is stated as the rule rather than as a number: the
+    # system did not open this position, so it knows no entry basis, no PnL derived from
+    # one, and no stop it set. Each of those is an em dash. GB-63 added the third when it
+    # added STOP ROOM, and a bare `== 2` would have read as a regression rather than as
+    # one more thing the system correctly declines to claim.
+    unknowable = ("ENTRY", "UNREALISED", "STOP ROOM")
+    assert html.count(app.EM_DASH) == len(unknowable)
 
 
 # ── a decomposition that is mostly cancellation says so ──────────────────────

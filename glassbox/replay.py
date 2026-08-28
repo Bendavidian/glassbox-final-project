@@ -35,14 +35,14 @@ import argparse
 import itertools
 import logging
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from glassbox import live_loop, records
-from glassbox.config.loader import Config, load_config
+from glassbox.config.loader import VALID_MODELS, Config, load_config
 from glassbox.data.historical import load_history
 from glassbox.engine.executor import SELL, BrokerOrder
 from glassbox.engine.reconcile import Book
@@ -374,6 +374,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-dir", default="checkpoints/replay")
     parser.add_argument("--language", choices=("en", "he"), default="en")
     parser.add_argument("--max-bars", type=int, default=None)
+    parser.add_argument(
+        "--model",
+        choices=VALID_MODELS,
+        default=None,
+        help=(
+            "which arm the checkpoint under --state-dir was trained as. Needed whenever "
+            "that is not the arm the deployed configuration names: the model-shaping "
+            "hash includes `model`, so a FITS checkpoint is correctly refused under a "
+            "DLinear config. Replay is the demonstration path, and demonstrating an arm "
+            "the system does NOT deploy is one of the things it is for (default: the "
+            "configured arm)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -382,8 +395,18 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stdout,
     )
     try:
+        cfg = load_config()
+        if args.model is not None and args.model != cfg.model.active:
+            # Stated out loud rather than applied quietly. A replay of an arm the system
+            # does not deploy is a legitimate demonstration and a misleading screenshot
+            # in equal measure, so the run says which arm it is before it produces one.
+            print(
+                f"replay: reading this checkpoint as {args.model.upper()}, which is NOT "
+                f"the deployed arm ({cfg.model.active.upper()})"
+            )
+            cfg = replace(cfg, model=replace(cfg.model, active=args.model))
         report = replay_fold(
-            load_config(),
+            cfg,
             args.state_dir,
             language=args.language,
             max_bars=args.max_bars,

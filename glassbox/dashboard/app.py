@@ -66,6 +66,28 @@ ORANGE_DIM = "#8A3219"
 # how much history each one looks back over.
 RAMP = ("#0A2239", "#123F63", "#1B6CA8", "#2E97D4", "#6FC3EC", "#B7E3F7")
 
+# Status. Gain and loss, and nothing else. Ruled 27 Aug 2026; see DECISIONS for the
+# CIE76 distances against every other role, measured from the constants above rather
+# than sampled from a screenshot.
+#
+# **Two rules travel with these two colours, and both are enforced by tests rather than
+# remembered.** (1) Status colour never appears inside a data-encoding chart: the ramp
+# owns meaning there, and a third family would make a reader ask what green means on an
+# axis that is already spending colour on frequency. (2) Status colour never carries
+# information alone — every gain and loss is redundant with a sign and a glyph, so the
+# panel reads in greyscale. A colour that is the only carrier of a fact is a fact a
+# colour-blind reader does not have.
+#
+# The loss colour leans magenta deliberately. ORANGE is an orange-vermillion, so an
+# ordinary red separates on the number and not in the eye — and the eye is what matters
+# on a P&L figure. `#B03A5B` holds ΔE 47.65 from it where a conventional red would not.
+GAIN = "#2E9E6B"
+LOSS = "#B03A5B"
+
+#: Every surface that encodes data with colour. `test_status_colour_never_enters_a_data
+#: _chart` renders each one and refuses to find GAIN or LOSS in it.
+STATUS_COLOURS = (GAIN, LOSS)
+
 # Channels from slowest to fastest, which is the order the ramp is assigned in. The ramp
 # is a *ramp*: it encodes a quantity, and the quantity here is how far back a channel
 # looks. A palette assigned in config order would encode nothing.
@@ -191,6 +213,49 @@ def status_of(
     return RUNNING if positions else IDLE
 
 
+# ── status: colour that never travels alone ──────────────────────────────────
+
+#: Fractions of the original stop distance still unspent. Beyond `NEAR`, a position is
+#: ordinary; inside it, the row is emphasised and marked; inside `IMMINENT`, the row says
+#: in words that a stop fill is close and what happens when it fills.
+NEAR = 0.5
+IMMINENT = 0.25
+
+ORDINARY, APPROACHING, CLOSE = "ordinary", "approaching", "imminent"
+
+
+def status_glyph(value: float) -> str:
+    """The glyph that carries the sign when colour cannot.
+
+    Printed beside every status-coloured number, which is what makes the colour redundant
+    rather than load-bearing. `math.nan` gets the dash: a quarantined position has no
+    basis to compute a gain from, and an arrow would assert a direction nobody measured.
+    """
+    if math.isnan(value):
+        return "—"
+    return "▲" if value > 0 else "▼" if value < 0 else "—"
+
+
+def status_colour(value: float) -> str:
+    """GAIN, LOSS, or MUTED for flat and unknown."""
+    if math.isnan(value) or value == 0:
+        return MUTED
+    return GAIN if value > 0 else LOSS
+
+
+def status_html(value: float, text: str) -> str:
+    """A status-coloured figure that **cannot** be rendered without its glyph and sign.
+
+    One function rather than a colour constant used at each call site, and that is the
+    whole design: the redundancy rule is a property of this function, so a caller cannot
+    forget it, and `test_every_status_colour_is_redundant` has one place to check.
+    """
+    return (
+        f'<span style="color:{status_colour(value)}">{status_glyph(value)}&nbsp;'
+        f"{text}</span>"
+    )
+
+
 @dataclass(frozen=True)
 class PositionRow:
     """One held position, marked to the last price the dashboard could see."""
@@ -200,10 +265,46 @@ class PositionRow:
     entry_price: float
     price: float
     managed: bool
+    #: The protective levels the book recorded when the position was opened. NaN for a
+    #: quarantined position, which the system did not open and cannot describe.
+    stop_loss: float = math.nan
+    take_profit: float = math.nan
 
     @property
     def market_value(self) -> float:
         return self.quantity * self.price
+
+    @property
+    def stop_room(self) -> float:
+        """Fraction of the original entry-to-stop distance still unspent.
+
+        1.0 at the entry price, 0.0 at the stop, negative below it. Expressed against the
+        *original* distance rather than as a percentage of price, because that is the
+        quantity a reader is actually asking about: how much of the room this position was
+        given has it used. A 2% move means something different on a 3% stop than on a 10%
+        one, and a percentage of price cannot tell them apart.
+        """
+        span = self.entry_price - self.stop_loss
+        if math.isnan(span) or span <= 0 or math.isnan(self.price):
+            return math.nan
+        return (self.price - self.stop_loss) / span
+
+    @property
+    def stop_proximity(self) -> str:
+        """`ORDINARY`, `APPROACHING` or `CLOSE`. Unknown room reads as ordinary.
+
+        Unknown reads ordinary and not as an alarm: a quarantined position has no stop the
+        system set, so escalating it would be raising an alarm about a number that does
+        not exist.
+        """
+        room = self.stop_room
+        if math.isnan(room):
+            return ORDINARY
+        if room <= IMMINENT:
+            return CLOSE
+        if room <= NEAR:
+            return APPROACHING
+        return ORDINARY
 
     @property
     def unrealised(self) -> float:
@@ -236,6 +337,8 @@ def position_rows(
                 entry_price=holding.entry_price if holding else math.nan,
                 price=price,
                 managed=holding is not None,
+                stop_loss=holding.stop_loss if holding else math.nan,
+                take_profit=holding.take_profit if holding else math.nan,
             )
         )
     return rows
@@ -287,6 +390,219 @@ def channel_colour(channel: str) -> str:
         return RAMP[len(RAMP) // 2]
     position = CHANNEL_SPEED.index(channel)
     return RAMP[min(position, len(RAMP) - 1)]
+
+
+# ── live elements: things whose number actually moves ────────────────────────
+#
+# Each of these exists because the quantity underneath it changes between refreshes and
+# nothing on the page showed it. **None of them animates.** A pulse, a spinner or a fade
+# would make the panel look alive whether or not anything had happened, which is the one
+# thing an instrument must not do: a number here moves because it moved.
+
+#: How many seconds of equity history the session curve keeps. A session is 6.5 hours;
+#: this holds a full one and discards yesterday, because the curve is *this session's*.
+EQUITY_WINDOW_SECONDS = 7 * 3600
+
+EQUITY_FILE = "equity_snapshots.jsonl"
+
+
+def append_equity(root: str | Path, when: pd.Timestamp, equity: float) -> None:
+    """Append one equity reading, if it is a number.
+
+    **The dashboard writes exactly one file and this is it**, deliberately separate from
+    the loop's book and decision log: the panel is a reader of the loop's state, and a
+    second writer into `book.json` is the hazard the state-directory lock exists to
+    prevent. An append-only side file cannot corrupt anything the loop reads.
+    """
+    if math.isnan(equity):
+        return
+    path = Path(root) / EQUITY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps({"at": when.isoformat(), "equity": float(equity)}) + "\n"
+        )
+
+
+def load_equity(root: str | Path, now: pd.Timestamp) -> pd.Series:
+    """The session's equity readings, oldest first, trimmed to the window.
+
+    A malformed line is skipped rather than fatal: this file is written on every refresh
+    and read on the next one, so a half-written line is a real possibility and losing the
+    whole curve to it would be the wrong trade.
+    """
+    path = Path(root) / EQUITY_FILE
+    if not path.is_file():
+        return pd.Series(dtype="float64")
+    stamps, values = [], []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            stamps.append(pd.Timestamp(row["at"]))
+            values.append(float(row["equity"]))
+        except (ValueError, KeyError, TypeError):
+            continue
+    if not stamps:
+        return pd.Series(dtype="float64")
+    series = pd.Series(values, index=pd.DatetimeIndex(stamps)).sort_index()
+    return series[series.index >= now - pd.Timedelta(seconds=EQUITY_WINDOW_SECONDS)]
+
+
+def equity_svg(series: pd.Series, width: int = 1400, height: int = 150) -> str:
+    """The session equity curve. Flat until something happens, and that is correct.
+
+    Coloured by its own sign against the session's first reading, because equity is a P&L
+    quantity and the palette's status role is exactly for that. The opening level is drawn
+    as a rule so the sign is readable as geometry and not only as colour.
+    """
+    if series.empty:
+        return ""
+    left, right, top, bottom = 90, width - 20, 24, height - 26
+    opening = float(series.iloc[0])
+    latest = float(series.iloc[-1])
+    change = latest - opening
+    low, high = float(series.min()), float(series.max())
+    span = max(high - low, 1e-9)
+
+    def y(value: float) -> float:
+        return bottom - (value - low) / span * (bottom - top)
+
+    step = (right - left) / max(len(series) - 1, 1)
+    points = " ".join(
+        f"{left + index * step:.1f},{y(value):.1f}"
+        for index, value in enumerate(series.to_numpy(dtype="float64"))
+    )
+    body = [
+        _text(12, top + 4, "EQUITY", ORANGE),
+        _rule(left, y(opening), right, y(opening), HAIRLINE, dash="2 3"),
+        _text(left - 6, y(opening) + 3, f"{opening:,.0f}", MUTED, anchor="end"),
+        (
+            f'<polyline points="{points}" fill="none" '
+            f'stroke="{status_colour(change)}" stroke-width="1.5"/>'
+        ),
+        _text(
+            right,
+            top + 4,
+            f"{status_glyph(change)} {change:+,.2f}",
+            status_colour(change),
+            anchor="end",
+        ),
+        _text(12, bottom + 16, f"{len(series)} READINGS THIS SESSION", MUTED, size=8),
+    ]
+    return _svg(width, height, "".join(body), "session equity curve")
+
+
+def sparkline_svg(
+    prices: pd.Series, row: PositionRow, width: int = 320, height: int = 64
+) -> str:
+    """One position's recent price against the band its stop and target define.
+
+    The band is the point. A price is a number without them and a *position* with them:
+    the same 218.50 is comfortable inside a wide band and nearly closed inside a narrow
+    one, and the stop distance is the thing this panel keeps having to explain in words.
+    Drawn in chrome, not status colour - the band is furniture, and the rule about status
+    colour staying out of data-encoding marks applies here as it does to the ramp charts.
+    """
+    if prices.empty or math.isnan(row.stop_loss):
+        return ""
+    left, right, top, bottom = 4, width - 4, 6, height - 6
+    values = prices.to_numpy(dtype="float64")
+    low = min(float(values.min()), row.stop_loss)
+    high = max(
+        float(values.max()),
+        row.take_profit if not math.isnan(row.take_profit) else float(values.max()),
+    )
+    span = max(high - low, 1e-9)
+
+    def y(value: float) -> float:
+        return bottom - (value - low) / span * (bottom - top)
+
+    step = (right - left) / max(len(values) - 1, 1)
+    points = " ".join(
+        f"{left + index * step:.1f},{y(value):.1f}"
+        for index, value in enumerate(values)
+    )
+    band = ""
+    if not math.isnan(row.take_profit):
+        band = (
+            f'<rect x="{left}" y="{y(row.take_profit):.1f}" width="{right - left}" '
+            f'height="{abs(y(row.stop_loss) - y(row.take_profit)):.1f}" '
+            f'fill="{ORANGE}" fill-opacity="0.06"/>'
+        )
+    body = [
+        band,
+        _rule(left, y(row.stop_loss), right, y(row.stop_loss), ORANGE, dash="3 3"),
+        (
+            ""
+            if math.isnan(row.take_profit)
+            else _rule(
+                left,
+                y(row.take_profit),
+                right,
+                y(row.take_profit),
+                ORANGE_DIM,
+                dash="3 3",
+            )
+        ),
+        (
+            ""
+            if math.isnan(row.entry_price)
+            else _rule(left, y(row.entry_price), right, y(row.entry_price), HAIRLINE)
+        ),
+        f'<polyline points="{points}" fill="none" stroke="{PAPER}" stroke-width="1.2"/>',
+    ]
+    return _svg(
+        width, height, "".join(body), f"{row.symbol} against its stop and target"
+    )
+
+
+def countdown_svg(
+    remaining: float, total: float, width: int = 1400, height: int = 26
+) -> str:
+    """The cycle countdown, as a rule that depletes. No motion, no pulse.
+
+    It redraws shorter each refresh because time has actually passed, which is the whole
+    distinction this panel is built on: the mark moves because the quantity moved.
+    """
+    total = max(total, 1e-9)
+    left = max(0.0, min(remaining, total))
+    filled = (width - 200) * (left / total)
+    return _svg(
+        width,
+        height,
+        "".join(
+            [
+                _text(12, 17, "NEXT CYCLE", ORANGE),
+                _rule(120, 13, width - 80, 13, HAIRLINE),
+                _rule(120, 13, 120 + filled, 13, ORANGE),
+                _text(width - 20, 17, f"{left:>3.0f}S", MUTED, anchor="end"),
+            ]
+        ),
+        "seconds until the next cycle",
+    )
+
+
+# ── staleness: a value that could not be refreshed says so ───────────────────
+
+
+def staleness_html(age_seconds: float, heartbeat_seconds: float) -> str:
+    """The age stamp beside a value the last read could not refresh.
+
+    Empty while the read is current. Beyond two heartbeat intervals the wording escalates
+    from *this number is old* to *the loop is not answering*, because those are different
+    problems for a reader: the first is a stale panel and the second is a dead system, and
+    a dashboard that renders them identically has hidden the one that matters.
+    """
+    if age_seconds <= 0:
+        return ""
+    if age_seconds > 2 * heartbeat_seconds:
+        return (
+            f'<span class="gb-stale">LOOP NOT RESPONDING &nbsp;·&nbsp; LAST READ '
+            f"{age_seconds / 60:.0f} MIN AGO</span>"
+        )
+    return f'<span class="gb-stale">STALE &nbsp;·&nbsp; {age_seconds:.0f}S OLD</span>'
 
 
 # ── GB-35: the forecast path ─────────────────────────────────────────────────
@@ -793,6 +1109,7 @@ def table_html(
     rows: Sequence[Sequence[object]],
     numeric: Sequence[int] = (),
     flagged: Sequence[tuple[int, int]] = (),
+    raw: Sequence[int] = (),
 ) -> str:
     """A table in the design language, rendered as HTML.
 
@@ -808,6 +1125,12 @@ def table_html(
             whether a number is a price, a share or a log return.
         numeric: Indices of columns to right-align with tabular figures, so digits line up
             in their columns and a reader can compare magnitudes down a column by eye.
+        raw: Indices of columns whose cells are **already HTML built by this module** -
+            in practice the one column that carries :func:`status_html`. Escaping stays
+            the default for every other cell and for every value that came from a file,
+            a broker or a record; this exists so that the status colour can reach a cell
+            at all, and `test_only_module_built_html_reaches_a_raw_column` pins the fact
+            that nothing else uses it.
         flagged: ``(row, column)`` pairs to mark. A marked cell carries the one exception
             to the orange rule: the mark is an annotation *about* the value rather than a
             value itself, which is the same category as a header. It is one cell rather
@@ -828,7 +1151,8 @@ def table_html(
             style = "num " if index in right else ""
             if (number, index) in marked:
                 style += "gb-flag"
-            cells.append(f'<td class="{style.strip()}">{escape(cell)}</td>')
+            shown = str(cell) if index in set(raw) else escape(cell)
+            cells.append(f'<td class="{style.strip()}">{shown}</td>')
         body.append(f"<tr>{''.join(cells)}</tr>")
     return (
         f'<table class="gb-table"><thead><tr>{head}</tr></thead>'
@@ -836,10 +1160,45 @@ def table_html(
     )
 
 
+def stop_note(row: PositionRow) -> str:
+    """What a reader needs to know about a position near its stop, in words.
+
+    Only at :data:`CLOSE`. Emphasis alone says *look here* and leaves the reader to infer
+    what happens next; the point of the innermost band is that the consequence is spelled
+    out while there is still time to act on it. Below the stop the wording changes again,
+    because "approaching" is the wrong tense for a level already crossed.
+    """
+    room = row.stop_room
+    if row.stop_proximity != CLOSE or math.isnan(room):
+        return ""
+    if room <= 0:
+        return (
+            f"{row.symbol} IS AT OR THROUGH ITS STOP {row.stop_loss:,.2f}. THE STOP IS A "
+            "MARKET ORDER AT THE BROKER; WHEN IT FILLS THE POSITION IS CLOSED AND THE "
+            "LOOP RECONCILES IT ON THE NEXT CYCLE"
+        )
+    return (
+        f"{row.symbol} HAS SPENT {(1 - room) * 100:.0f}% OF ITS STOP DISTANCE "
+        f"({row.price:,.2f} AGAINST {row.stop_loss:,.2f}). A STOP FILL IS NEAR: IT SELLS "
+        "THE WHOLE POSITION AT MARKET AND THE LOOP BOOKS THE EXIT ON THE NEXT CYCLE"
+    )
+
+
 def position_table(rows: Sequence[PositionRow]) -> str:
-    """The positions panel. A quarantined holding shows em dashes, never zeros."""
+    """The positions panel. A quarantined holding shows em dashes, never zeros.
+
+    Two columns carry status. `UNREALISED` is coloured through :func:`status_html`, so it
+    arrives with its glyph and its sign attached and reads in greyscale. `STOP ROOM` is
+    *not* coloured: it is a distance rather than a direction, and colouring it would be
+    the second data family the palette rule refuses. It is marked instead.
+    """
+    marks = [
+        (number, 6)
+        for number, row in enumerate(rows)
+        if row.stop_proximity in (APPROACHING, CLOSE)
+    ]
     return table_html(
-        ("SYMBOL", "QTY", "ENTRY", "LAST", "VALUE", "UNREALISED", "STATE"),
+        ("SYMBOL", "QTY", "ENTRY", "LAST", "VALUE", "UNREALISED", "STOP ROOM", "STATE"),
         [
             (
                 row.symbol,
@@ -850,14 +1209,23 @@ def position_table(rows: Sequence[PositionRow]) -> str:
                 (
                     EM_DASH
                     if not row.managed or math.isnan(row.unrealised)
-                    else f"{'▲' if row.unrealised >= 0 else '▼'} "
-                    f"{row.unrealised:,.2f} ({row.unrealised_pct:+.2f}%)"
+                    else status_html(
+                        row.unrealised,
+                        f"{row.unrealised:,.2f} ({row.unrealised_pct:+.2f}%)",
+                    )
+                ),
+                (
+                    EM_DASH
+                    if math.isnan(row.stop_room)
+                    else f"{row.stop_room * 100:.0f}% TO {row.stop_loss:,.2f}"
                 ),
                 "MANAGED" if row.managed else "QUARANTINED",
             )
             for row in rows
         ],
         numeric=(1, 2, 3, 4, 5),
+        flagged=marks,
+        raw=(5,),
     )
 
 
@@ -910,6 +1278,43 @@ def decision_table(decisions: list[DecisionRecord]) -> str:
         numeric=(3, 4, 5),
         flagged=flagged,
     )
+
+
+def cycle_age(root: str | Path, now: pd.Timestamp) -> float:
+    """Seconds since the live loop last persisted its book, or ``inf``.
+
+    **Measured from the loop's own write, not from the dashboard's clock.** Step 10 of
+    every cycle persists the book, so this file's mtime is the last time a cycle actually
+    completed. A countdown driven by the panel's own refresh timer would tick smoothly
+    while the loop lay dead, which is the exact failure the heartbeat exists to make
+    visible - it would be an animation, not a measurement.
+    """
+    path = Path(root) / "book.json"
+    if not path.is_file():
+        return math.inf
+    written = pd.Timestamp(path.stat().st_mtime, unit="s", tz="UTC")
+    return max((now - written).total_seconds(), 0.0)
+
+
+def newly_written(
+    decisions: Sequence[DecisionRecord], seen: set[str]
+) -> tuple[set[str], set[str]]:
+    """``(ids_to_mark, ids_now_seen)`` for one refresh.
+
+    Marked for exactly one pass and then never again: a badge that persisted would stop
+    meaning *this arrived while you were looking* and start meaning *this is recent*,
+    which the timestamp already says. The caller keeps `seen` across refreshes; on the
+    very first render nothing is marked, because everything is new and marking all of it
+    would say nothing.
+    """
+    # Keyed on `(as_of, symbol)`, which is what identifies a decision in the contract -
+    # `DecisionRecord` carries no `decision_id`, and the loop derives one from exactly
+    # this pair. An earlier version of this function read `record.decision_id` and was
+    # tested against a stub that had one; the real type does not, and the page crashed on
+    # first render. A double with a field the real thing lacks is the same defect class as
+    # a broker double that permits what the real broker refuses.
+    current = {(record.as_of, record.symbol) for record in decisions}
+    return (set() if not seen else current - seen), current
 
 
 def expander_title(record: DecisionRecord) -> str:
@@ -1027,6 +1432,15 @@ def stylesheet() -> str:
      a value itself, which is the same category as a header. */
   .gb-table td.gb-flag {{ color: {ORANGE}; }}
 
+  /* A value the last read could not refresh. Dimmed rather than hidden, because the
+     number is still the best one available and removing it would leave a blank that
+     reads as "no position" instead of "not refreshed". No animation: a stale value is
+     not an event, it is a condition, and conditions do not blink. */
+  .gb-stale {{
+      color: {MUTED}; border: 1px dashed {HAIRLINE}; padding: .05rem .4rem;
+      font-size: .62rem; letter-spacing: .12em; text-transform: uppercase;
+  }}
+
   /* The expanders arrive with the same default chrome the tables did - a white ground and
      a sans face - and there is no HTML equivalent to build instead, because the widget is
      what holds the disclosure state. So the widget stays and its skin is replaced. */
@@ -1126,6 +1540,9 @@ def header_html(
     status: str,
     reliability: Reliability | None,
     band: BandContext | None = None,
+    state_dir: str | Path | None = None,
+    source: str | None = None,
+    stale: str = "",
 ) -> str:
     """Project block, status chip and the reliability panel, in one strip.
 
@@ -1134,6 +1551,16 @@ def header_html(
 
     The reliability numbers sit here rather than behind a tab, because the requirement is
     that they are unavoidable rather than available.
+
+    **The bound state directory is on the face of the panel** (27 Aug 2026). The dashboard
+    takes `--state-dir` and defaults to the deployed one, and on the night of GATE 2's
+    execution rehearsal it was pointed at `checkpoints/live` while the rehearsal wrote to
+    `checkpoints/rehearsal`. The Co-Pilot queue rendered empty and correct - there was
+    nothing pending in the directory it was reading - so criterion 2 had to be satisfied
+    through `answer_pending` instead. A panel silently reading a different directory from
+    the one the loop is writing is worse than a panel showing nothing, because an empty
+    queue is indistinguishable from no recommendations. It now says which directory it is
+    bound to, and which provenance it is filtering for.
     """
     if reliability is None:
         record = (
@@ -1169,7 +1596,18 @@ def header_html(
             "VERSION",
             f"V{cfg.meta.version} &nbsp;·&nbsp; CONFIG {config_hash(cfg)[:12].upper()}",
         )
-        + f'<div style="margin-top:.7rem"><span class="gb-status">{status}</span></div>'
+        + (
+            ""
+            if state_dir is None
+            else line(
+                "BOUND",
+                f"{escape(str(state_dir))} &nbsp;·&nbsp; SHOWING "
+                f"{escape(str(source or records.LIVE)).upper()}",
+            )
+        )
+        + f'<div style="margin-top:.7rem"><span class="gb-status">{status}</span>'
+        + (f"&nbsp;&nbsp;{stale}" if stale else "")
+        + "</div>"
         + f'<div style="margin-top:.6rem">{record}</div>'
         + (
             ""
@@ -1197,16 +1635,55 @@ def main(
 
     root = Path(state_dir)
     cfg = load_config()
+    now = pd.Timestamp.now(tz="UTC")
     st.set_page_config(page_title="GlassBox Trader", layout="wide")
     st.markdown(stylesheet(), unsafe_allow_html=True)
     st.markdown(left_ruler_html(), unsafe_allow_html=True)
     st.markdown(ruler_html(), unsafe_allow_html=True)
 
+    # Two caches, two clocks. Local files are cheap and move every cycle; the broker is
+    # rate-limited and shared with the live loop, which is charged against the same
+    # account. `_broker_view` already returns last-known values on failure, so a refused
+    # read dims rather than blanks the panel.
+    read_broker = st.cache_data(ttl=BROKER_TTL_SECONDS, show_spinner=False)(
+        _broker_view
+    )
+    read_closes = st.cache_data(ttl=BROKER_TTL_SECONDS, show_spinner=False)(
+        _recent_closes
+    )
+    read_decisions = st.cache_data(ttl=LOCAL_TTL_SECONDS, show_spinner=False)(
+        _recent_decisions
+    )
+
     thresholds = _thresholds(root)
     reliability = load_reliability(root / RELIABILITY_FILE)
     book = Book.load(root / "book.json")
-    quantities, prices, account = _broker_view(cfg)
     hours = _in_market_hours(cfg)
+
+    try:
+        quantities, prices, account = read_broker(cfg)
+        st.session_state["last_broker"] = (quantities, prices, account, now)
+        broker_age = 0.0
+    except Exception:  # noqa: BLE001 - a refused read dims the panel, never empties it
+        cached = st.session_state.get("last_broker")
+        if cached is None:
+            st.markdown(
+                '<div class="gb-stale">NO BROKER READ HAS SUCCEEDED YET</div>',
+                unsafe_allow_html=True,
+            )
+            return
+        quantities, prices, account, at = cached
+        broker_age = (now - at).total_seconds()
+
+    # Two different silences, and the header must not render them alike. A stale broker
+    # read means the panel's numbers are old; a loop that has not written its book in two
+    # heartbeats means the system is not running. The second outranks the first, because
+    # a fresh broker read beside a dead loop is the more misleading of the two.
+    age = cycle_age(root, now)
+    loop_silent = age > 2 * cfg.live.heartbeat_seconds  # `inf > x` is True, as intended
+    stale = staleness_html(
+        age if loop_silent else broker_age, cfg.live.heartbeat_seconds
+    )
 
     st.markdown(
         header_html(
@@ -1214,39 +1691,76 @@ def main(
             status_of(thresholds, hours, quantities),
             reliability,
             band_context(root / "thresholds.json"),
+            state_dir=root,
+            source=source,
+            stale=stale,
         ),
         unsafe_allow_html=True,
     )
 
+    # The countdown is the loop's cadence, read from its last write. `inf` renders as a
+    # spent rule rather than a full one: no cycle has completed, and a full bar would
+    # promise one is coming.
+    st.markdown(
+        countdown_svg(
+            0.0 if math.isinf(age) else max(cfg.live.poll_seconds - age, 0.0),
+            cfg.live.poll_seconds,
+        ),
+        unsafe_allow_html=True,
+    )
+
+    equity = float(account.get("equity", math.nan))
+    append_equity(root, now, equity)
+    curve = load_equity(root, now)
+    if len(curve) > 1:
+        st.markdown(equity_svg(curve), unsafe_allow_html=True)
+
     st.markdown('<div class="gb-label">POSITIONS</div>', unsafe_allow_html=True)
     rows = position_rows(book, quantities, prices)
+    closes = read_closes(cfg) if rows else {}
     if rows:
         st.markdown(position_table(rows), unsafe_allow_html=True)
+        for row in rows:
+            note = stop_note(row)
+            if note:
+                st.markdown(
+                    f'<div class="gb-stale">{note}</div>', unsafe_allow_html=True
+                )
+            history = closes.get(row.symbol)
+            if history is not None and not history.empty:
+                st.markdown(
+                    sparkline_svg(history.tail(60), row), unsafe_allow_html=True
+                )
     else:
         st.markdown(
             '<div class="gb-meta">NO POSITIONS HELD</div>', unsafe_allow_html=True
         )
     st.markdown(
-        f'<div class="gb-meta">EQUITY {account.get("equity", float("nan")):,.2f}'
+        f'<div class="gb-meta">EQUITY {equity:,.2f}'
         f' &nbsp;·&nbsp; CASH {account.get("cash", float("nan")):,.2f}</div>',
         unsafe_allow_html=True,
     )
 
     _copilot_panel(root, cfg, st)
 
-    decisions = _recent_decisions(root, source)
+    decisions = read_decisions(root, source)
     if not decisions:
         st.markdown(
             '<div class="gb-meta">NO DECISIONS RECORDED YET</div>',
             unsafe_allow_html=True,
         )
+        _refresh(cfg, st)
         return
+
+    fresh, seen = newly_written(
+        decisions, st.session_state.get("seen_decisions", set())
+    )
+    st.session_state["seen_decisions"] = seen
 
     latest = {record.symbol: record for record in decisions}
     st.markdown('<div class="gb-label">FORECAST PATHS</div>', unsafe_allow_html=True)
-    closes = _recent_closes(cfg)
     for symbol in sorted(latest):
-        history = closes.get(symbol)
+        history = closes.get(symbol) if closes else read_closes(cfg).get(symbol)
         if history is None or history.empty:
             continue
         st.markdown(
@@ -1259,10 +1773,21 @@ def main(
             unsafe_allow_html=True,
         )
 
-    st.markdown('<div class="gb-label">DECISION LOG</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="gb-label">DECISION LOG</div>'
+        '<div class="gb-meta">THE PRICE CHART ADVANCES ONCE PER TRADING DAY: A DECISION '
+        "IS TAKEN ON THE LAST COMPLETED BAR AND DOES NOT CHANGE WITHIN A SESSION</div>",
+        unsafe_allow_html=True,
+    )
     st.markdown(decision_table(decisions), unsafe_allow_html=True)
     for record in decision_rows(decisions):
-        with st.expander(expander_title(record)):
+        title = expander_title(record)
+        if (record.as_of, record.symbol) in fresh:
+            # Plain text, not a styled span: a Streamlit expander label takes no HTML, so
+            # a `.gb-new` CSS rule would have been a stylesheet entry that never applied
+            # to anything. The mark is the word.
+            title = f"{title}   · NEW"
+        with st.expander(title):
             st.markdown(narrative_html(record.narrative), unsafe_allow_html=True)
             st.markdown(contributions_svg(record.attribution), unsafe_allow_html=True)
             # GB-53. Empty string for a model that does not decompose by frequency, so
@@ -1285,6 +1810,14 @@ def _refresh(cfg: Config, st) -> None:  # pragma: no cover - a loop by design
     )
     time.sleep(cfg.live.poll_seconds)
     st.rerun()
+
+
+#: Local files are cheap and change every cycle; the broker is rate-limited, shared with
+#: the live loop, and charged against the same account. One TTL for both would either
+#: hammer the API at the local cadence or freeze the countdown at the broker's, so they
+#: are separate by construction rather than by convention.
+LOCAL_TTL_SECONDS = 5
+BROKER_TTL_SECONDS = 30
 
 
 def _thresholds(root: Path) -> Thresholds:  # pragma: no cover - I/O
