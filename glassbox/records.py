@@ -113,6 +113,14 @@ ANY_PROVENANCE = "*"
 
 PENDING_FILE = "pending.json"
 
+#: The live trade log, appended beside the decision log. **GB-29 named this module "the
+#: live trade log" and until 28 Aug 2026 there was no log** - `emit_trades` built `Trade`
+#: objects each cycle, the loop wrote them to the session log as text, and they were
+#: discarded. So the two live trades this system has made existed only as lines in a text
+#: file, and no panel or metric could ever read them. One JSONL per state directory,
+#: append-only, in exit-time order.
+TRADES_FILE = "trades.jsonl"
+
 
 class DuplicateDecision(ValueError):
     """A second decision record for a bar that has already been decided.
@@ -203,6 +211,96 @@ def save_decision(record: DecisionRecord, root: str | Path) -> Path:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(_encode(record), separators=(",", ":")) + "\n")
     return path
+
+
+def save_trades(trades: Sequence[Trade], root: str | Path) -> Path:
+    """Append completed round trips to ``root/trades.jsonl``. Returns the file written.
+
+    Append-only and idempotent-by-omission: the loop calls this with the trades emitted
+    from fills it has not seen before, so a cycle that re-reads the same order history
+    writes nothing. There is no duplicate guard of the kind `save_decision` carries,
+    because a trade has no natural key a second write would collide on - `seen_orders`
+    upstream is what stops a fill being counted twice, and duplicating that check here
+    would be a second opinion about the same fact rather than a second mechanism.
+
+    A rehearsal writes nothing, and that is enforced upstream at the single point that can
+    enforce it: `live_loop` builds an empty tuple when a rehearsal is active, so no
+    rehearsal trade can reach this function to be filtered out of it.
+    """
+    path = Path(root) / TRADES_FILE
+    if not trades:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        # A torn line has no newline of its own, so an append lands ON it and takes the
+        # next trade down with it - one killed process would cost two records instead of
+        # one. Found by `test_a_torn_line_costs_one_trade_and_not_the_log`, which failed
+        # on exactly that. Terminating the previous line first makes the log self-healing:
+        # the damage stays bounded to the record that was being written when it happened.
+        if path.stat().st_size and not path.read_bytes().endswith(b"\n"):
+            handle.write("\n")
+        for trade in trades:
+            handle.write(json.dumps(_encode_trade(trade), separators=(",", ":")) + "\n")
+    return path
+
+
+def load_trades(root: str | Path) -> list[Trade]:
+    """Every completed round trip, in the order they were written.
+
+    A malformed line is skipped rather than fatal, matching `_read_month`: a process
+    killed mid-write leaves a torn line behind, and losing the whole log to it would be
+    the wrong trade. A duplicate is not checked for here, for the reason `save_trades`
+    gives.
+    """
+    path = Path(root) / TRADES_FILE
+    if not path.is_file():
+        return []
+    trades: list[Trade] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            trades.append(_decode_trade(json.loads(line)))
+        except (ValueError, KeyError, TypeError):
+            LOGGER.warning("skipping a malformed line in %s", path)
+            continue
+    return trades
+
+
+def _encode_trade(trade: Trade) -> dict[str, Any]:
+    return {
+        "symbol": trade.symbol,
+        "entry_time": trade.entry_time.isoformat(),
+        "exit_time": trade.exit_time.isoformat(),
+        "size": float(trade.size),
+        "entry_price": float(trade.entry_price),
+        "exit_price": float(trade.exit_price),
+        "gross_pnl": float(trade.gross_pnl),
+        "costs": float(trade.costs),
+        "net_pnl": float(trade.net_pnl),
+        "exit_reason": trade.exit_reason,
+        "strategy_exit": bool(trade.strategy_exit),
+        "entry_order_id": trade.entry_order_id,
+        "exit_order_id": trade.exit_order_id,
+    }
+
+
+def _decode_trade(raw: dict[str, Any]) -> Trade:
+    return Trade(
+        symbol=str(raw["symbol"]),
+        entry_time=pd.Timestamp(raw["entry_time"]),
+        exit_time=pd.Timestamp(raw["exit_time"]),
+        size=float(raw["size"]),
+        entry_price=float(raw["entry_price"]),
+        exit_price=float(raw["exit_price"]),
+        gross_pnl=float(raw["gross_pnl"]),
+        costs=float(raw["costs"]),
+        net_pnl=float(raw["net_pnl"]),
+        exit_reason=str(raw["exit_reason"]),
+        strategy_exit=bool(raw["strategy_exit"]),
+        entry_order_id=raw.get("entry_order_id"),
+        exit_order_id=raw.get("exit_order_id"),
+    )
 
 
 def amend_decision(record: DecisionRecord, root: str | Path) -> Path:
@@ -686,6 +784,7 @@ __all__ = [
     "TARGET_GAP",
     "TARGET_IN_LOOP",
     "TARGET_IN_LOOP_SUFFIX",
+    "TRADES_FILE",
     "DuplicateDecision",
     "amend_decision",
     "client_order_id",
@@ -699,6 +798,7 @@ __all__ = [
     "is_reportable",
     "load_decisions",
     "load_pending",
+    "load_trades",
     "month_file",
     "realised_slippage_bps",
     "rehearsal_provenance",
@@ -706,4 +806,5 @@ __all__ = [
     "resolve_pending",
     "save_decision",
     "save_pending",
+    "save_trades",
 ]

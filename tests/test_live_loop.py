@@ -2086,6 +2086,23 @@ def test_a_clean_close_out_still_exits_zero(
     )
 
 
+def test_a_rehearsal_writes_no_trade_log(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """Condition 2 of the rehearsal, at the one point that can enforce it.
+
+    A rehearsal emits no Trade at all - ``Trade`` carries no provenance and cannot, since
+    the contract is frozen - so the gate is that the tuple is empty before it ever reaches
+    ``records.save_trades``, not a filter inside it. Now that trades are persisted, that
+    gate is the only thing standing between a rehearsal and the study's trade log.
+    """
+    state = rehearsing(cfg, tmp_path, broker)
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+
+    assert not (tmp_path / records.TRADES_FILE).exists()
+
+
 def test_a_deployed_session_stopped_cleanly_does_NOT_flatten(
     cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
 ) -> None:

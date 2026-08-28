@@ -107,36 +107,6 @@ def test_reliability_is_read_from_the_measurement_file(tmp_path: Path) -> None:
     assert not found.beats_the_bar
 
 
-def test_a_missing_measurement_says_so_rather_than_showing_nothing(
-    cfg_stub, tmp_path: Path
-) -> None:
-    """An absent panel is the failure the panel exists to prevent, arriving as a gap."""
-    assert app.load_reliability(tmp_path / "absent.json") is None
-
-    html = app.header_html(cfg_stub, app.IDLE, None)
-
-    assert "NOT MEASURED" in html
-    assert "prepare-live" in html
-
-
-def test_the_header_states_the_gap_against_the_always_long_bar(cfg_stub) -> None:
-    record = app.Reliability(
-        direction=0.5182,
-        always_long=0.5560,
-        folds=16,
-        measured_on="2026-08-18",
-        model="dlinear",
-    )
-
-    html = app.header_html(cfg_stub, app.ASIDE, record)
-
-    assert "0.5182" in html
-    assert "0.5560" in html
-    assert "16 FOLDS" in html
-    assert "2026-08-18" in html
-    assert "▼" in html  # it does not beat the bar, and the glyph says so
-
-
 @pytest.fixture
 def cfg_stub():
     from glassbox.config.loader import load_config
@@ -492,22 +462,6 @@ def test_the_equity_curve_is_coloured_by_its_own_sign() -> None:
     assert app.LOSS in falling and app.GAIN not in falling
 
 
-def test_the_header_names_the_directory_it_is_bound_to(cfg_stub) -> None:
-    """The GATE 2 defect, as a test. A panel reading a different directory from the one
-    the loop is writing is worse than one showing nothing: an empty queue and no
-    recommendations render identically."""
-    html = app.header_html(
-        cfg_stub,
-        "RUNNING",
-        None,
-        state_dir="checkpoints/rehearsal",
-        source="rehearsal:gate2-execution-path",
-    )
-
-    assert "checkpoints/rehearsal" in html
-    assert "REHEARSAL:GATE2-EXECUTION-PATH" in html.upper()
-
-
 def test_a_decision_is_marked_new_for_exactly_one_refresh() -> None:
     """A badge that persisted would stop meaning *this arrived while you were looking*."""
 
@@ -556,8 +510,11 @@ def test_only_module_built_html_reaches_a_raw_column() -> None:
     """
     source = Path(app.__file__).read_text(encoding="utf-8")
 
-    assert source.count("raw=(") == 1, "a second caller is opting out of escaping"
-    assert "raw=(5,)" in source, "the raw column is no longer UNREALISED"
+    # Two call sites, both named here. The count is the guard: a third would be a caller
+    # opting out of escaping without anyone deciding it should.
+    assert source.count("raw=(") == 2, "a new caller is opting out of escaping"
+    assert "raw=(5,)" in source, "position_table's UNREALISED column"
+    assert "raw=(4,)" in source, "activity_table's VALUE column"
 
 
 def test_a_raw_column_still_escapes_every_other_cell() -> None:
@@ -576,8 +533,10 @@ def test_the_status_pair_is_the_one_recorded_in_decisions() -> None:
     A colour changed here and not in DECISIONS would put the report and the product in
     two different palettes, which is the two-places family in a place nobody greps.
     """
-    assert (app.GAIN, app.LOSS) == ("#2E9E6B", "#B03A5B")
+    assert (app.GAIN, app.LOSS) == ("#22C55E", "#EF4444")
     assert app.STATUS_COLOURS == (app.GAIN, app.LOSS)
+    assert app.GAIN_FILL == "rgba(34,197,94,0.15)"
+    assert app.LOSS_FILL == "rgba(239,68,68,0.15)"
 
 
 # ── GB-53: the spectral panel ────────────────────────────────────────────────
@@ -770,16 +729,6 @@ def test_an_entry_decision_and_a_hold_both_render(cfg_stub) -> None:
 # ── the tables carry the design language, not Streamlit's ────────────────────
 
 
-def test_a_table_puts_orange_on_the_header_row_only() -> None:
-    """Two colour families, and the table is data. The header is the chrome in it."""
-    css = app.stylesheet()
-    header_rule = css[css.index(".gb-table th") : css.index(".gb-table td")]
-
-    assert app.ORANGE in header_rule
-    body_rule = css[css.index(".gb-table td") : css.index(".gb-table tbody")]
-    assert app.ORANGE not in body_rule
-
-
 def test_numeric_columns_are_right_aligned_with_tabular_figures() -> None:
     """Digits have to line up in their columns or a reader cannot compare down one."""
     html = app.table_html(("SYMBOL", "QTY"), [("AAPL", "1.00")], numeric=(1,))
@@ -788,13 +737,6 @@ def test_numeric_columns_are_right_aligned_with_tabular_figures() -> None:
     assert '<td class="num">1.00</td>' in html
     assert '<td class="">AAPL</td>' in html
     assert "tabular-nums" in css
-
-
-def test_rows_carry_thin_dashed_rules_on_a_near_black_ground() -> None:
-    css = app.stylesheet()
-
-    assert f"border-bottom: 1px dashed {app.HAIRLINE}" in css
-    assert f"background: {app.PANEL}" in css
 
 
 def test_a_cell_cannot_inject_markup() -> None:
@@ -910,30 +852,6 @@ def test_the_chart_scales_to_its_container_rather_than_being_letterboxed() -> No
 # ── the rulers and the masthead ──────────────────────────────────────────────
 
 
-def test_the_top_ruler_starts_at_zero_not_double_zero() -> None:
-    assert ">0<" in app.ruler_html()
-    assert ">00<" not in app.ruler_html()
-
-
-def test_there_is_a_numbered_ruler_down_the_left_edge() -> None:
-    ruler = app.left_ruler_html()
-
-    assert ">0<" in ruler and ">50<" in ruler
-    assert "position: fixed" in app.stylesheet()
-
-
-def test_the_content_column_is_not_capped(cfg_stub) -> None:
-    """The charts get the width the ruler does not take."""
-    assert "max-width: none" in app.stylesheet()
-
-
-def test_the_masthead_stacks_project_system_and_version(cfg_stub) -> None:
-    html = app.header_html(cfg_stub, app.ASIDE, None)
-
-    assert html.index("PROJECT") < html.index("SYSTEM") < html.index("VERSION")
-    assert html.count("gb-metarow") == 3
-
-
 # ── the band's selection context (ruled 20 Aug 2026) ────────────────────────
 
 
@@ -991,17 +909,224 @@ def test_no_band_artefact_is_not_a_band_context(tmp_path: Path) -> None:
     assert app.band_context(tmp_path / "absent.json") is None
 
 
-def test_the_masthead_renders_the_band_context(cfg_stub) -> None:
-    """It has to reach the screen, not just exist as a value."""
-    context = app.BandContext(
-        stood_aside=False, val_sharpe=0.4826, val_trades=8, fold=16
+# ── GB-63b: the console's rules ──────────────────────────────────────────────
+
+
+def a_source() -> app.Source:
+    return app.Source(app.BACKTEST, "folds 1-16")
+
+
+def test_a_card_cannot_be_built_without_saying_where_its_numbers_came_from() -> None:
+    """The failure this type exists to prevent is a console that looks live while showing
+    backtest numbers - which would discredit the project's central claim far more
+    effectively than any missing feature."""
+    with pytest.raises(TypeError):
+        app.Source(app.BACKTEST)  # type: ignore[call-arg]
+
+    with pytest.raises(ValueError, match="which data"):
+        app.Source(app.LIVE, "   ")
+
+    with pytest.raises(ValueError, match="unknown source"):
+        app.Source("GUESSED", "somewhere")
+
+
+def test_every_card_renders_its_source_pill() -> None:
+    html = app.card("Return by fold", a_source(), "<svg/>")
+
+    assert "gb-pill" in html
+    assert "BACKTEST" in html
+    assert "folds 1-16" in html, "a backtest card must state its fold range"
+
+
+def test_a_backtest_pill_states_a_fold_range_and_not_a_bare_label() -> None:
+    """'BACKTEST' alone lets a reader assume a period nobody stated."""
+    rows = pd.DataFrame({"fold": [1, 2, 3, 4]})
+    assert app.fold_range(rows) == "folds 1-4"
+
+    gappy = pd.DataFrame({"fold": [1, 2, 9]})
+    assert app.fold_range(gappy) == "3 folds"
+
+    assert app.fold_range(pd.DataFrame()) == "no folds"
+
+
+def test_a_card_with_too_little_data_says_how_little(tmp_path) -> None:
+    """Never a silent backfill from the other source, and never an empty axis."""
+    source = app.Source(app.LIVE, "3 sessions, 2 trades")
+    body = app.too_little(source, "1 equity reading this session - the curve needs two")
+
+    assert "needs two" in body
+    assert "gb-empty" in body
+
+
+def test_every_status_coloured_cell_carries_a_sign_or_arrow() -> None:
+    """**The one rule kept from the old palette**, because it costs nothing and protects
+    a reader who cannot separate the two hues. The greyscale gate is gone - on a console
+    where P&L is green-and-red by design it could only have been weakened to pass."""
+    for value in (1.25, -1.25, 0.0):
+        rendered = app.status_html(value, f"{value:+.2f}")
+        glyph = {1.25: "▲", -1.25: "▼", 0.0: "—"}[value]
+
+        assert glyph in rendered, f"{value} rendered without its glyph"
+        assert f"{value:+.2f}" in rendered, f"{value} rendered without its sign"
+
+
+def test_the_ramp_stays_inside_attribution_and_spectral() -> None:
+    """It encodes *which channel* and *which band* - a quantity, not a direction. Outside
+    those two charts it would be a third colour family competing for the same eye."""
+    inside = (
+        app.contributions_svg(an_attribution(close_logret=0.08, rsi14=-0.06)),
+        app.spectral_panel(a_spectral_attribution()),
+    )
+    for surface in inside:
+        assert any(
+            c in surface for c in app.RAMP
+        ), "the ramp left a chart that needs it"
+        assert not [
+            c for c in app.STATUS_COLOURS if c in surface
+        ], "status colour entered a data-encoding chart"
+
+    ref = app.reference_rows(app.load_results())
+    if not ref.empty:
+        outside = (app.radar_svg(ref, "dlinear"), app.fold_bars_svg(ref, "dlinear"))
+        for surface in outside:
+            assert not [
+                c for c in app.RAMP if c in surface
+            ], "the ramp escaped its charts"
+
+
+def test_the_ramp_boundary_can_fail(monkeypatch) -> None:
+    """Proof the guard bites, on a real chart rather than a synthetic string."""
+    monkeypatch.setattr(app, "RAMP", (app.GAIN,) * len(app.RAMP))
+
+    violating = app.contributions_svg(an_attribution(close_logret=0.08, rsi14=-0.06))
+
+    assert [
+        c for c in app.STATUS_COLOURS if c in violating
+    ], "the guard cannot detect it"
+
+
+def test_the_radar_has_no_composite_score() -> None:
+    """The reference dashboard shows 'Edge Score 76.8'. There is no such quantity here,
+    and inventing one in a system whose thesis is exact attribution would be the opposite
+    of the point."""
+    ref = app.reference_rows(app.load_results())
+    if ref.empty:
+        pytest.skip("no results.csv to read")
+
+    axes = app.radar_axis_values(ref, "dlinear")
+
+    assert len(axes) == len(app.RADAR_AXES)
+    for label, unit, printed in axes:
+        assert label, "every axis is labelled with its own name"
+        assert 0.0 <= unit <= 1.0
+        assert printed, "every axis prints its measured value in its own units"
+    assert not hasattr(app, "edge_score")
+
+
+def test_each_radar_axis_is_measured_against_its_own_reference() -> None:
+    """These quantities are not commensurable, and pretending otherwise is how a composite
+    gets invented. Direction carries its own reference column; the rest do not."""
+    named = {label: reference for label, _, reference, _ in app.RADAR_AXES}
+
+    assert named["DIRECTION"] == "direction_reference"
+    assert all(axis[1] for axis in app.RADAR_AXES), "every axis names a measured column"
+
+
+def test_a_backtest_card_never_borrows_the_live_source(tmp_path) -> None:
+    """A card may not mix sources. The equity area is BACKTEST, so an absent artefact
+    renders the empty state rather than the live session curve."""
+    empty = app.cumulative_equity_svg(pd.DataFrame(), "dlinear")
+
+    assert empty == "", "an absent artefact must not fall back to another source"
+
+
+def test_the_session_strip_names_the_bound_directory(cfg_stub) -> None:
+    """The GATE 2 defect, as a test: on 27 Aug the panel was bound to `checkpoints/live`
+    while the rehearsal wrote to `checkpoints/rehearsal`, so its queue rendered empty and
+    correct and criterion 2 had to be satisfied through the API."""
+    html = app.session_strip(
+        cfg_stub, app.RUNNING, "checkpoints/rehearsal", "rehearsal:gate2", 42.0
     )
 
-    html = app.header_html(cfg_stub, app.RUNNING, None, context)
+    assert "checkpoints/rehearsal" in html
+    assert "REHEARSAL:GATE2" in html
+    assert "BOUND" in html
 
-    assert "BAND" in html
-    assert "GRID MAXIMUM" in html
-    assert "OVER 8 TRADES" in html
 
-    # And a header built without one is unchanged, so the panel degrades rather than breaks.
-    assert "GRID MAXIMUM" not in app.header_html(cfg_stub, app.RUNNING, None)
+def test_the_reliability_card_states_the_gap_against_the_bar() -> None:
+    """Not optional and not small. A console that shows P&L while hiding how often the
+    decider is right is the black box this project exists to oppose."""
+    record = app.Reliability(
+        direction=0.4959,
+        always_long=0.5564,
+        folds=16,
+        measured_on="2026-08-23",
+        model="dlinear",
+    )
+
+    body = app.reliability_body(record, None)
+
+    assert "0.4959" in body and "0.5564" in body
+    assert "16 FOLDS" in body.upper()
+    assert app.LOSS in body, "a negative gap is red"
+    assert "▼" in body, "and carries its arrow"
+
+
+def test_an_unmeasured_reliability_says_so_rather_than_showing_nothing() -> None:
+    body = app.reliability_body(None, None)
+
+    assert "NOT MEASURED" in body
+
+
+def test_the_reference_condition_yields_one_row_per_fold_per_arm() -> None:
+    """**The bug the first screenshot of the rebuild showed.**
+
+    channels and target_in_loop are part of the condition, and filtering neither left one
+    arm appearing four times - twice for the feature sets, twice for the execution models.
+    The fold chart drew 64 bars labelled f1 f1 f2 f3 f4 f4 and the equity curve chained
+    356 daily points over 178 distinct dates. Visible only because the duplicated fold
+    labels were printed under the bars.
+    """
+    ref = app.reference_rows(app.load_results())
+    if ref.empty:
+        pytest.skip("no results.csv to read")
+
+    for model in ("dlinear", "fits", "wits"):
+        arm = ref[ref.model == model]
+        if arm.empty:
+            continue
+        assert (
+            len(arm) == arm.fold.nunique()
+        ), f"{model} appears more than once per fold"
+
+    assert (
+        len(ref[ref.model == "buy_and_hold"]) > 0
+    ), "the market reference carries no channel set and must survive the filter"
+
+
+def test_a_daily_curve_has_one_point_per_date() -> None:
+    """Same root cause, and the one that silently doubled the calendar's day count."""
+    daily = app.load_daily_equity()
+    if daily.empty:
+        pytest.skip("report/daily_equity.csv not generated")
+
+    arm = app._one_arm(daily, "dlinear")
+
+    assert len(arm) == arm.date.nunique()
+
+
+def test_a_card_states_the_range_of_its_own_data_not_the_pages() -> None:
+    """**The overclaim the pills exist to prevent, committed by the pills.**
+
+    The equity area and the calendar read report/daily_equity.csv; the radar and the fold
+    chart read results.csv. Those two artefacts can be any number of folds apart, and a
+    partial daily file had both of its cards announcing folds 1-16 while holding three.
+    A pill that reports the page's range rather than the card's is worse than no pill.
+    """
+    source = Path(app.__file__).read_text(encoding="utf-8")
+
+    assert "from_daily = Source(BACKTEST, fold_range(daily))" in source
+    # The two daily-sourced cards take from_daily; nothing else may.
+    assert (
+        source.count("from_daily") == 5
+    ), "a daily-sourced card is using the wrong pill"

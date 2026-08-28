@@ -160,6 +160,31 @@ BUY_AND_HOLD = "buy_and_hold"
 
 RESULTS_FILE = "results.csv"
 
+#: The dated daily equity curve, written beside the results table. **A grid run used to
+#: produce exactly one artefact and it was per-fold**, so nothing downstream could ask what
+#: happened on a given day - `metrics.ArmResult.equity` is a dated daily series and it was
+#: discarded when the run ended. GB-63b's calendar and cumulative-equity cards need it, and
+#: `dashboard` sits below `experiments` in the layers contract so it cannot compute one.
+#:
+#: **Reference condition only.** Every arm-fold of the full grid would be roughly a
+#: hundred times `results.csv` for a curve nobody plots; the reference condition is the one
+#: the report's headline numbers come from, and a card that plotted a COF spoke would be
+#: answering a question nobody asked.
+DAILY_EQUITY_FILE = "report/daily_equity.csv"
+
+DAILY_EQUITY_COLUMNS = (
+    "anchor",
+    "lr",
+    "control",
+    "target_in_loop",
+    "cutoff_period_days",
+    "model",
+    "channels",
+    "fold",
+    "date",
+    "equity",
+)
+
 # The columns that identify one condition, and therefore the columns a paired test may
 # not cross. GB-51 pairs by fold *within* a condition: fold 3 at anchor 21 and fold 3 at
 # anchor 0 are different windows, and pairing them would compare two periods rather than
@@ -535,6 +560,7 @@ def run(
     n_folds: int | None = None,
     log=lambda message: None,
     design: Sequence[Condition] | None = None,
+    daily: list[dict] | None = None,
 ) -> pd.DataFrame:
     """Every arm at every condition, one row per fold.
 
@@ -570,7 +596,9 @@ def run(
     rows: list[dict] = []
     for condition in chosen:
         rows.extend(
-            _condition_rows(cfg, condition, bars, snapshot, n_folds=n_folds, log=log)
+            _condition_rows(
+                cfg, condition, bars, snapshot, n_folds=n_folds, log=log, daily=daily
+            )
         )
     return pd.DataFrame(rows, columns=list(COLUMNS))
 
@@ -665,8 +693,14 @@ def _condition_rows(
     snapshot: str,
     n_folds: int | None,
     log,
+    daily: list[dict] | None = None,
 ) -> list[dict]:
-    """Every arm of one condition."""
+    """Every arm of one condition.
+
+    ``daily`` is an explicit sink rather than a second return value or a module-level
+    collector: the caller decides whether the dated equity curves are wanted, and a reader
+    of this signature can see that they leave through it. ``None`` collects nothing.
+    """
     world = {
         symbol: null_bars(frame, condition.control, cfg.meta.seed + index)
         for index, (symbol, frame) in enumerate(sorted(bars.items()))
@@ -686,6 +720,7 @@ def _condition_rows(
         rows.append(
             _row(condition, BUY_AND_HOLD, "", fold.number, held, snapshot, reference)
         )
+        _collect_daily(daily, condition, BUY_AND_HOLD, "", fold.number, held)
 
     for model, channels in arms(condition.models):
         cell = replace(
@@ -709,6 +744,7 @@ def _condition_rows(
             rows.append(
                 _row(condition, model, channels, fold.number, arm, snapshot, cell)
             )
+            _collect_daily(daily, condition, model, channels, fold.number, arm)
         log(
             f"  anchor {condition.anchor:>2} lr {condition.lr:g} "
             f"cof@{condition.cutoff:<2} {condition.control:8} {model:11} {channels:9} "
@@ -761,6 +797,39 @@ def _folds_or_raise(frames, cfg: Config, anchor: int, n_folds: int | None):
     if not folds:
         raise SmokeError("no complete walk-forward fold fits the cached history")
     return folds
+
+
+def _collect_daily(
+    sink: list[dict] | None,
+    condition: Condition,
+    model: str,
+    channels: str,
+    fold: int,
+    arm,
+) -> None:
+    """Append one row per bar of this arm-fold's equity curve, or do nothing.
+
+    **Reference condition and real data only.** A null-control curve is a curve of a model
+    trained on noise, which is meaningful in the results table beside its real twin and
+    meaningless plotted on a calendar as though it were a month somebody lived through.
+    """
+    if sink is None or not condition.is_reference or condition.control != REAL:
+        return
+    equity = getattr(arm.result, "equity", None)
+    if equity is None or len(equity) == 0:
+        return
+    columns = condition.columns
+    for stamp, value in equity.items():
+        sink.append(
+            {
+                **columns,
+                "model": model,
+                "channels": channels,
+                "fold": fold,
+                "date": pd.Timestamp(stamp).strftime("%Y-%m-%d"),
+                "equity": float(value),
+            }
+        )
 
 
 def _row(
@@ -839,6 +908,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", default=RESULTS_FILE)
     parser.add_argument(
+        "--daily-out",
+        default=DAILY_EQUITY_FILE,
+        help=(
+            "where the dated daily equity curve is written, for the reference condition "
+            f"on real data only (default: {DAILY_EQUITY_FILE})"
+        ),
+    )
+    parser.add_argument(
         "--full",
         action="store_true",
         help="the cross product of every axis instead of the star; see `conditions`",
@@ -878,8 +955,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.plan_only:
         return 0
 
+    daily: list[dict] = []
     try:
-        table = run(cfg, full=args.full, n_folds=args.folds, log=print)
+        table = run(cfg, full=args.full, n_folds=args.folds, log=print, daily=daily)
     except SmokeError as failure:
         print(f"study: {failure}", file=sys.stderr)
         return 2
@@ -891,6 +969,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"wrote {args.out}: {len(table)} rows, {len(real)} reportable "
         f"({len(table) - len(real)} null-control or skipped)"
     )
+
+    if daily:
+        curves = pd.DataFrame(daily, columns=list(DAILY_EQUITY_COLUMNS))
+        Path(args.daily_out).parent.mkdir(parents=True, exist_ok=True)
+        curves.to_csv(args.daily_out, index=False)
+        print(
+            f"wrote {args.daily_out}: {len(curves)} daily rows over "
+            f"{curves['date'].nunique()} distinct dates, reference condition only"
+        )
     return 0
 
 
@@ -906,6 +993,8 @@ __all__ = [
     "COLUMNS",
     "CONTROLS",
     "CUTOFFS",
+    "DAILY_EQUITY_COLUMNS",
+    "DAILY_EQUITY_FILE",
     "LEARNING_RATES",
     "MODELS",
     "NOISE",

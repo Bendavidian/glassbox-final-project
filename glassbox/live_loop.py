@@ -936,6 +936,13 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 f"trade {trade.symbol} {trade.exit_reason} size={trade.size:.9f} "
                 f"net={trade.net_pnl:+.2f} costs={trade.costs:.4f}"
             )
+        # **To disk, not only to the log** (28 Aug 2026). GB-29 called this module's
+        # counterpart "the live trade log" and there was no log: these objects were built,
+        # written to the session log as text, and dropped. The two live trades this system
+        # has made existed only as lines somebody would have to grep, and no panel or
+        # metric could read them. A rehearsal reaches here with an empty tuple, so the
+        # condition-2 gate above is still the single point that keeps rehearsal trades out.
+        records.save_trades(trades, state.state_dir)
         state.seen_orders |= {order.id for order in orders}
 
         log("step 3/10 reconcile: the broker is the truth")

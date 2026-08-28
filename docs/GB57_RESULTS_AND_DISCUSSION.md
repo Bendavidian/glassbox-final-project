@@ -310,6 +310,23 @@ rather than after a run whose results were quietly about a different architectur
 gone unnoticed, the study's FITS arm would have been DLinear — which is the failure GB-49
 came within one task of shipping in 2025.
 
+**The honesty mechanism committed the defect it was built to prevent.** The console
+carries a source pill on every card — LIVE, BACKTEST or REPLAY, with a required detail —
+for one reason: this system has made two live trades and stands aside on most bars, while
+the backtest has 166 trades over sixteen folds, and a panel that looked live while showing
+backtest numbers would discredit the project's central claim more effectively than any
+missing feature. On 28 August two of those cards read one artefact and were labelled from
+another: they announced **"folds 1-16" while holding three**. The pill was derived once for
+the page from the frame most cards used, and the two cards that read a different file
+inherited a claim about somebody else's rows.
+
+This is the two-places family with the second place being *a label about the data*, and it
+is worth stating generally because the irony is the instructive part: **building a
+mechanism against a class of error does not place the mechanism outside that class.** A
+wrong pill is worse than no pill, because it converts *I should check this* into *I have
+checked this*. The corrective is unglamorous and the same as every other instance — derive
+the label from the thing it labels, and pin the call sites with a test.
+
 **A test double more permissive than the system it stands for is a second implementation of
 your assumptions.** At one point 1,181 tests passed while the live execution path could not
 place a protected order at all. The fake broker permitted a standalone stop and a standalone

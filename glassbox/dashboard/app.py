@@ -1,26 +1,36 @@
-"""L7: the Streamlit dashboard — positions and PnL, forecast paths, the decision log
-with channel contribution bars, and the spectral panel.
+"""L7: the Streamlit dashboard — a live trading-desk console.
 
-**Two colour families, and they mean different things.** Orange is **interface chrome
-only**: labels, rules, borders, registration marks, active states, and the calibrated
-threshold, which is a rule line rather than a measurement. The **blue ramp is the data
-encoding**, dark for slow and light for fast — the same ramp as the Hebrew proposal, the
-architecture report's three figures and the vision script, so a reader who has seen any of
-those reads this without relearning. Keeping chrome and data in separate families is not
-decoration: it is what tells the eye which marks carry information.
+**Rebuilt 28 Aug 2026 (GB-63b).** The previous language was a blueprint: registration
+marks, numbered grid rulers, dashed hairline panels, a PROJECT/SYSTEM/VERSION masthead,
+monospace uppercase throughout. That served a static document. This is a console somebody
+watches while a loop is running, and it is built as one — cards on a near-black ground,
+dense numeric type, green and red as the primary language.
 
-**Sign is never carried by hue alone.** The one data family available is a *ramp*, and a
-ramp cannot encode a sign without inventing a second data colour, which the ruling above
-forbids. So a positive contribution is a filled bar to the right of the zero rule and a
-negative one is a hollow bar to the left, and every signed number carries an explicit
-``▲``/``▼``. The chart is readable in greyscale, which is the test of whether colour was
-doing the work.
+**Green is gain and red is loss, everywhere, without exception.** Consistency matters more
+than restraint on a console: a reader who has to remember which panel uses which convention
+is a reader who will misread one. The rule that survives from the old language, because it
+costs nothing and protects somebody: **every status-coloured figure also carries a sign or
+an arrow**, so the number is readable if the colour is not. :func:`status_html` is the only
+producer of status colour and it guarantees that structurally.
 
-**The charts are hand-built SVG.** Not a plotting library: the design language here is
-dashed hairlines, numbered rulers and registration marks, which a chart library fights
-rather than helps, and an SVG builder is a **pure function returning a string**, so the
-threshold line, the ramp and the bar geometry are unit-testable without a browser. It also
-adds no dependency.
+**The blue ramp survives, scoped to two charts.** It encodes *which channel* and *which
+frequency band* — a quantity, not a direction — and it appears only inside the attribution
+and spectral panels. Outside them the ramp would be a third colour family competing with
+gain and loss for the same eye. Tests hold both halves of that boundary.
+
+**Every card declares where its numbers came from.** This system has made two live trades
+and stands aside on most bars, while the backtest has 166 trades over sixteen folds. A
+console that filled a calendar with backtest results while looking live would discredit the
+one claim this project is actually making, so a card carries a LIVE, BACKTEST or REPLAY
+pill, a card may not mix sources, and a card without enough live data says how little it
+has rather than quietly borrowing from the other side.
+
+**The charts are hand-built SVG.** Not a plotting library: an SVG builder is a **pure
+function returning a string**, so the threshold line, the ramp, the radar geometry and the
+calendar tiles are unit-testable without a browser. It also adds no dependency, and it is
+what lets one card be one ``st.markdown`` call — which matters, because Streamlit inserts
+its own wrappers between consecutive calls and a card assembled from several of them
+cannot hold a border.
 
 **A Hebrew narrative is rendered with an explicit ``dir``.** Not ``dir="auto"``: that reads
 the first strong character, and every narrative GB-32 writes opens with a ticker, so
@@ -52,15 +62,22 @@ from glassbox.explain.channel import cancellation, shares
 
 # ── the palette ──────────────────────────────────────────────────────────────
 
-INK = "#0A0A0B"  # near-black ground
-PANEL = "#101012"
-HAIRLINE = "#2A2A2E"
-PAPER = "#F2F0EC"  # display type
-MUTED = "#7A7A80"
+INK = "#0B0E11"  # page ground
+PANEL = "#12161B"  # card fill
+HAIRLINE = "#1E252D"  # card border, 1px, subtle
+PAPER = "#E6EAF0"  # primary text
+MUTED = "#8A94A6"  # labels, axes, secondary text
 
-# Chrome. Labels, rules, borders, registration marks, active states, threshold lines.
-ORANGE = "#E8542A"
-ORANGE_DIM = "#8A3219"
+# Neutral emphasis and selection ONLY. Not a third status colour: nothing on this console
+# encodes a value in blue outside the ramp, and an accent that started carrying meaning
+# would be the second data family the ramp already refuses to become.
+ACCENT = "#3B82F6"
+
+# Kept under their old names because the SVG builders below take colours as arguments and
+# `ORANGE` is threaded through several of them as "the chrome colour". The hue changed;
+# the role did not.
+ORANGE = ACCENT
+ORANGE_DIM = "#1E3A5F"
 
 # Data. Dark for slow, light for fast — the spectral ramp, applied to channels ordered by
 # how much history each one looks back over.
@@ -81,8 +98,13 @@ RAMP = ("#0A2239", "#123F63", "#1B6CA8", "#2E97D4", "#6FC3EC", "#B7E3F7")
 # The loss colour leans magenta deliberately. ORANGE is an orange-vermillion, so an
 # ordinary red separates on the number and not in the eye — and the eye is what matters
 # on a P&L figure. `#B03A5B` holds ΔE 47.65 from it where a conventional red would not.
-GAIN = "#2E9E6B"
-LOSS = "#B03A5B"
+GAIN = "#22C55E"
+LOSS = "#EF4444"
+
+#: Area fills under the equity curves. 15%, between the 12-18% the design calls for: light
+#: enough that a gridline reads through it, solid enough to carry the sign at a glance.
+GAIN_FILL = "rgba(34,197,94,0.15)"
+LOSS_FILL = "rgba(239,68,68,0.15)"
 
 #: Every surface that encodes data with colour. `test_status_colour_never_enters_a_data
 #: _chart` renders each one and refuses to find GAIN or LOSS in it.
@@ -211,6 +233,167 @@ def status_of(
     if not in_market_hours:
         return CLOSED
     return RUNNING if positions else IDLE
+
+
+# ── cards, and the source every one of them must declare ────────────────────
+
+LIVE, BACKTEST, REPLAY = "LIVE", "BACKTEST", "REPLAY"
+
+#: Pill colours. BACKTEST is deliberately the dimmest of the three: it is the source with
+#: the most rows and the least authority about what the system is doing right now, and a
+#: reader skimming for what is live should not have their eye caught by it first.
+_PILL = {LIVE: GAIN, BACKTEST: MUTED, REPLAY: ACCENT}
+
+
+@dataclass(frozen=True)
+class Source:
+    """Where a card's numbers came from. **Required, never defaulted.**
+
+    This system has made two live trades and stands aside on most bars, while the backtest
+    has 166 trades across sixteen folds. The failure this type exists to prevent is a
+    console that looks live while showing backtest numbers - which would discredit the
+    project's central claim far more effectively than any missing feature.
+
+    ``detail`` is required for the same reason the kind is: "BACKTEST" alone invites a
+    reader to assume a period, so a backtest card states its fold range and a replay card
+    states its fold. A live card states how much live data it actually has, which for this
+    system is usually a small number and saying so is the point.
+    """
+
+    kind: str
+    detail: str
+
+    def __post_init__(self) -> None:
+        if self.kind not in _PILL:
+            raise ValueError(
+                f"unknown source {self.kind!r}; expected one of {list(_PILL)}"
+            )
+        if not self.detail.strip():
+            raise ValueError(
+                f"a {self.kind} card must say which data it is showing. 'BACKTEST' alone "
+                "lets a reader assume a period nobody stated"
+            )
+
+    @property
+    def pill(self) -> str:
+        return (
+            f'<span class="gb-pill" style="color:{_PILL[self.kind]};'
+            f'border-color:{_PILL[self.kind]}33">{escape(self.kind)}'
+            f'<span class="gb-pill-detail">{escape(self.detail)}</span></span>'
+        )
+
+
+def card(title: str, source: Source, body: str, note: str = "") -> str:
+    """One card: title, source pill, body, and an optional note under it.
+
+    **One string, one ``st.markdown``.** Streamlit wraps every markdown call in its own
+    container, so a card assembled from several calls cannot hold a border or an equal
+    height - the wrappers land between the pieces. Building the whole card as a string
+    also keeps it a pure function, testable without a browser, which is how every other
+    surface in this module already works.
+    """
+    return (
+        '<div class="gb-card">'
+        f'<div class="gb-card-head"><span class="gb-card-title">{escape(title)}</span>'
+        f"{source.pill}</div>"
+        f'<div class="gb-card-body">{body}</div>'
+        + (f'<div class="gb-card-note">{escape(note)}</div>' if note else "")
+        + "</div>"
+    )
+
+
+def too_little(source: Source, message: str) -> str:
+    """The body a card renders when it has nothing worth plotting.
+
+    A card in this state says what it has - "3 sessions, 2 trades" - rather than drawing an
+    empty axis, and never borrows from the other source to fill itself. Its own function
+    because the temptation to backfill is strongest exactly here.
+    """
+    return f'<div class="gb-empty">{escape(message)}</div>'
+
+
+# ── reading the study's artefacts ────────────────────────────────────────────
+#
+# `glassbox.dashboard` sits BELOW `backtest` and `experiments` in the layers contract
+# (pyproject.toml), so it may not import either and cannot run a backtest. It reads their
+# output files, which is not an import and does not cross the layer.
+
+RESULTS_PATH = "results.csv"
+DAILY_EQUITY_PATH = "report/daily_equity.csv"
+
+
+def load_results(path: str | Path = RESULTS_PATH) -> pd.DataFrame:
+    """The study's per-fold results, or an empty frame.
+
+    Empty rather than raising: a clean clone has no grid output, and a dashboard that
+    refused to start without one would be unusable on exactly the machine where somebody
+    is trying to see whether the live loop works.
+    """
+    source = Path(path)
+    if not source.is_file():
+        return pd.DataFrame()
+    return pd.read_csv(source)
+
+
+def load_daily_equity(path: str | Path = DAILY_EQUITY_PATH) -> pd.DataFrame:
+    """The dated daily equity curves, or an empty frame.
+
+    Written by `experiments/study.py` for the reference condition on real data only. Absent
+    until a grid has been run since 28 Aug 2026, and the cards that need it say so rather
+    than drawing nothing.
+    """
+    source = Path(path)
+    if not source.is_file():
+        return pd.DataFrame()
+    frame = pd.read_csv(source)
+    if "date" in frame.columns:
+        frame["date"] = pd.to_datetime(frame["date"])
+    return frame
+
+
+def reference_rows(results: pd.DataFrame, channels: str = "C0_base") -> pd.DataFrame:
+    """The reference condition on real data: the rows the report's headline comes from.
+
+    Filtered here rather than at each card, so every backtest card on the page shows the
+    same condition and a reader comparing two of them is comparing like with like.
+
+    **`channels` and `target_in_loop` are part of the condition and filtering them is not
+    optional.** Without them one arm appears four times - twice for the two feature sets
+    and twice for the two execution models - and every card silently multiplies: the fold
+    chart drew 64 bars labelled `f1 f1 f2 f3 f4 f4`, and the equity curve chained 356 daily
+    points over 178 distinct dates, each date counted twice. Found in the first screenshot
+    of the rebuild, by the duplicated fold labels being visible.
+    """
+    if results.empty:
+        return results
+    live = results[~results["skipped"].astype(bool)]
+    wanted = [
+        ("anchor", 0),
+        ("control", "real"),
+        ("lr", 0.001),
+        ("cutoff_period_days", 5),
+        ("target_in_loop", True),
+    ]
+    for column, value in wanted:
+        if column in live.columns:
+            live = live[live[column] == value]
+    if "channels" in live.columns:
+        # Buy-and-hold carries no channel set - it has no features - so it is kept
+        # alongside rather than filtered out with the other arms' second copy.
+        live = live[live["channels"].isna() | (live["channels"] == channels)]
+    return live
+
+
+def fold_range(frame: pd.DataFrame) -> str:
+    """``folds 1-16`` for a source pill, or a count when the folds are not contiguous."""
+    if frame.empty or "fold" not in frame.columns:
+        return "no folds"
+    folds = sorted({int(f) for f in frame["fold"] if int(f) > 0})
+    if not folds:
+        return "no folds"
+    if folds == list(range(folds[0], folds[-1] + 1)):
+        return f"folds {folds[0]}-{folds[-1]}"
+    return f"{len(folds)} folds"
 
 
 # ── status: colour that never travels alone ──────────────────────────────────
@@ -450,7 +633,7 @@ def load_equity(root: str | Path, now: pd.Timestamp) -> pd.Series:
     return series[series.index >= now - pd.Timedelta(seconds=EQUITY_WINDOW_SECONDS)]
 
 
-def equity_svg(series: pd.Series, width: int = 1400, height: int = 150) -> str:
+def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
     """The session equity curve. Flat until something happens, and that is correct.
 
     Coloured by its own sign against the session's first reading, because equity is a P&L
@@ -464,10 +647,18 @@ def equity_svg(series: pd.Series, width: int = 1400, height: int = 150) -> str:
     latest = float(series.iloc[-1])
     change = latest - opening
     low, high = float(series.min()), float(series.max())
-    span = max(high - low, 1e-9)
+
+    # **A flat session is the common case here, not an edge case.** The loop stands aside
+    # on most bars, so equity does not move, and dividing by max(high - low, 1e-9) drove
+    # every point to  - the line and its label sat on the floor of the card under a
+    # column of empty space. A span that is negligible against the level is drawn as a
+    # centred flat line, which is what it is.
+    flat = (high - low) <= abs(high) * 1e-9
 
     def y(value: float) -> float:
-        return bottom - (value - low) / span * (bottom - top)
+        if flat:
+            return (top + bottom) / 2
+        return bottom - (value - low) / (high - low) * (bottom - top)
 
     step = (right - left) / max(len(series) - 1, 1)
     points = " ".join(
@@ -559,7 +750,7 @@ def sparkline_svg(
 
 
 def countdown_svg(
-    remaining: float, total: float, width: int = 1400, height: int = 26
+    remaining: float, total: float, width: int = 460, height: int = 40
 ) -> str:
     """The cycle countdown, as a rule that depletes. No motion, no pulse.
 
@@ -568,16 +759,17 @@ def countdown_svg(
     """
     total = max(total, 1e-9)
     left = max(0.0, min(remaining, total))
-    filled = (width - 200) * (left / total)
+    track_from, track_to = 12, width - 54
+    filled = (track_to - track_from) * (left / total)
     return _svg(
         width,
         height,
         "".join(
             [
-                _text(12, 17, "NEXT CYCLE", ORANGE),
-                _rule(120, 13, width - 80, 13, HAIRLINE),
-                _rule(120, 13, 120 + filled, 13, ORANGE),
-                _text(width - 20, 17, f"{left:>3.0f}S", MUTED, anchor="end"),
+                _text(12, 14, "NEXT CYCLE", MUTED, size=8),
+                _rule(track_from, 28, track_to, 28, HAIRLINE),
+                _rule(track_from, 28, track_from + filled, 28, ACCENT),
+                _text(width - 12, 31, f"{left:.0f}s", PAPER, size=10, anchor="end"),
             ]
         ),
         "seconds until the next cycle",
@@ -603,6 +795,277 @@ def staleness_html(age_seconds: float, heartbeat_seconds: float) -> str:
             f"{age_seconds / 60:.0f} MIN AGO</span>"
         )
     return f'<span class="gb-stale">STALE &nbsp;·&nbsp; {age_seconds:.0f}S OLD</span>'
+
+
+# ── BACKTEST cards ───────────────────────────────────────────────────────────
+
+#: The radar's axes. Each is a measured metric with **its own** reference, because these
+#: quantities are not commensurable and pretending otherwise is how a composite score gets
+#: invented. `higher` says which direction is good, so drawdown can sit beside Sharpe
+#: without either being silently negated.
+RADAR_AXES = (
+    ("DIRECTION", "direction", "direction_reference", True),
+    ("SHARPE", "sharpe", None, True),
+    ("RETURN", "total_return", None, True),
+    ("DRAWDOWN", "max_drawdown", None, False),
+    ("CANCELLATION", "cancellation", None, False),
+)
+
+
+def radar_axis_values(rows: pd.DataFrame, model: str) -> list[tuple[str, float, str]]:
+    """``(label, unit_value, printed)`` per axis for one arm.
+
+    ``unit_value`` is the radius, normalised **against that axis's own reference** and
+    clamped to [0, 1]; ``printed`` is the measured number in its own units, which is what
+    the card actually labels. There is deliberately no aggregate of these five: the
+    reference dashboard shows an "Edge Score" and there is no such quantity in this
+    project. Inventing one in a system whose thesis is exact attribution would be the
+    opposite of the point.
+    """
+    arm = rows[rows["model"] == model]
+    out: list[tuple[str, float, str]] = []
+    if arm.empty:
+        return out
+    for label, column, reference, higher in RADAR_AXES:
+        if column not in arm.columns:
+            continue
+        value = float(arm[column].mean())
+        if math.isnan(value):
+            out.append((label, 0.0, EM_DASH))
+            continue
+        if reference and reference in arm.columns:
+            base = float(arm[reference].mean())
+            unit = 0.5 + (value - base) * 5.0 if not math.isnan(base) else 0.5
+            printed = f"{value:.4f} vs {base:.4f}"
+        else:
+            span = max(abs(float(arm[column].max())), 0.02)
+            unit = 0.5 + value / (2 * span)
+            printed = f"{value:+.4f}" if abs(value) < 1 else f"{value:+.2f}"
+        if not higher:
+            unit = 1.0 - unit
+        out.append((label, max(0.0, min(1.0, unit)), printed))
+    return out
+
+
+def radar_svg(
+    rows: pd.DataFrame, model: str, width: int = 420, height: int = 300
+) -> str:
+    """A five-axis radar of measured metrics. **No number in the middle.**"""
+    axes = radar_axis_values(rows, model)
+    if len(axes) < 3:
+        return ""
+    cx, cy, radius = width / 2, height / 2 - 6, min(width, height) / 2 - 58
+    body = []
+    for ring in (0.25, 0.5, 0.75, 1.0):
+        points = " ".join(
+            f"{cx + radius * ring * math.sin(2 * math.pi * i / len(axes)):.1f},"
+            f"{cy - radius * ring * math.cos(2 * math.pi * i / len(axes)):.1f}"
+            for i in range(len(axes))
+        )
+        body.append(
+            f'<polygon points="{points}" fill="none" stroke="{HAIRLINE}" stroke-width="1"/>'
+        )
+    shape = []
+    for index, (label, unit, printed) in enumerate(axes):
+        angle = 2 * math.pi * index / len(axes)
+        px = cx + radius * unit * math.sin(angle)
+        py = cy - radius * unit * math.cos(angle)
+        shape.append(f"{px:.1f},{py:.1f}")
+        lx = cx + (radius + 26) * math.sin(angle)
+        ly = cy - (radius + 26) * math.cos(angle)
+        anchor_at = (
+            "middle"
+            if abs(math.sin(angle)) < 0.3
+            else ("start" if math.sin(angle) > 0 else "end")
+        )
+        body.append(_text(lx, ly, label, MUTED, size=8, anchor=anchor_at))
+        body.append(_text(lx, ly + 11, printed, PAPER, size=8, anchor=anchor_at))
+    body.append(
+        f'<polygon points="{" ".join(shape)}" fill="{GAIN_FILL}" '
+        f'stroke="{GAIN}" stroke-width="1.5"/>'
+    )
+    return _svg(width, height, "".join(body), f"{model} performance shape")
+
+
+def _one_arm(
+    daily: pd.DataFrame, model: str, channels: str = "C0_base"
+) -> pd.DataFrame:
+    """One model's curves, one feature set. See :func:`reference_rows` for why both.
+
+    The daily artefact carries every arm of the reference condition, so a filter on `model`
+    alone leaves two copies of the same curve - one per channel set - and every date is
+    then counted twice.
+    """
+    arm = daily[daily["model"] == model]
+    if "channels" in arm.columns:
+        arm = arm[arm["channels"].isna() | (arm["channels"] == channels)]
+    return arm
+
+
+def cumulative_equity_svg(
+    daily: pd.DataFrame, model: str, width: int = 460, height: int = 300
+) -> str:
+    """Cumulative equity across the folds, as a filled area coloured by its own sign."""
+    if daily.empty or "model" not in daily.columns:
+        return ""
+    arm = _one_arm(daily, model).sort_values(["fold", "date"])
+    if arm.empty:
+        return ""
+    # Each fold restarts at its own opening capital, so the folds are chained on their
+    # returns rather than concatenated on their levels - otherwise every fold boundary
+    # would show a jump the strategy never took.
+    curve, level = [], 1.0
+    for _, fold_rows in arm.groupby("fold", sort=True):
+        values = fold_rows["equity"].to_numpy(dtype="float64")
+        if len(values) < 2 or values[0] == 0:
+            continue
+        for value in values:
+            curve.append((level * value / values[0], fold_rows["date"].iloc[0]))
+        level = curve[-1][0]
+    if len(curve) < 2:
+        return ""
+    series = [point for point, _ in curve]
+    left, right, top, bottom = 54, width - 12, 16, height - 30
+    low, high = min(series), max(series)
+    span = max(high - low, 1e-9)
+
+    def y(value: float) -> float:
+        return bottom - (value - low) / span * (bottom - top)
+
+    step = (right - left) / max(len(series) - 1, 1)
+    points = [f"{left + i * step:.1f},{y(v):.1f}" for i, v in enumerate(series)]
+    change = series[-1] - 1.0
+    colour, fill = (GAIN, GAIN_FILL) if change >= 0 else (LOSS, LOSS_FILL)
+    area = f"{left},{y(1.0):.1f} " + " ".join(points) + f" {right},{y(1.0):.1f}"
+    body = [
+        f'<polygon points="{area}" fill="{fill}" stroke="none"/>',
+        _rule(left, y(1.0), right, y(1.0), HAIRLINE, dash="2 3"),
+        _text(left - 6, y(1.0) + 3, "1.00", MUTED, size=8, anchor="end"),
+        f'<polyline points="{" ".join(points)}" fill="none" stroke="{colour}" stroke-width="1.6"/>',
+        _text(left, bottom + 18, f"{len(series)} TRADING DAYS", MUTED, size=8),
+        _text(
+            right,
+            top + 4,
+            f"{status_glyph(change)} {change * 100:+.2f}%",
+            colour,
+            size=11,
+            anchor="end",
+        ),
+    ]
+    return _svg(width, height, "".join(body), f"{model} cumulative equity")
+
+
+def fold_bars_svg(
+    rows: pd.DataFrame, model: str, width: int = 460, height: int = 300
+) -> str:
+    """One bar per walk-forward fold, green above zero and red below."""
+    arm = rows[rows["model"] == model].sort_values("fold")
+    if arm.empty:
+        return ""
+    values = [(int(r.fold), float(r.total_return)) for r in arm.itertuples()]
+    values = [(f, v) for f, v in values if not math.isnan(v)]
+    if not values:
+        return ""
+    left, right, top, bottom = 54, width - 12, 20, height - 34
+    peak = max(abs(v) for _, v in values) or 1e-9
+    zero = top + (bottom - top) / 2
+    slot = (right - left) / len(values)
+    body = [
+        _rule(left, zero, right, zero, HAIRLINE),
+        _text(left - 6, zero + 3, "0%", MUTED, size=8, anchor="end"),
+    ]
+    for index, (fold, value) in enumerate(values):
+        magnitude = abs(value) / peak * (bottom - top) / 2
+        x = left + index * slot + slot * 0.18
+        w = slot * 0.64
+        y0 = zero - magnitude if value >= 0 else zero
+        body.append(
+            f'<rect x="{x:.1f}" y="{y0:.1f}" width="{w:.1f}" height="{magnitude:.1f}" '
+            f'fill="{GAIN if value >= 0 else LOSS}"/>'
+        )
+        if index % 3 == 0:
+            body.append(
+                _text(
+                    x + w / 2, bottom + 14, f"f{fold}", MUTED, size=7, anchor="middle"
+                )
+            )
+    best, worst = max(values, key=lambda v: v[1]), min(values, key=lambda v: v[1])
+    body.append(
+        _text(left, top - 6, f"BEST f{best[0]} {best[1] * 100:+.2f}%", GAIN, size=8)
+    )
+    body.append(
+        _text(
+            right,
+            top - 6,
+            f"WORST f{worst[0]} {worst[1] * 100:+.2f}%",
+            LOSS,
+            size=8,
+            anchor="end",
+        )
+    )
+    return _svg(width, height, "".join(body), f"{model} return by fold")
+
+
+def calendar_svg(
+    daily: pd.DataFrame, model: str, width: int = 700, height: int = 280
+) -> str:
+    """A heatmap of daily equity change, one tile per trading day, by calendar week."""
+    if daily.empty or "model" not in daily.columns:
+        return ""
+    arm = _one_arm(daily, model).sort_values(["fold", "date"])
+    if arm.empty:
+        return ""
+    changes: dict[pd.Timestamp, float] = {}
+    for _, fold_rows in arm.groupby("fold", sort=True):
+        values = fold_rows["equity"].to_numpy(dtype="float64")
+        dates = list(fold_rows["date"])
+        for i in range(1, len(values)):
+            if values[i - 1]:
+                changes[dates[i]] = values[i] / values[i - 1] - 1.0
+    if not changes:
+        return ""
+    days = sorted(changes)
+    peak = max(abs(v) for v in changes.values()) or 1e-9
+    first = days[0] - pd.Timedelta(days=int(days[0].dayofweek))
+    tile, gap = 13, 3
+    body = []
+    for day in days:
+        week = int((day - first).days // 7)
+        x = 40 + week * (tile + gap)
+        y = 26 + int(day.dayofweek) * (tile + gap)
+        if x > width - tile:
+            continue
+        value = changes[day]
+        opacity = 0.18 + 0.82 * min(abs(value) / peak, 1.0)
+        body.append(
+            f'<rect x="{x}" y="{y}" width="{tile}" height="{tile}" rx="2" '
+            f'fill="{GAIN if value >= 0 else LOSS}" fill-opacity="{opacity:.2f}"/>'
+        )
+    for index, label in enumerate(("MON", "", "WED", "", "FRI")):
+        if label:
+            body.append(
+                _text(
+                    34,
+                    26 + index * (tile + gap) + 10,
+                    label,
+                    MUTED,
+                    size=7,
+                    anchor="end",
+                )
+            )
+    up = sum(1 for v in changes.values() if v > 0)
+    body.append(_text(40, height - 10, f"{len(changes)} TRADING DAYS", MUTED, size=8))
+    body.append(
+        _text(
+            width - 12,
+            height - 10,
+            f"{up} UP / {len(changes) - up} DOWN",
+            MUTED,
+            size=8,
+            anchor="end",
+        )
+    )
+    return _svg(width, height, "".join(body), f"{model} daily results calendar")
 
 
 # ── GB-35: the forecast path ─────────────────────────────────────────────────
@@ -1337,152 +1800,152 @@ def expander_title(record: DecisionRecord) -> str:
 
 
 def stylesheet() -> str:
-    """Near-black ground, dashed hairlines, monospace tracking, registration marks."""
+    """The console's whole visual language, as one stylesheet.
+
+    **Card equal-height is the only part that fights Streamlit.** `st.columns` renders each
+    column as a flex child of a row, so a card that is `height:100%` inside a column that
+    is `display:flex` fills the row's tallest card without any measurement. Targeting
+    Streamlit's own `data-testid` attributes is load-bearing rather than cosmetic here, and
+    it is the reason a card must be one `st.markdown` call: a second call inserts another
+    wrapper between the column and the card, and the height chain breaks at it.
+
+    Reflow needs no media queries. Streamlit stacks columns below its own breakpoint, so
+    the grid collapses to one column on a narrow viewport on its own; only the type scale
+    is adjusted.
+    """
     return f"""
 <style>
   .stApp {{ background: {INK}; }}
-  html, body, [class*="css"] {{ color: {PAPER}; }}
-  .gb-label {{
-      font-family: ui-monospace, Menlo, Consolas, monospace;
-      text-transform: uppercase; letter-spacing: .18em; font-size: .68rem;
-      color: {ORANGE}; margin: 1.4rem 0 .5rem;
+  html, body, [class*="css"] {{
+      color: {PAPER};
+      font-family: Inter, "SF Pro Text", -apple-system, "Segoe UI", sans-serif;
+      font-feature-settings: "tnum" 1, "cv05" 1;
   }}
-  .gb-meta {{
-      font-family: ui-monospace, Menlo, Consolas, monospace;
-      text-transform: uppercase; letter-spacing: .14em; font-size: .62rem;
-      color: {MUTED};
+  .block-container {{ padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1800px; }}
+  #MainMenu, footer, header {{ visibility: hidden; }}
+
+  /* ── cards ───────────────────────────────────────────────────────────── */
+  [data-testid="stColumn"] {{ display: flex; }}
+  [data-testid="stColumn"] > div {{ width: 100%; display: flex; }}
+  .gb-card {{
+      background: {PANEL}; border: 1px solid {HAIRLINE}; border-radius: 10px;
+      padding: .85rem 1rem .9rem; width: 100%; height: 100%;
+      display: flex; flex-direction: column; margin-bottom: .85rem;
   }}
-  .gb-display {{
-      font-family: "Arial Narrow", "Helvetica Neue", Inter, sans-serif;
-      font-weight: 800; font-stretch: condensed; text-transform: uppercase;
-      letter-spacing: -.01em; line-height: .92; color: {PAPER};
-      font-size: 2.6rem; margin: 0;
+  .gb-card-head {{
+      display: flex; align-items: center; justify-content: space-between;
+      gap: .6rem; margin-bottom: .7rem;
   }}
-  .gb-display em {{ color: {ORANGE}; font-style: normal; }}
-  .gb-panel {{
-      border: 1px dashed {HAIRLINE}; background: {PANEL};
-      padding: .9rem 1rem; position: relative; margin-bottom: .9rem;
+  .gb-card-title {{
+      font-size: .74rem; letter-spacing: .1em; text-transform: uppercase;
+      color: {MUTED}; font-weight: 600;
   }}
-  .gb-panel::before, .gb-panel::after {{
-      content: "+"; position: absolute; color: {ORANGE_DIM};
-      font-family: ui-monospace, monospace; font-size: .7rem; line-height: 1;
-  }}
-  .gb-panel::before {{ top: -.4rem; left: -.35rem; }}
-  .gb-panel::after {{ top: -.4rem; right: -.35rem; }}
-  .gb-ruler {{
-      display: flex; justify-content: space-between; border-bottom: 1px solid {HAIRLINE};
-      padding-bottom: .2rem; margin-bottom: .8rem;
-  }}
-  .gb-status {{
-      display: inline-block; border: 1px solid {ORANGE}; color: {ORANGE};
-      padding: .1rem .5rem; font-family: ui-monospace, monospace; font-size: .68rem;
-      letter-spacing: .18em;
-  }}
-  .gb-narrative {{
-      font-size: .92rem; line-height: 1.55; color: {PAPER};
-      border-left: 2px solid {ORANGE_DIM}; padding: .2rem 0 .2rem .8rem;
-  }}
-  .gb-narrative[dir="rtl"] {{
-      border-left: none; border-right: 2px solid {ORANGE_DIM};
-      padding: .2rem .8rem .2rem 0;
-  }}
-  .gb-figure {{ color: {PAPER}; font-size: 1.6rem; font-weight: 700; }}
-  .gb-metarow {{ display: flex; gap: .8rem; align-items: baseline; margin-bottom: .18rem; }}
-  .gb-metakey {{
-      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .6rem;
-      letter-spacing: .2em; color: {ORANGE_DIM}; min-width: 5.2rem;
+  .gb-card-body {{ flex: 1; display: flex; flex-direction: column; justify-content: center; }}
+  .gb-card-note {{
+      margin-top: .6rem; padding-top: .55rem; border-top: 1px solid {HAIRLINE};
+      font-size: .68rem; color: {MUTED};
   }}
 
-  /* Let the content use the column. The left ruler is fixed to the viewport edge, so
-     the container is padded past it rather than pushed by a spacer element. */
-  .stApp .block-container {{
-      max-width: none; padding-left: {GUTTER}; padding-right: 1.4rem;
-      padding-top: 3.4rem;
+  /* The source pill. Every card carries one; a card cannot be built without it. */
+  .gb-pill {{
+      border: 1px solid; border-radius: 999px; padding: .1rem .5rem;
+      font-size: .58rem; letter-spacing: .1em; font-weight: 700; white-space: nowrap;
   }}
-  .gb-lruler {{
-      position: fixed; left: 0; top: 0; bottom: 0; width: 2.6rem; z-index: 5;
-      border-right: 1px solid {HAIRLINE}; background: {INK};
-      display: flex; flex-direction: column; justify-content: space-between;
-      align-items: center; padding: 4.2rem 0 1.6rem;
-      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .58rem;
-      letter-spacing: .1em; color: {MUTED};
+  .gb-pill-detail {{
+      color: {MUTED}; font-weight: 400; letter-spacing: .04em; margin-left: .4rem;
   }}
-  .gb-lruler span::before {{ content: "— "; color: {ORANGE_DIM}; }}
 
-  .gb-table {{
-      width: 100%; border-collapse: collapse; background: {PANEL};
-      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .72rem;
-      margin-bottom: .9rem; border: 1px dashed {HAIRLINE};
+  /* A card with too little data says how little. It never borrows from the other
+     source to fill itself, so this state has to be legible rather than apologetic. */
+  .gb-empty {{
+      color: {MUTED}; font-size: .78rem; text-align: center; padding: 2.2rem .5rem;
+      border: 1px dashed {HAIRLINE}; border-radius: 8px;
   }}
+
+  /* ── the session strip ────────────────────────────────────────────────── */
+  .gb-strip {{
+      display: flex; flex-wrap: wrap; gap: 1.6rem; align-items: baseline;
+      background: {PANEL}; border: 1px solid {HAIRLINE}; border-radius: 10px;
+      padding: .8rem 1.1rem; margin-bottom: .85rem;
+  }}
+  .gb-stat {{ display: flex; flex-direction: column; gap: .18rem; }}
+  .gb-stat-key {{
+      font-size: .58rem; letter-spacing: .12em; text-transform: uppercase; color: {MUTED};
+  }}
+  .gb-stat-value {{ font-size: .95rem; font-weight: 600; color: {PAPER}; }}
+  .gb-stat-value.dim {{ color: {MUTED}; font-weight: 400; font-size: .8rem; }}
+
+  .gb-state {{
+      border-radius: 999px; padding: .15rem .7rem; font-size: .7rem; font-weight: 700;
+      letter-spacing: .08em; border: 1px solid;
+  }}
+
+  /* ── numbers ──────────────────────────────────────────────────────────── */
+  .gb-big {{ font-size: 2.1rem; font-weight: 700; line-height: 1.05; }}
+  .gb-sub {{ font-size: .74rem; color: {MUTED}; margin-top: .3rem; }}
+
+  /* ── tables ───────────────────────────────────────────────────────────── */
+  .gb-table {{ width: 100%; border-collapse: collapse; font-size: .78rem; }}
   .gb-table th {{
-      color: {ORANGE}; text-transform: uppercase; letter-spacing: .18em;
-      font-size: .6rem; font-weight: 400; text-align: left;
-      padding: .55rem .7rem; border-bottom: 1px solid {ORANGE_DIM};
+      text-align: left; font-size: .58rem; letter-spacing: .11em; font-weight: 600;
+      text-transform: uppercase; color: {MUTED}; padding: .35rem .6rem .45rem;
+      border-bottom: 1px solid {HAIRLINE};
   }}
   .gb-table td {{
-      color: {PAPER}; padding: .45rem .7rem; border-bottom: 1px dashed {HAIRLINE};
-      white-space: nowrap;
+      padding: .45rem .6rem; border-bottom: 1px solid {HAIRLINE}; color: {PAPER};
   }}
-  .gb-table tbody tr:last-child td {{ border-bottom: none; }}
-  .gb-table th.num, .gb-table td.num {{
-      text-align: right; font-variant-numeric: tabular-nums;
-      font-feature-settings: "tnum" 1;
-  }}
-  /* The one place a cell carries chrome: the mark is an annotation ABOUT the value, not
-     a value itself, which is the same category as a header. */
-  .gb-table td.gb-flag {{ color: {ORANGE}; }}
+  .gb-table tr:last-child td {{ border-bottom: none; }}
+  .gb-table td.num, .gb-table th.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  .gb-table td.gb-flag {{ color: {ACCENT}; }}
 
-  /* A value the last read could not refresh. Dimmed rather than hidden, because the
-     number is still the best one available and removing it would leave a blank that
-     reads as "no position" instead of "not refreshed". No animation: a stale value is
-     not an event, it is a condition, and conditions do not blink. */
+  /* ── stale and status chrome ──────────────────────────────────────────── */
   .gb-stale {{
-      color: {MUTED}; border: 1px dashed {HAIRLINE}; padding: .05rem .4rem;
-      font-size: .62rem; letter-spacing: .12em; text-transform: uppercase;
+      color: {MUTED}; border: 1px solid {HAIRLINE}; border-radius: 6px;
+      padding: .12rem .5rem; font-size: .62rem; letter-spacing: .06em;
   }}
+  /* The Hebrew narrative flips its rule to the other side. Restored 28 Aug 2026 after
+     the rebuild dropped it: the direction is decided by looking for Hebrew letters, and a
+     rule that stayed on the left would sit at the end of the sentence rather than its
+     start. Caught by test_the_rtl_narrative_rule_moves_to_the_other_side, which is the
+     only thing that noticed. */
+  .gb-narrative {{
+      font-size: .92rem; line-height: 1.55; color: {PAPER};
+      border-left: 2px solid {ACCENT}; padding: .2rem 0 .2rem .8rem;
+  }}
+  .gb-narrative[dir="rtl"] {{
+      border-left: none; border-right: 2px solid {ACCENT};
+      padding: .2rem .8rem .2rem 0;
+  }}
+  .gb-figure {{ color: {PAPER}; font-size: 1.4rem; font-weight: 700; }}
+  .gb-label {{
+      font-size: .72rem; letter-spacing: .1em; text-transform: uppercase;
+      color: {MUTED}; margin: 1.1rem 0 .5rem; font-weight: 600;
+  }}
+  .gb-meta {{ font-size: .72rem; color: {MUTED}; }}
 
-  /* The expanders arrive with the same default chrome the tables did - a white ground and
-     a sans face - and there is no HTML equivalent to build instead, because the widget is
-     what holds the disclosure state. So the widget stays and its skin is replaced. */
+  /* ── expanders: the one widget that stays, reskinned ──────────────────── */
   [data-testid="stExpander"] details {{
-      background: {PANEL}; border: 1px dashed {HAIRLINE}; border-radius: 0;
+      background: {PANEL}; border: 1px solid {HAIRLINE}; border-radius: 10px;
       margin-bottom: .5rem;
   }}
-  [data-testid="stExpander"] summary {{
-      background: {PANEL}; color: {PAPER};
-      font-family: ui-monospace, Menlo, Consolas, monospace;
-      text-transform: uppercase; letter-spacing: .14em; font-size: .66rem;
-  }}
-  [data-testid="stExpander"] summary:hover {{ color: {ORANGE}; }}
-  [data-testid="stExpander"] summary p {{
-      font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .66rem;
-      letter-spacing: .14em;
-  }}
-  [data-testid="stExpander"] summary svg {{ fill: {ORANGE_DIM}; }}
+  [data-testid="stExpander"] summary {{ color: {PAPER}; font-size: .76rem; }}
+  [data-testid="stExpander"] summary:hover {{ color: {ACCENT}; }}
+  [data-testid="stExpander"] summary svg {{ fill: {MUTED}; }}
   [data-testid="stExpander"] details > div {{ background: {PANEL}; border: none; }}
+
+  /* ── buttons ──────────────────────────────────────────────────────────── */
+  .stButton > button {{
+      background: {PANEL}; color: {PAPER}; border: 1px solid {HAIRLINE};
+      border-radius: 8px; font-size: .76rem; font-weight: 600;
+  }}
+  .stButton > button:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
+
+  @media (max-width: 900px) {{
+      .gb-big {{ font-size: 1.6rem; }}
+      .gb-strip {{ gap: 1rem; }}
+  }}
 </style>
 """
-
-
-def ruler_html(marks: int = 4) -> str:
-    """The numbered grid rule along the top edge. Plain integers, as the references have."""
-    ticks = "".join(
-        f'<span class="gb-meta">{value:d}</span>'
-        for value in range(0, 25 * marks + 1, 25)
-    )
-    return f'<div class="gb-ruler">{ticks}</div>'
-
-
-def left_ruler_html(marks: int = 6) -> str:
-    """The numbered rule down the left edge.
-
-    Fixed to the viewport rather than laid out in a column, because a column would only be
-    as tall as its own contents and the ruler in the references runs the height of the
-    page. The content is padded past it by :data:`GUTTER`, so the ruler costs a gutter
-    rather than the third of the viewport the old layout left empty.
-    """
-    ticks = "".join(f"<span>{value * 10:d}</span>" for value in range(marks))
-    return f'<div class="gb-lruler">{ticks}</div>'
 
 
 @dataclass(frozen=True)
@@ -1508,13 +1971,19 @@ class BandContext:
 
     @property
     def summary(self) -> str:
-        """One line, for the masthead."""
+        """One line of **plain text**, for whatever is showing the band.
+
+        It carried literal &nbsp; until 28 Aug 2026, because the masthead that first
+        used it inserted the string unescaped. Any caller that escaped it - as a card
+        properly does - printed the entities on the face of the panel. A value object
+        returning markup is presentation smuggled into data, and it only works while every
+        caller agrees not to treat it as data.
+        """
         if self.stood_aside or self.val_sharpe is None:
             return "STOOD ASIDE — VALIDATION FOUND NO CANDIDATE WITH A POSITIVE SHARPE"
         return (
-            f"FOLD {self.fold} &nbsp;·&nbsp; VAL SHARPE {self.val_sharpe:+.3f} "
-            f"&nbsp;·&nbsp; OVER {self.val_trades} TRADES &nbsp;·&nbsp; "
-            "GRID MAXIMUM OF 15 CANDIDATES"
+            f"FOLD {self.fold}  ·  VAL SHARPE {self.val_sharpe:+.3f}"
+            f"  ·  OVER {self.val_trades} TRADES  ·  GRID MAXIMUM OF 15 CANDIDATES"
         )
 
 
@@ -1535,88 +2004,129 @@ def band_context(path: Path) -> BandContext | None:
     )
 
 
-def header_html(
+# ── LIVE cards ───────────────────────────────────────────────────────────────
+
+
+def _stat(key: str, value: str, dim: bool = False) -> str:
+    klass = "gb-stat-value dim" if dim else "gb-stat-value"
+    return (
+        f'<div class="gb-stat"><span class="gb-stat-key">{escape(key)}</span>'
+        f'<span class="{klass}">{value}</span></div>'
+    )
+
+
+def session_strip(
     cfg: Config,
-    status: str,
-    reliability: Reliability | None,
-    band: BandContext | None = None,
-    state_dir: str | Path | None = None,
-    source: str | None = None,
+    state: str,
+    state_dir: str | Path,
+    source: str,
+    cycle_seconds: float,
     stale: str = "",
 ) -> str:
-    """Project block, status chip and the reliability panel, in one strip.
+    """Row 1: what is happening now, in one line each.
 
-    **Stacked** PROJECT / SYSTEM / VERSION, as the references have it: three labelled rows
-    read as a masthead, one run-on row reads as a breadcrumb.
+    **The bound directory is here and not in a settings drawer.** On the night of GATE 2's
+    execution rehearsal the panel was pointed at `checkpoints/live` while the rehearsal
+    wrote to `checkpoints/rehearsal`; its Co-Pilot queue rendered empty and correct, and
+    criterion 2 had to be satisfied through the API instead. An empty queue and no
+    recommendations are indistinguishable unless the panel says which directory it read.
+    """
+    colour = GAIN if state in (RUNNING, IDLE) else MUTED if state == CLOSED else ACCENT
+    age = (
+        EM_DASH
+        if math.isinf(cycle_seconds)
+        else (
+            f"{cycle_seconds:.0f}s ago"
+            if cycle_seconds < 3600
+            else f"{cycle_seconds / 3600:.1f}h ago"
+        )
+    )
+    return (
+        '<div class="gb-strip">'
+        + f'<div class="gb-stat"><span class="gb-stat-key">SESSION</span>'
+        f'<span class="gb-state" style="color:{colour};border-color:{colour}55">'
+        f"{escape(state)}</span></div>"
+        + _stat("LAST CYCLE", escape(age))
+        + _stat("MODEL", escape(cfg.model.active.upper()), dim=True)
+        + _stat("CHANNELS", escape(cfg.channels.active.upper()), dim=True)
+        + _stat("UNIVERSE", f"{len(cfg.universe)} symbols", dim=True)
+        + _stat("BOUND", escape(str(state_dir)), dim=True)
+        + _stat("SHOWING", escape(source.upper()), dim=True)
+        + _stat("CONFIG", escape(config_hash(cfg)[:10].upper()), dim=True)
+        + (f'<div class="gb-stat">{stale}</div>' if stale else "")
+        + "</div>"
+    )
 
-    The reliability numbers sit here rather than behind a tab, because the requirement is
-    that they are unavoidable rather than available.
 
-    **The bound state directory is on the face of the panel** (27 Aug 2026). The dashboard
-    takes `--state-dir` and defaults to the deployed one, and on the night of GATE 2's
-    execution rehearsal it was pointed at `checkpoints/live` while the rehearsal wrote to
-    `checkpoints/rehearsal`. The Co-Pilot queue rendered empty and correct - there was
-    nothing pending in the directory it was reading - so criterion 2 had to be satisfied
-    through `answer_pending` instead. A panel silently reading a different directory from
-    the one the loop is writing is worse than a panel showing nothing, because an empty
-    queue is indistinguishable from no recommendations. It now says which directory it is
-    bound to, and which provenance it is filtering for.
+def reliability_body(reliability: Reliability | None, band: BandContext | None) -> str:
+    """The decider's track record, large.
+
+    **Not optional and not small.** A console that shows P&L while hiding how often the
+    decider is right is the black box this project exists to oppose - and this one's answer
+    is that it does not beat the always-long bar, which is exactly the number a reader is
+    least likely to go looking for and most needs to see.
     """
     if reliability is None:
-        record = (
-            '<span class="gb-label">RELIABILITY</span> '
-            '<span class="gb-meta">NOT MEASURED — run smoke_offline --prepare-live</span>'
+        return too_little(
+            Source(BACKTEST, "not measured"),
+            "NOT MEASURED - run smoke_offline --prepare-live",
         )
-    else:
-        arrow = "▲" if reliability.beats_the_bar else "▼"
-        record = (
-            f'<span class="gb-label">DIRECTION</span> '
-            f'<span class="gb-meta">{reliability.direction:.4f} vs ALWAYS-LONG '
-            f"{reliability.always_long:.4f} &nbsp; {arrow} {reliability.gap:+.4f} "
-            f"&nbsp; OVER {reliability.folds} FOLDS &nbsp; MEASURED "
-            f"{reliability.measured_on}</span>"
-        )
-
-    def line(label: str, value: str) -> str:
-        return (
-            f'<div class="gb-metarow"><span class="gb-metakey">{label}</span>'
-            f'<span class="gb-meta">{value}</span></div>'
-        )
-
+    gap = reliability.gap
+    colour = GAIN if gap > 0 else LOSS
     return (
-        '<div class="gb-panel">'
-        + line("PROJECT", f'<span style="color:{ORANGE}">GLASSBOX TRADER</span>')
-        + line(
-            "SYSTEM",
-            f"{cfg.model.active.upper()} &nbsp;/&nbsp; {cfg.channels.active.upper()} "
-            f"&nbsp;/&nbsp; {len(cfg.universe)} SYMBOLS &nbsp;/&nbsp; TOP_K "
-            f"{cfg.signal.top_k}",
-        )
-        + line(
-            "VERSION",
-            f"V{cfg.meta.version} &nbsp;·&nbsp; CONFIG {config_hash(cfg)[:12].upper()}",
-        )
-        + (
-            ""
-            if state_dir is None
-            else line(
-                "BOUND",
-                f"{escape(str(state_dir))} &nbsp;·&nbsp; SHOWING "
-                f"{escape(str(source or records.LIVE)).upper()}",
-            )
-        )
-        + f'<div style="margin-top:.7rem"><span class="gb-status">{status}</span>'
-        + (f"&nbsp;&nbsp;{stale}" if stale else "")
-        + "</div>"
-        + f'<div style="margin-top:.6rem">{record}</div>'
+        f'<div class="gb-big" style="color:{colour}">{status_glyph(gap)} '
+        f"{gap:+.4f}</div>"
+        f'<div class="gb-sub">DIRECTION {reliability.direction:.4f} '
+        f"against the always-long bar {reliability.always_long:.4f}</div>"
+        f'<div class="gb-sub">OVER {reliability.folds} FOLDS &nbsp;·&nbsp; '
+        f"MEASURED {escape(reliability.measured_on)} &nbsp;·&nbsp; "
+        f"{escape(reliability.model.upper())}</div>"
         + (
             ""
             if band is None
-            else '<div style="margin-top:.4rem">'
-            '<span class="gb-label">BAND</span> '
-            f'<span class="gb-meta">{band.summary}</span></div>'
+            else f'<div class="gb-sub" style="margin-top:.7rem;padding-top:.6rem;'
+            f'border-top:1px solid {HAIRLINE}">BAND {escape(band.summary)}</div>'
         )
-        + "</div>"
+    )
+
+
+def activity_table(
+    decisions: Sequence[DecisionRecord], trades: Sequence, limit: int = 12
+) -> str:
+    """Recent activity: decisions, and any closed round trips beside them.
+
+    Both are LIVE and both come from the same state directory, so this is one source and
+    not a mix. Trades are shown by exit time because that is when the row became true.
+    """
+    rows: list[tuple] = []
+    for trade in sorted(trades, key=lambda t: t.exit_time, reverse=True)[:limit]:
+        rows.append(
+            (
+                f"{trade.exit_time:%Y-%m-%d %H:%M}",
+                trade.symbol,
+                "TRADE",
+                escape(trade.exit_reason),
+                status_html(trade.net_pnl, f"{trade.net_pnl:+,.2f}"),
+            )
+        )
+    for record in list(decisions)[-limit:][::-1]:
+        strength = record.signal.trend_strength
+        rows.append(
+            (
+                f"{record.as_of:%Y-%m-%d}",
+                record.symbol,
+                escape(record.signal.action.upper()),
+                escape(provenance_label(record.provenance)),
+                status_html(strength, f"{strength:+.4f}"),
+            )
+        )
+    if not rows:
+        return ""
+    return table_html(
+        ("WHEN", "SYMBOL", "WHAT", "DETAIL", "VALUE"),
+        rows[: limit * 2],
+        numeric=(4,),
+        raw=(4,),
     )
 
 
@@ -1626,10 +2136,15 @@ def header_html(
 def main(
     state_dir: str | Path = "checkpoints/live", source: str = records.LIVE
 ) -> None:  # pragma: no cover
-    """Render the dashboard. Exercised by ``streamlit run``, not by the suite.
+    """Render the console. Exercised by ``streamlit run``, not by the suite.
 
-    Every computation it performs lives in the pure functions above, which are tested. What
-    is left here is layout, and layout is checked by looking at it.
+    Every computation lives in the pure functions above, which are tested. What is left
+    here is layout, and layout is checked by looking at it.
+
+    **The rows are ordered by source, not by importance.** Row 1 is what is happening now;
+    rows 2 and 3 are what was measured over sixteen folds. A reader should never have to
+    check a pill to know which half of the page they are in - the pills are there to settle
+    the question, not to be the only answer to it.
     """
     import streamlit as st
 
@@ -1638,13 +2153,7 @@ def main(
     now = pd.Timestamp.now(tz="UTC")
     st.set_page_config(page_title="GlassBox Trader", layout="wide")
     st.markdown(stylesheet(), unsafe_allow_html=True)
-    st.markdown(left_ruler_html(), unsafe_allow_html=True)
-    st.markdown(ruler_html(), unsafe_allow_html=True)
 
-    # Two caches, two clocks. Local files are cheap and move every cycle; the broker is
-    # rate-limited and shared with the live loop, which is charged against the same
-    # account. `_broker_view` already returns last-known values on failure, so a refused
-    # read dims rather than blanks the panel.
     read_broker = st.cache_data(ttl=BROKER_TTL_SECONDS, show_spinner=False)(
         _broker_view
     )
@@ -1654,6 +2163,8 @@ def main(
     read_decisions = st.cache_data(ttl=LOCAL_TTL_SECONDS, show_spinner=False)(
         _recent_decisions
     )
+    read_results = st.cache_data(ttl=60, show_spinner=False)(load_results)
+    read_daily = st.cache_data(ttl=60, show_spinner=False)(load_daily_equity)
 
     thresholds = _thresholds(root)
     reliability = load_reliability(root / RELIABILITY_FILE)
@@ -1668,43 +2179,28 @@ def main(
         cached = st.session_state.get("last_broker")
         if cached is None:
             st.markdown(
-                '<div class="gb-stale">NO BROKER READ HAS SUCCEEDED YET</div>',
+                '<div class="gb-empty">NO BROKER READ HAS SUCCEEDED YET</div>',
                 unsafe_allow_html=True,
             )
             return
         quantities, prices, account, at = cached
         broker_age = (now - at).total_seconds()
 
-    # Two different silences, and the header must not render them alike. A stale broker
-    # read means the panel's numbers are old; a loop that has not written its book in two
-    # heartbeats means the system is not running. The second outranks the first, because
-    # a fresh broker read beside a dead loop is the more misleading of the two.
     age = cycle_age(root, now)
-    loop_silent = age > 2 * cfg.live.heartbeat_seconds  # `inf > x` is True, as intended
+    loop_silent = age > 2 * cfg.live.heartbeat_seconds
     stale = staleness_html(
         age if loop_silent else broker_age, cfg.live.heartbeat_seconds
     )
 
+    # ── row 1: now ───────────────────────────────────────────────────────────
     st.markdown(
-        header_html(
+        session_strip(
             cfg,
             status_of(thresholds, hours, quantities),
-            reliability,
-            band_context(root / "thresholds.json"),
-            state_dir=root,
-            source=source,
-            stale=stale,
-        ),
-        unsafe_allow_html=True,
-    )
-
-    # The countdown is the loop's cadence, read from its last write. `inf` renders as a
-    # spent rule rather than a full one: no cycle has completed, and a full bar would
-    # promise one is coming.
-    st.markdown(
-        countdown_svg(
-            0.0 if math.isinf(age) else max(cfg.live.poll_seconds - age, 0.0),
-            cfg.live.poll_seconds,
+            root,
+            source,
+            age,
+            stale,
         ),
         unsafe_allow_html=True,
     )
@@ -1712,43 +2208,151 @@ def main(
     equity = float(account.get("equity", math.nan))
     append_equity(root, now, equity)
     curve = load_equity(root, now)
-    if len(curve) > 1:
-        st.markdown(equity_svg(curve), unsafe_allow_html=True)
+    sessions = _live_session_count(root, source)
+    trades = records.load_trades(root)
 
-    st.markdown('<div class="gb-label">POSITIONS</div>', unsafe_allow_html=True)
+    left, right = st.columns([2, 1])
+    with left:
+        live_source = Source(LIVE, f"{sessions} sessions, {len(trades)} trades")
+        body = (
+            equity_svg(curve)
+            if len(curve) > 1
+            else too_little(
+                live_source,
+                f"{len(curve)} equity reading this session - the curve needs two",
+            )
+        )
+        st.markdown(
+            card(
+                "Session equity",
+                live_source,
+                body,
+                f"Cash {account.get('cash', math.nan):,.2f}",
+            ),
+            unsafe_allow_html=True,
+        )
+    with right:
+        st.markdown(
+            card(
+                "Cycle",
+                Source(LIVE, "loop cadence"),
+                countdown_svg(
+                    0.0 if math.isinf(age) else max(cfg.live.poll_seconds - age, 0.0),
+                    cfg.live.poll_seconds,
+                ),
+                "Measured from the loop's own last write, not this page's timer.",
+            ),
+            unsafe_allow_html=True,
+        )
+
+    # ── rows 2-3: measured ───────────────────────────────────────────────────
+    results = read_results()
+    reference = reference_rows(results)
+    daily = read_daily()
+    arm = cfg.model.active
+    measured = Source(BACKTEST, fold_range(reference))
+    # **A card's pill states ITS OWN data's range, not the page's.** The equity area and
+    # the calendar read , which can lag  by any number of
+    # folds - a partial artefact from a short run had them announcing "folds 1-16" while
+    # holding three. That is precisely the overclaim the source pills exist to prevent,
+    # committed by the mechanism meant to prevent it.
+    from_daily = Source(BACKTEST, fold_range(daily))
+    missing = "report/daily_equity.csv not generated - run the study grid"
+
+    radar_col, equity_col, bars_col = st.columns(3)
+    with radar_col:
+        radar = radar_svg(reference, arm)
+        st.markdown(
+            card(
+                f"{arm.upper()} performance shape",
+                measured,
+                radar or too_little(measured, "no reference-condition rows"),
+                "Each axis against its own reference. There is no composite score.",
+            ),
+            unsafe_allow_html=True,
+        )
+    with equity_col:
+        area = cumulative_equity_svg(daily, arm)
+        st.markdown(
+            card(
+                "Cumulative equity",
+                from_daily,
+                area or too_little(from_daily, missing),
+                "Folds chained on returns, not concatenated on levels.",
+            ),
+            unsafe_allow_html=True,
+        )
+    with bars_col:
+        bars = fold_bars_svg(reference, arm)
+        st.markdown(
+            card(
+                "Return by fold",
+                measured,
+                bars or too_little(measured, "no reference-condition rows"),
+            ),
+            unsafe_allow_html=True,
+        )
+
+    rel_col, cal_col = st.columns(2)
+    with rel_col:
+        st.markdown(
+            card(
+                "Reliability",
+                Source(
+                    BACKTEST,
+                    f"{reliability.folds} folds" if reliability else "not measured",
+                ),
+                reliability_body(reliability, band_context(root / "thresholds.json")),
+                "An explanation makes a decision legible; it does not make it right.",
+            ),
+            unsafe_allow_html=True,
+        )
+    with cal_col:
+        heat = calendar_svg(daily, arm)
+        st.markdown(
+            card("Daily results", from_daily, heat or too_little(from_daily, missing)),
+            unsafe_allow_html=True,
+        )
+
+    # ── row 4: positions and activity ────────────────────────────────────────
     rows = position_rows(book, quantities, prices)
     closes = read_closes(cfg) if rows else {}
-    if rows:
-        st.markdown(position_table(rows), unsafe_allow_html=True)
-        for row in rows:
-            note = stop_note(row)
-            if note:
-                st.markdown(
-                    f'<div class="gb-stale">{note}</div>', unsafe_allow_html=True
-                )
-            history = closes.get(row.symbol)
-            if history is not None and not history.empty:
-                st.markdown(
-                    sparkline_svg(history.tail(60), row), unsafe_allow_html=True
-                )
-    else:
-        st.markdown(
-            '<div class="gb-meta">NO POSITIONS HELD</div>', unsafe_allow_html=True
-        )
+    pos_source = Source(LIVE, f"{len(rows)} held")
     st.markdown(
-        f'<div class="gb-meta">EQUITY {equity:,.2f}'
-        f' &nbsp;·&nbsp; CASH {account.get("cash", float("nan")):,.2f}</div>',
+        card(
+            "Positions",
+            pos_source,
+            (
+                position_table(rows)
+                if rows
+                else too_little(pos_source, "NO POSITIONS HELD")
+            ),
+        ),
+        unsafe_allow_html=True,
+    )
+    for row in rows:
+        note = stop_note(row)
+        if note:
+            st.markdown(f'<div class="gb-stale">{note}</div>', unsafe_allow_html=True)
+        history = closes.get(row.symbol)
+        if history is not None and not history.empty:
+            st.markdown(sparkline_svg(history.tail(60), row), unsafe_allow_html=True)
+
+    decisions = read_decisions(root, source)
+    activity_source = Source(LIVE, f"{len(decisions)} decisions, {len(trades)} trades")
+    st.markdown(
+        card(
+            "Recent activity",
+            activity_source,
+            activity_table(decisions, trades)
+            or too_little(activity_source, "NOTHING RECORDED IN THIS DIRECTORY YET"),
+        ),
         unsafe_allow_html=True,
     )
 
     _copilot_panel(root, cfg, st)
 
-    decisions = read_decisions(root, source)
     if not decisions:
-        st.markdown(
-            '<div class="gb-meta">NO DECISIONS RECORDED YET</div>',
-            unsafe_allow_html=True,
-        )
         _refresh(cfg, st)
         return
 
@@ -1757,44 +2361,66 @@ def main(
     )
     st.session_state["seen_decisions"] = seen
 
+    # ── row 6: forecast paths ────────────────────────────────────────────────
     latest = {record.symbol: record for record in decisions}
-    st.markdown('<div class="gb-label">FORECAST PATHS</div>', unsafe_allow_html=True)
-    for symbol in sorted(latest):
-        history = closes.get(symbol) if closes else read_closes(cfg).get(symbol)
-        if history is None or history.empty:
-            continue
-        st.markdown(
-            forecast_svg(
-                history,
-                price_path(float(history.iloc[-1]), latest[symbol].forecast.path),
-                thresholds,
-                symbol,
-            ),
-            unsafe_allow_html=True,
-        )
-
     st.markdown(
-        '<div class="gb-label">DECISION LOG</div>'
-        '<div class="gb-meta">THE PRICE CHART ADVANCES ONCE PER TRADING DAY: A DECISION '
-        "IS TAKEN ON THE LAST COMPLETED BAR AND DOES NOT CHANGE WITHIN A SESSION</div>",
+        '<div class="gb-label">Forecast paths</div>'
+        '<div class="gb-meta">The price line advances once per trading day: a decision is '
+        "taken on the last completed bar and does not change within a session.</div>",
         unsafe_allow_html=True,
     )
-    st.markdown(decision_table(decisions), unsafe_allow_html=True)
+    if not closes:
+        closes = read_closes(cfg)
+    symbols = [s for s in sorted(latest) if s in closes and not closes[s].empty]
+    for start in range(0, len(symbols), 2):
+        for column, symbol in zip(
+            st.columns(2), symbols[start : start + 2], strict=False
+        ):
+            history = closes[symbol]
+            with column:
+                st.markdown(
+                    card(
+                        f"{symbol} close and forecast",
+                        Source(LIVE, f"{latest[symbol].as_of:%Y-%m-%d} bar"),
+                        forecast_svg(
+                            history,
+                            price_path(
+                                float(history.iloc[-1]), latest[symbol].forecast.path
+                            ),
+                            thresholds,
+                            symbol,
+                        ),
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+    # ── row 7: attribution and spectral ──────────────────────────────────────
+    st.markdown(
+        '<div class="gb-label">Decisions and attribution</div>', unsafe_allow_html=True
+    )
     for record in decision_rows(decisions):
         title = expander_title(record)
         if (record.as_of, record.symbol) in fresh:
-            # Plain text, not a styled span: a Streamlit expander label takes no HTML, so
-            # a `.gb-new` CSS rule would have been a stylesheet entry that never applied
-            # to anything. The mark is the word.
+            # Plain text, not a styled span: a Streamlit expander label takes no HTML.
             title = f"{title}   · NEW"
         with st.expander(title):
             st.markdown(narrative_html(record.narrative), unsafe_allow_html=True)
             st.markdown(contributions_svg(record.attribution), unsafe_allow_html=True)
-            # GB-53. Empty string for a model that does not decompose by frequency, so
-            # the panel is absent under DLinear and persistence rather than blank.
+            # GB-53. Empty string for a model that does not decompose by frequency, so the
+            # panel is absent under DLinear and persistence rather than blank.
             st.markdown(spectral_panel(record.attribution), unsafe_allow_html=True)
 
     _refresh(cfg, st)
+
+
+def _live_session_count(root: Path, source: str) -> int:  # pragma: no cover - I/O
+    """How many distinct bars this directory has decided. A proxy for sessions, and an
+    honest one: one completed bar is decided per session by the 19 Aug ruling."""
+    try:
+        records_seen = _recent_decisions(root, source)
+    except Exception:  # noqa: BLE001 - a count is never worth failing the page over
+        return 0
+    return len({record.as_of for record in records_seen})
 
 
 def _refresh(cfg: Config, st) -> None:  # pragma: no cover - a loop by design
@@ -1950,10 +2576,8 @@ __all__ = [
     "forecast_svg",
     "frequency_shares",
     "gain_phase_svg",
-    "header_html",
     "is_fragile",
     "is_rtl",
-    "left_ruler_html",
     "load_reliability",
     "main",
     "narrative_html",

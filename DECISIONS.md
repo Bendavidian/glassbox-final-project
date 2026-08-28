@@ -5208,6 +5208,42 @@ unattended**; it is a claim that two short ones cost two cycles. GB-57 says whic
 
 ---
 
+## 2026-08-28 — The status palette, superseded by the console rebuild
+
+**Decision.** GB-63b replaces the whole visual language, and the status pair with it:
+
+| role | was (27 Aug) | now |
+|---|---|---|
+| gain | `#2E9E6B` jade | **`#22C55E`** |
+| loss | `#B03A5B` rose | **`#EF4444`** |
+
+**Why the reasoning below no longer applies, stated rather than deleted.** The 27 Aug pair
+was chosen to sit *quietly* beside an orange-vermillion chrome on a blueprint ground — the
+magenta lean existed because an ordinary red would have collapsed toward `#E8542A`. The
+rebuild removes that chrome entirely: the accent is now blue `#3B82F6`, used for neutral
+emphasis and selection only, and green and red are the **primary** language rather than a
+third role admitted grudgingly. A pair chosen to avoid a colour that is gone is a
+constraint answered by a question nobody is asking any more.
+
+**The ΔE work below is kept and not repeated**, because it measured the old palette and the
+old palette is what it was about. The rule it was protecting survives unchanged and is now
+the only rule the colour system carries: **every green or red figure also carries a sign or
+an arrow**, so a number is readable if the colour is not. `status_html` is the sole producer
+of status colour and guarantees that structurally.
+
+**What is dropped deliberately:** the greyscale gate. It was the right test for a palette
+with one data family and no status colour inside a chart; on a console where P&L is
+green-and-red by design it would have to be weakened to pass, and a weakened gate is worse
+than an honest replacement. `test_every_status_coloured_cell_carries_a_sign_or_arrow`
+replaces it.
+
+**What is kept exactly:** the blue ramp, scoped. It encodes which channel and which
+frequency band — a quantity, not a direction — and appears only inside the attribution and
+spectral panels. Tests hold both directions of that boundary: the ramp appears nowhere
+else, and status colour appears nowhere inside those two.
+
+---
+
 ## 2026-08-27 — The status palette, settled before GB-63 starts
 
 **Decision.** Two status colours, and only two:

@@ -664,3 +664,67 @@ def test_the_loop_target_suffix_cannot_be_read_as_the_broker_target() -> None:
     indistinguishable in the one file that is supposed to tell them apart."""
     assert not records.TARGET_IN_LOOP_SUFFIX.endswith(records.TARGET_SUFFIX)
     assert not records.TARGET_SUFFIX.endswith(records.TARGET_IN_LOOP_SUFFIX)
+
+
+# ── GB-63b: the live trade log, which until 28 Aug 2026 was not a log ────────
+
+
+def a_trade(symbol: str = "NVDA", net: float = 0.0027, strategy: bool = True) -> Trade:
+    return Trade(
+        symbol=symbol,
+        entry_time=pd.Timestamp("2026-08-27T16:03:36Z"),
+        exit_time=pd.Timestamp("2026-08-28T13:30:00Z"),
+        size=0.111706931,
+        entry_price=226.986,
+        exit_price=227.010,
+        gross_pnl=net,
+        costs=0.0,
+        net_pnl=net,
+        exit_reason="closeout",
+        strategy_exit=strategy,
+        entry_order_id="57fc23a8",
+        exit_order_id="1ba8d517",
+    )
+
+
+def test_a_trade_round_trips_through_the_log(tmp_path: Path) -> None:
+    """Every field, exactly. A log that loses `strategy_exit` would silently move an
+    administrative exit into the hit rate, which is the one thing 4.2 forbids."""
+    trade = a_trade()
+
+    records.save_trades([trade], tmp_path)
+
+    assert records.load_trades(tmp_path) == [trade]
+
+
+def test_an_absent_log_reads_as_no_trades(tmp_path: Path) -> None:
+    """Not an error: a state directory that has never closed a position is the normal
+    case for this system, and it must render as zero rather than as a failure."""
+    assert records.load_trades(tmp_path / "never-used") == []
+
+
+def test_saving_nothing_writes_nothing(tmp_path: Path) -> None:
+    """Called every cycle, and almost every cycle emits no trade."""
+    records.save_trades([], tmp_path)
+
+    assert not (tmp_path / records.TRADES_FILE).exists()
+
+
+def test_the_log_appends_across_calls(tmp_path: Path) -> None:
+    records.save_trades([a_trade("NVDA")], tmp_path)
+    records.save_trades([a_trade("GOOGL")], tmp_path)
+
+    assert [t.symbol for t in records.load_trades(tmp_path)] == ["NVDA", "GOOGL"]
+
+
+def test_a_torn_line_costs_one_trade_and_not_the_log(tmp_path: Path) -> None:
+    """A process killed mid-write leaves a half line. Losing the whole log to it would be
+    the wrong trade - the same ruling `_read_month` makes for decisions."""
+    records.save_trades([a_trade("NVDA")], tmp_path)
+    with (tmp_path / records.TRADES_FILE).open("a", encoding="utf-8") as handle:
+        handle.write('{"symbol": "GOO')
+    records.save_trades([a_trade("AAPL")], tmp_path)
+
+    kept = records.load_trades(tmp_path)
+
+    assert [t.symbol for t in kept] == ["NVDA", "AAPL"]
