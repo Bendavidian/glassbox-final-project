@@ -1,110 +1,129 @@
-# Dashboard screenshots — captions for the architecture report
+# Console screenshots — captions for the architecture report
 
 Real captures at 1920×1080 through headless Chromium against a running Streamlit instance.
-Not mock-ups, and not full-page strips: each frame is what a reader sees.
+Not mock-ups: each frame is what a reader sees.
 
-The console was rebuilt on 28 August 2026 (GB-63b). The previous blueprint language —
-registration marks, numbered rulers, dashed panels, a PROJECT/SYSTEM/VERSION masthead — is
-gone. Cards on a near-black ground, green for gain and red for loss.
+The console was restyled on 1 September 2026 (GB-63c) into **Vermillion Slate**. No cards,
+no boxes, no fills: everything sits on `#0E1116`, separated by three rule weights and
+whitespace. One monospace family throughout. Vermillion `#E8542A` is chrome only — section
+rules and active states — and never expresses a value; green and red do that.
 
-> **PROVISIONAL — these five figures must be re-captured after GB-61's grid run.**
-> They were taken against a **3-fold** `report/daily_equity.csv`, generated deliberately
-> so the cumulative-equity and calendar cards would render at all: the artefact is new in
-> GB-63b and no full grid has produced one yet. Their pills say `folds 1-3` and are
-> correct, but the real artefact will carry sixteen and the two cards will look different.
-> The other three cards, and every live panel, are unaffected. Do not leave report figures
-> standing that show an artefact which no longer exists.
+Every text colour clears WCAG AA against the ground, computed rather than quoted:
+text 16.99:1, gain 8.30, dim 5.19, accent 5.16, loss 5.03. The starfield sits deliberately
+below the threshold of notice at 1.57:1 and 1.94:1 — if you can find a star in these frames
+while reading a number, it is too strong.
 
-All captures are against `checkpoints/fits-demo`, a replay of **fold 13** written by
-`smoke_offline --model fits --prepare-replay 13` and driven by `replay --model fits`:
+> **PROVISIONAL in one respect only.** The cumulative-equity and calendar regions read a
+> **3-fold** `report/daily_equity.csv`; their pills say `folds 1-3` and are correct. GB-61's
+> grid will produce the full sixteen and those two regions will change. Everything else —
+> the live regions, the radar, the fold chart, the reliability figure — is final.
 
-    streamlit run glassbox/dashboard/app.py -- \
-        --state-dir checkpoints/fits-demo --source replay:fold-13
+Captures 01–04 and 06 are against **`checkpoints/live`**, during a real session on
+1 September that decided bar `2026-08-31`. Capture 05 needs a FITS arm, which the deployed
+configuration does not run, so it comes from a replay:
+
+    streamlit run glassbox/dashboard/app.py -- --state-dir checkpoints/live --source live
+    streamlit run glassbox/dashboard/app.py -- --state-dir checkpoints/fits-demo \
+        --source replay:fold-13
 
 ---
 
 ### 01-overview.png — the console
 
-Row 1 is what is happening now; rows 2 and 3 are what was measured. **Every card carries a
-source pill and no card mixes sources**, because this system has made two live trades and
-stands aside on most bars while the backtest has 166 trades over sixteen folds. A console
-that filled a calendar with backtest results while looking live would discredit the one
-claim the project is actually making.
+The status strip is one line: session state, last cycle, model, channels, universe, the
+**bound state directory**, the provenance being shown, and the config hash. The bound
+directory is there because of a real failure — on 27 August the panel read
+`checkpoints/live` while a rehearsal wrote to `checkpoints/rehearsal`, its Co-Pilot queue
+rendered empty and correct, and GATE 2's criterion 2 had to be satisfied through the API
+instead. An empty queue and no recommendations are indistinguishable unless the panel says
+which directory it read.
 
-The session strip states the **bound state directory** — `checkpoints\fits-demo` — beside
-the provenance it is filtering for. That defect cost GATE 2 its panel path: on 27 August
-the dashboard was bound to `checkpoints/live` while the rehearsal wrote to
-`checkpoints/rehearsal`, its Co-Pilot queue rendered empty and correct, and criterion 2 had
-to be satisfied through the API instead.
+**The two pills in the middle row disagree, and that is the design working.** The radar and
+the fold chart read `results.csv` and say `folds 1-16`; the cumulative equity and the
+calendar read `daily_equity.csv` and say `folds 1-3`. A previous version labelled all four
+with sixteen while two of them held three — a source label describing a different file from
+the one it labels, in the mechanism whose entire purpose is to keep live and backtest apart.
+Each region now derives its range from the frame it actually renders.
 
-`LOOP NOT RESPONDING · LAST READ 729 MIN AGO` is the escalated staleness state: past two
-heartbeat intervals the wording changes from *this number is old* to *the system is not
-running*, because those are different problems. `NEXT CYCLE` is measured from the loop's
-own last write to `book.json`, not from the page's refresh timer — a timer would tick
-smoothly past a dead loop, which is an animation rather than a measurement.
+**The radar has six measured axes and no number under it.** Direction against the
+always-long bar, Sharpe, return, drawdown, cancellation, flatness — each against its own
+reference, each labelled with both. The reference dashboards show a composite "edge score";
+there is no such quantity in this project, and inventing one in a system whose thesis is
+exact attribution would be the opposite of the point.
 
-**Session equity shows a flat line and says `5 READINGS THIS SESSION`.** That is correct
-and it is the common case: the loop stands aside on most bars.
-
-**The radar has no composite score.** Five axes, each a measured metric against **its own**
-reference and labelled with both. The reference dashboard shows an "Edge Score"; there is
-no such quantity here, and inventing one in a system whose thesis is exact attribution
-would be the opposite of the point. DLinear's direction axis reads 0.4959 against the
-always-long bar's 0.5564 — the shape is small because the measurements are.
-
-**Reliability is large, red, and unavoidable**: `▼ -0.0605`. A console that showed P&L
+**Reliability is the largest figure on the page and it is red.** `▼ -0.0605`: direction
+0.4959 against the always-long bar's 0.5564, over sixteen folds. A console that showed P&L
 while hiding how often the decider is right would be the black box this project exists to
-oppose, and this one's answer is that it does not beat the always-long bar.
+oppose. Beneath it the band states that it **fires** — fold 16, validation Sharpe +0.483
+over 8 trades, a grid maximum of fifteen candidates — because the record says how good the
+forecast was and the band says how selective the system is about acting on it.
 
-Captured under the committed 5-symbol universe, which the strip states. GB-61 will flip
-that to 20 and every backtest number on the page will move.
+`4 OF 16 FOLDS FLAT - STOOD ASIDE` under the fold chart, and `10 UP / 13 DOWN / 152 FLAT`
+under the calendar. Standing aside is most of what this system does, and the figures say so
+rather than leaving a reader to infer it from empty space.
 
-Note the two pills in row 2 differ: the radar and the fold chart read `results.csv`
-(**folds 1-16**) while the cumulative equity and calendar read `report/daily_equity.csv`
-(**folds 1-3**, a partial artefact). A card states the range of its own data, never the
-page's.
+### 02-activity-rows.png — the row language
 
-### 02-forecast-path.png — the forecast against the entry threshold
+**Two independent channels in one row.** A 2px left border states what the system did; the
+numerals state which way it went. The border is an *accent* on a fact the row already
+carries in words — the WHAT column reads `HOLD` — so a reader who cannot resolve the colour
+loses nothing, which is what `test_action_is_recoverable_from_the_row_text` holds.
 
-Per-symbol close history, the calibrated entry threshold as a dashed rule, `NOW` marking
-the last completed bar, and the forecast continuing past it as a dashed segment. The
-caption above the row states it plainly: **the price line advances once per trading day** —
-a decision is taken on the last completed bar and does not change within a session. Nothing
-here is styled to imply a live feed, because there is not one.
+Every row here is `HOLD` at the dim rule, because the deployed band evaluated bar
+`2026-08-31` and declined on all five symbols. That is the honest state of this system and
+not a gap in the figure: `enter_long` takes green, `exit` takes red, and a rehearsal or
+replay row takes vermillion, since provenance is a fact *about* a row rather than something
+the system decided.
 
-### 03-decision-log-attribution.png — exact attribution, per channel
+The trend values carry `▲` and `▼` beside the colour. Green and red are never the only
+carrier of a sign.
 
-One decision expanded: the narrative in plain language, then `PER-CHANNEL CONTRIBUTION` as
-signed bars summing to the forecast, with the cancellation line stating how much of the
-gross view survived. Under FITS the model is univariate, so `close_logret` carries 100.0%
-and the other four channels sit at 0.0% — the architecture visible in the panel.
+### 03-forecast-path.png — the forecast against the entry threshold
 
-Attribution is algebra, not approximation: across the 67 records behind these captures the
-worst `|sum(per_channel) − forecast_total|` is **2.551e-09** against the 1e-5 contract.
+Price history in `--dim`, the calibrated entry threshold as a dashed vermillion rule, and
+the forecast continuing past the last completed bar dashed in **green or red by the
+direction it predicts** — GOOGL and NVDA up, AAPL, AMZN and MSFT down.
 
-### 04-spectral-fits.png — the spectral panel, under FITS
+**These charts drew in the blue ramp until this capture was taken.** The ramp encodes which
+channel and which frequency band; a price line and a forecast are neither. It was found by
+looking at a screenshot, because the boundary test checked the radar and the fold chart and
+had never looked at the forecast chart — a guard whose substrate was not the thing being
+claimed. The test now enumerates every chart builder the module exports and fails on an
+unclassified one.
 
-**FITS is not the deployed arm.** The strip in 01 reads `MODEL DLINEAR` and that is
-correct: the deployed configuration runs DLinear, and this panel exists because fold 13 was
-replayed under FITS specifically so the frequency decomposition could be shown at all.
-Nothing in this frame describes what the live system is currently doing.
+Each region states `Last completed bar 2026-08-31 · advances once per trading day`. The
+model consumes completed daily bars and this subscription refuses intraday quotes, so
+nothing is styled to imply a live feed.
 
-All 24 frequency contributors with the RIN mean as its own row, and the panel refusing to
-be read as a dominant-cycle story: `NO SINGLE CYCLE CARRIES THIS FORECAST — STRONGEST IS
-12.1% OF 24 CONTRIBUTORS`. Below it, gain and phase in days rather than radians.
+### 04-attribution.png — exact attribution, per channel
 
-**This is the blue ramp's remaining territory.** It encodes *which band* — a quantity, not
-a direction — and appears only inside the attribution and spectral panels. No green or red
-appears in this frame; tests hold both directions of that boundary.
+One decision expanded: the narrative, then signed contribution bars summing to the forecast,
+with the cancellation line stating how much of the gross view survived. Sign is position
+relative to the centre line, never hue.
 
-**The panel had never rendered from a real decision record before 28 August 2026.**
+Attribution is algebra, not approximation: the worst
+`|sum(per_channel) − forecast_total|` across these records is **2.551e-09** against the
+1e-5 contract.
+
+### 05-spectral-fits.png — the spectral panel, under FITS
+
+**FITS is not the deployed arm.** The strip in 01 reads `MODEL DLINEAR`, which is correct;
+this frame comes from a replay of fold 13 under FITS, run specifically so the frequency
+decomposition could be shown at all. Nothing here describes what the live system is doing.
+
+All 24 frequency contributors with the RIN mean as its own row, and the panel refusing to be
+read as a dominant-cycle story: `NO SINGLE CYCLE CARRIES THIS FORECAST — STRONGEST IS 12.1%
+OF 24 CONTRIBUTORS`. Below it, gain and phase in days rather than radians.
+
+**This is the blue ramp's entire remaining territory**, along with the attribution bars in
+04. No green or red appears in this frame; tests hold both directions of that boundary.
+
+The panel had never rendered from a real decision record before 28 August 2026 —
 `explain_spectral` was defined, exported and unit-tested, and had no caller anywhere in
-`glassbox/`, so every decision record carried `per_frequency=None`.
+`glassbox/`, so every record carried `per_frequency=None`.
 
-### 05-reflow-1280.png — the grid at a narrow viewport
+### 06-reflow-1280.png — the layout at a narrow viewport
 
-The same page at 1280×900. The session strip wraps to two lines, the three cards of row 2
-stay side by side and equal-height, and nothing overflows. Equal height comes from
-Streamlit's own column flex — `[data-testid="stColumn"] { display:flex }` with
-`.gb-card { height:100% }` — which is why a card must be a single `st.markdown` call: a
-second call inserts another wrapper and the height chain breaks at it.
+The same page at 1280×900. Sections stack, the status strip wraps, and nothing overflows.
+There is no fixed width anywhere: with no cards to hold a shape, the layout is columns and
+rules, and it reflows because nothing was pinned in the first place.

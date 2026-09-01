@@ -321,19 +321,31 @@ def data_surfaces() -> dict[str, str]:
     }
 
 
-def test_status_colour_never_enters_a_data_encoding_chart() -> None:
-    """**Rule one of the three-role palette** (DECISIONS, 27 Aug 2026).
+def test_status_colour_never_enters_a_ramp_chart() -> None:
+    """**Narrowed in GB-63c, and narrowed rather than loosened.**
 
-    Chrome labels, the ramp encodes data, status says gain or loss. Inside a chart the
-    ramp already owns meaning, so a third family there would make a reader ask what green
-    encodes on an axis that is spending colour on frequency. This replaces a test that
-    banned the *strings* "green" and "red" - which would have passed a chart drawn in
-    `#2E9E6B`, since the ban was on the words rather than on the rule.
+    The rule was once "status colour never enters a data-encoding chart", and under the
+    card language that meant every chart. Under Vermillion Slate the ramp survives in
+    exactly two surfaces and green-and-red is the primary language everywhere else - so a
+    forecast dashed in GAIN is now correct rather than a violation, and a test still
+    forbidding it would have to be deleted to let the design through.
+
+    What survives is the part that was always the point: **the two families must not meet
+    inside one chart.** Where the ramp encodes which band, status colour would make a
+    reader ask what green means on an axis already spending colour on frequency.
+    `test_the_ramp_appears_in_no_chart_outside_attribution_and_spectral` holds the other
+    direction.
     """
-    for name, surface in data_surfaces().items():
-        lowered = surface.lower()
-        found = [c for c in app.STATUS_COLOURS if c.lower() in lowered]
-        assert not found, f"{name} encodes data and contains status colour {found}"
+    ramp_charts = {
+        "contributions": app.contributions_svg(
+            an_attribution(close_logret=0.08, rsi14=-0.06)
+        ),
+        "spectral": app.spectral_panel(a_spectral_attribution()),
+    }
+
+    for name, surface in ramp_charts.items():
+        found = [c for c in app.STATUS_COLOURS if c.lower() in surface.lower()]
+        assert not found, f"{name} encodes with the ramp and took status colour {found}"
 
 
 def test_the_data_chart_rule_can_fail(monkeypatch) -> None:
@@ -1806,3 +1818,87 @@ def test_the_forecast_region_states_that_the_bar_advances_once_per_day() -> None
 
     assert "Last completed bar" in source
     assert "advances once per trading day" in source
+
+
+def test_the_ramp_appears_in_no_chart_outside_attribution_and_spectral() -> None:
+    """**The boundary guard, with the hole closed.**
+
+    The earlier version checked the radar and the fold chart, and the forecast chart -
+    which was drawing its price line and its forecast in three ramp colours - was not in
+    the list. A guard that names its surfaces will always be one surface behind the code;
+    this one enumerates every chart builder the module exports and fails on an
+    unclassified one, so a new chart must be assigned a side rather than defaulting to
+    unchecked.
+    """
+    import pandas as pd
+
+    history = pd.Series([100.0, 101.0, 99.5, 102.0, 103.5])
+    reference = app.reference_rows(app.load_results())
+    daily = app.load_daily_equity()
+    row = app.PositionRow(
+        "AAPL", 1.0, 100.0, 97.0, True, stop_loss=94.0, take_profit=112.0
+    )
+
+    ramp_is_meaning = {
+        "contributions_svg": app.contributions_svg(
+            an_attribution(close_logret=0.08, rsi14=-0.06)
+        ),
+        "spectral_panel": app.spectral_panel(a_spectral_attribution()),
+    }
+    ramp_is_trespass = {
+        "forecast_svg": app.forecast_svg(
+            history, app.price_path(103.5, [0.01]), Thresholds(lower=0.004), "AAPL"
+        ),
+        "equity_svg": _equity([100.0, 101.0, 99.0]),
+        "countdown_svg": app.countdown_svg(30, 60),
+        "sparkline_svg": app.sparkline_svg(history, row),
+        "radar_svg": app.radar_svg(reference, "dlinear") if not reference.empty else "",
+        "fold_bars_svg": (
+            app.fold_bars_svg(reference, "dlinear") if not reference.empty else ""
+        ),
+        "cumulative_equity_svg": app.cumulative_equity_svg(daily, "dlinear"),
+        "calendar_svg": app.calendar_svg(daily, "dlinear"),
+    }
+
+    # Every chart builder the module exports is on one side or the other. A new one that
+    # is on neither fails here, which is the point: unclassified must not mean unchecked.
+    charted = {name for name in dir(app) if name.endswith("_svg")} | {"spectral_panel"}
+    classified = (
+        set(ramp_is_meaning)
+        | set(ramp_is_trespass)
+        # Spectral's three builders are one surface: `spectral_panel` above renders them
+        # together, so checking each would assert the same thing three times.
+        | {"spectral_svg", "gain_phase_svg", "response_svg"}
+        # `_svg` is the shared wrapper every chart is built with, not a chart.
+        | {"_svg"}
+    )
+    assert (
+        charted <= classified
+    ), f"unclassified chart builders: {sorted(charted - classified)}"
+
+    for name, svg in ramp_is_meaning.items():
+        assert any(c in svg for c in app.RAMP), f"{name} lost the ramp it needs"
+        assert not [
+            c for c in app.STATUS_COLOURS if c in svg
+        ], f"{name} took status colour"
+
+    for name, svg in ramp_is_trespass.items():
+        assert not [c for c in app.RAMP if c in svg], f"the ramp escaped into {name}"
+
+
+def test_the_forecast_is_dashed_in_the_direction_it_predicts() -> None:
+    """A forecast is a direction, so it takes the status colour of the move it predicts.
+    The history behind it is context and takes DIM."""
+    import pandas as pd
+
+    history = pd.Series([100.0, 101.0, 99.5, 102.0, 103.5])
+    rising = app.forecast_svg(
+        history, app.price_path(103.5, [0.01]), Thresholds(lower=0.004), "AAPL"
+    )
+    falling = app.forecast_svg(
+        history, app.price_path(103.5, [-0.01]), Thresholds(lower=0.004), "AAPL"
+    )
+
+    assert app.GAIN in rising and app.LOSS not in rising
+    assert app.LOSS in falling and app.GAIN not in falling
+    assert app.DIM in rising, "the price history is context, not a value"

@@ -1410,7 +1410,7 @@ def forecast_svg(
         f"{x_at(i):.1f},{y_at(float(v)):.1f}" for i, v in enumerate(history)
     )
     body.append(
-        f'<polyline points="{history_points}" fill="none" stroke="{RAMP[2]}" '
+        f'<polyline points="{history_points}" fill="none" stroke="{DIM}" '
         'stroke-width="1.5"/>'
     )
 
@@ -1419,13 +1419,20 @@ def forecast_svg(
     path_points = " ".join(
         f"{x_at(offset + i):.1f},{y_at(v):.1f}" for i, v in enumerate(joined)
     )
+    # **The ramp used to draw this chart, and it had no business here.** It encodes which
+    # channel and which band; a price line and a forecast are neither. The forecast is a
+    # direction, so it takes the status colour of the move it predicts, and the history is
+    # context, so it takes DIM. Found by looking at a screenshot - the boundary test
+    # checked the radar and the fold chart and never looked at this one, which is a guard
+    # whose substrate was not the thing being claimed.
+    direction = joined[-1] - joined[0]
     body.append(
-        f'<polyline points="{path_points}" fill="none" stroke="{RAMP[4]}" '
-        'stroke-width="2" stroke-dasharray="4 3"/>'
+        f'<polyline points="{path_points}" fill="none" '
+        f'stroke="{status_colour(direction)}" stroke-width="2" stroke-dasharray="4 3"/>'
     )
     body.append(
         f'<circle cx="{x_at(len(values) - 1):.1f}" cy="{y_at(joined[-1]):.1f}" r="3" '
-        f'fill="{RAMP[5]}"/>'
+        f'fill="{status_colour(direction)}"/>'
     )
     body.append(_rule(x_at(offset), top, x_at(offset), top + plot_h, ORANGE_DIM, "2 3"))
 
