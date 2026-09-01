@@ -312,6 +312,29 @@ def card(title: str, source: Source, body: str, note: str = "") -> str:
     )
 
 
+def region(label: str, source: Source, body: str, note: str = "") -> str:
+    """One section: a 2px accent rule, the label with its source pill, then the body.
+
+    **Replaces :func:`card`, and carries no box.** The rule and the space above it are the
+    whole separation - a region that needs to feel distinct gets more space, not a border
+    on four sides. Vermillion appears here and only here as a rule; it never expresses a
+    value, which is why the pill's colour comes from the source and the numerals' from
+    their sign.
+
+    One string and one ``st.markdown``, for the reason :func:`card` had: Streamlit wraps
+    every markdown call in a container of its own, and a region assembled from several
+    calls gets those wrappers threaded between its parts.
+    """
+    return (
+        '<div class="gb-region"><div class="gb-region-rule"></div>'
+        f'<div class="gb-region-head"><span class="gb-label">{escape(label)}</span>'
+        f"{source.pill}</div>"
+        f"<div>{body}</div>"
+        + (f'<div class="gb-note">{escape(note)}</div>' if note else "")
+        + "</div>"
+    )
+
+
 def too_little(source: Source, message: str) -> str:
     """The body a card renders when it has nothing worth plotting.
 
@@ -2061,10 +2084,10 @@ def band_context(path: Path) -> BandContext | None:
 
 
 def _stat(key: str, value: str, dim: bool = False) -> str:
-    klass = "gb-stat-value dim" if dim else "gb-stat-value"
+    colour = f' style="color:{DIM}"' if dim else ""
     return (
-        f'<div class="gb-stat"><span class="gb-stat-key">{escape(key)}</span>'
-        f'<span class="{klass}">{value}</span></div>'
+        f'<span><span class="gb-stat-key">{escape(key)}</span>'
+        f'<span class="gb-stat-value"{colour}>{value}</span></span>'
     )
 
 
@@ -2076,15 +2099,15 @@ def session_strip(
     cycle_seconds: float,
     stale: str = "",
 ) -> str:
-    """Row 1: what is happening now, in one line each.
+    """Row 1: what is happening now, one line, 20px gaps.
 
-    **The bound directory is here and not in a settings drawer.** On the night of GATE 2's
-    execution rehearsal the panel was pointed at `checkpoints/live` while the rehearsal
-    wrote to `checkpoints/rehearsal`; its Co-Pilot queue rendered empty and correct, and
-    criterion 2 had to be satisfied through the API instead. An empty queue and no
-    recommendations are indistinguishable unless the panel says which directory it read.
+    **The bound directory is here and not behind a control.** On 27 Aug the panel was
+    pointed at `checkpoints/live` while the rehearsal wrote to `checkpoints/rehearsal`; its
+    Co-Pilot queue rendered empty and correct, and criterion 2 had to be satisfied through
+    the API. An empty queue and no recommendations are indistinguishable unless the panel
+    says which directory it read.
     """
-    colour = GAIN if state in (RUNNING, IDLE) else MUTED if state == CLOSED else ACCENT
+    colour = GAIN if state in (RUNNING, IDLE) else DIM if state == CLOSED else ACCENT
     age = (
         EM_DASH
         if math.isinf(cycle_seconds)
@@ -2095,18 +2118,16 @@ def session_strip(
         )
     )
     return (
-        '<div class="gb-strip">'
-        + f'<div class="gb-stat"><span class="gb-stat-key">SESSION</span>'
-        f'<span class="gb-state" style="color:{colour};border-color:{colour}55">'
-        f"{escape(state)}</span></div>"
+        '<div class="gb-strip">' + f'<span><span class="gb-stat-key">SESSION</span>'
+        f'<span class="gb-stat-value" style="color:{colour}">{escape(state)}</span></span>'
         + _stat("LAST CYCLE", escape(age))
         + _stat("MODEL", escape(cfg.model.active.upper()), dim=True)
         + _stat("CHANNELS", escape(cfg.channels.active.upper()), dim=True)
-        + _stat("UNIVERSE", f"{len(cfg.universe)} symbols", dim=True)
+        + _stat("UNIVERSE", f"{len(cfg.universe)}", dim=True)
         + _stat("BOUND", escape(str(state_dir)), dim=True)
         + _stat("SHOWING", escape(source.upper()), dim=True)
         + _stat("CONFIG", escape(config_hash(cfg)[:10].upper()), dim=True)
-        + (f'<div class="gb-stat">{stale}</div>' if stale else "")
+        + (f"<span>{stale}</span>" if stale else "")
         + "</div>"
     )
 
@@ -2116,8 +2137,12 @@ def reliability_body(reliability: Reliability | None, band: BandContext | None) 
 
     **Not optional and not small.** A console that shows P&L while hiding how often the
     decider is right is the black box this project exists to oppose - and this one's answer
-    is that it does not beat the always-long bar, which is exactly the number a reader is
-    least likely to go looking for and most needs to see.
+    is that it does not beat the always-long bar, which is the number a reader is least
+    likely to go looking for and most needs to see.
+
+    The band sits beneath it because the two answer the same question from opposite ends:
+    the record says how good the forecast was, the band says how selective the system is
+    about acting on it, and a reader who sees only one of them has half the picture.
     """
     if reliability is None:
         return too_little(
@@ -2126,21 +2151,32 @@ def reliability_body(reliability: Reliability | None, band: BandContext | None) 
         )
     gap = reliability.gap
     colour = GAIN if gap > 0 else LOSS
-    return (
-        f'<div class="gb-big" style="color:{colour}">{status_glyph(gap)} '
-        f"{gap:+.4f}</div>"
-        f'<div class="gb-sub">DIRECTION {reliability.direction:.4f} '
-        f"against the always-long bar {reliability.always_long:.4f}</div>"
-        f'<div class="gb-sub">OVER {reliability.folds} FOLDS &nbsp;·&nbsp; '
-        f"MEASURED {escape(reliability.measured_on)} &nbsp;·&nbsp; "
-        f"{escape(reliability.model.upper())}</div>"
-        + (
-            ""
-            if band is None
-            else f'<div class="gb-sub" style="margin-top:.7rem;padding-top:.6rem;'
-            f'border-top:1px solid {HAIRLINE}">BAND {escape(band.summary)}</div>'
+    beats = "BEATS" if gap > 0 else "BELOW"
+    out = [
+        (
+            f'<div class="gb-figure" style="color:{colour}">{status_glyph(gap)} '
+            f"{gap:+.4f}</div>"
+        ),
+        (
+            f'<div class="gb-meta" style="padding-top:.5rem">DIRECTION '
+            f"{reliability.direction:.4f} &nbsp; {escape(beats)} THE ALWAYS-LONG BAR "
+            f"{reliability.always_long:.4f}</div>"
+        ),
+        (
+            f'<div class="gb-meta">OVER {reliability.folds} FOLDS &nbsp; MEASURED '
+            f"{escape(reliability.measured_on)} &nbsp; "
+            f"{escape(reliability.model.upper())}</div>"
+        ),
+    ]
+    if band is not None:
+        fires = "STANDS ASIDE" if band.stood_aside else "FIRES"
+        tone = DIM if band.stood_aside else GAIN
+        out.append('<div class="gb-sub-rule"></div>')
+        out.append(
+            f'<div class="gb-meta"><span style="color:{tone}">BAND {escape(fires)}'
+            f"</span> &nbsp; {escape(band.summary)}</div>"
         )
-    )
+    return "".join(out)
 
 
 def activity_table(
@@ -2353,7 +2389,7 @@ def main(
     rel_col, cal_col = st.columns(2)
     with rel_col:
         st.markdown(
-            card(
+            region(
                 "Reliability",
                 Source(
                     BACKTEST,

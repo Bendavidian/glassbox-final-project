@@ -1207,3 +1207,83 @@ def test_the_narrative_keeps_its_own_stack_and_its_rtl_rule() -> None:
 
     assert '.gb-narrative[dir="rtl"]' in css
     assert "border-right: 2px solid" in css
+
+
+def test_a_region_carries_a_rule_and_no_box() -> None:
+    """The rule and the space above it are the whole separation. A region that needs to
+    feel distinct gets more space, not a border on four sides."""
+    html = app.region(
+        "Return by fold", app.Source(app.BACKTEST, "folds 1-16"), "<svg/>"
+    )
+
+    assert "gb-region-rule" in html
+    assert "gb-pill" in html and "folds 1-16" in html
+
+    # The pill is exempt and deliberately so: it is a tag, and the source declaration
+    # is the thing that keeps live and backtest apart. What must not appear is a
+    # container - a fill, a radius, or a four-sided border on the region itself.
+    # Asserted on the region's own chrome rather than on every character inside it,
+    # which is what the first version of this test did, and it failed on the pill.
+    chrome = html.split('<div class="gb-region-head"')[0]
+    assert "gb-region-rule" in chrome, "the 2px accent rule is the separation"
+    assert "background" not in chrome
+    assert "border" not in chrome, (
+        "the rule belongs in the stylesheet, not inline - an inline border here "
+        "would be a second place the chrome vocabulary is defined"
+    )
+
+
+def test_the_reliability_region_states_whether_the_band_fires() -> None:
+    """The record says how good the forecast was; the band says how selective the system
+    is about acting on it. A reader who sees only one has half the picture."""
+    record = app.Reliability(
+        direction=0.4959,
+        always_long=0.5564,
+        folds=16,
+        measured_on="2026-08-23",
+        model="dlinear",
+    )
+    band = app.BandContext(stood_aside=False, val_sharpe=2.661, val_trades=17, fold=13)
+
+    body = app.reliability_body(record, band)
+
+    assert "gb-figure" in body, "the gap is the large figure"
+    assert app.LOSS in body and chr(9660) in body, "a negative gap is red and arrowed"
+    assert "BELOW THE ALWAYS-LONG BAR" in body
+    assert "BAND FIRES" in body
+    assert "16 FOLDS" in body and "2026-08-23" in body
+
+
+def test_a_stood_aside_band_says_so_rather_than_showing_a_threshold() -> None:
+    record = app.Reliability(
+        direction=0.50,
+        always_long=0.55,
+        folds=16,
+        measured_on="2026-08-23",
+        model="dlinear",
+    )
+    aside = app.BandContext(stood_aside=True, val_sharpe=None, val_trades=None, fold=9)
+
+    body = app.reliability_body(record, aside)
+
+    assert "BAND STANDS ASIDE" in body
+
+
+def test_the_status_strip_is_one_line_of_stated_facts(cfg_stub) -> None:
+    html = app.session_strip(
+        cfg_stub, app.RUNNING, "checkpoints/rehearsal", "rehearsal:gate2", 42.0
+    )
+
+    for key in (
+        "SESSION",
+        "LAST CYCLE",
+        "MODEL",
+        "CHANNELS",
+        "UNIVERSE",
+        "BOUND",
+        "SHOWING",
+        "CONFIG",
+    ):
+        assert key in html, f"the strip dropped {key}"
+    assert "checkpoints/rehearsal" in html
+    assert "gb-strip" in html
