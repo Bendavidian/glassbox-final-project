@@ -881,6 +881,12 @@ RADAR_AXES = (
     ("RETURN", "total_return", None, True),
     ("DRAWDOWN", "max_drawdown", None, False),
     ("CANCELLATION", "cancellation", None, False),
+    # Sixth axis, and lower is better: flatness measures how close to zero the forecast
+    # sits, so a high value is a model declining to forecast. It earns a place here for
+    # the reason 7.3 bans MAE from a table without it - across these arms MAE is close to
+    # a monotone function of flatness, so a shape that showed error without flatness would
+    # be showing the same axis twice and calling one of them accuracy.
+    ("FLATNESS", "flatness", None, False),
 )
 
 
@@ -2382,7 +2388,13 @@ def main(
     reference = reference_rows(results)
     daily = read_daily()
     arm = cfg.model.active
-    measured = Source(BACKTEST, fold_range(reference))
+    # **Two sources, because there are two files.** This is where the pill defect lived:
+    # the equity area and the calendar read `daily_equity.csv` and were labelled with
+    # `results.csv`'s range, announcing "folds 1-16" while holding three. A source is
+    # derived from the frame the region actually renders, never from a sibling region and
+    # never from the config. Named `from_results` and `from_daily` rather than `measured`
+    # so a call site cannot pick the wrong one without it reading wrong.
+    from_results = Source(BACKTEST, fold_range(reference))
     # **A card's pill states ITS OWN data's range, not the page's.** The equity area and
     # the calendar read , which can lag  by any number of
     # folds - a partial artefact from a short run had them announcing "folds 1-16" while
@@ -2395,18 +2407,18 @@ def main(
     with radar_col:
         radar = radar_svg(reference, arm)
         st.markdown(
-            card(
+            region(
                 f"{arm.upper()} performance shape",
-                measured,
-                radar or too_little(measured, "no reference-condition rows"),
-                "Each axis against its own reference. There is no composite score.",
+                from_results,
+                radar or too_little(from_results, "no reference-condition rows"),
+                "Six measured axes, each against its own reference. No composite score.",
             ),
             unsafe_allow_html=True,
         )
     with equity_col:
         area = cumulative_equity_svg(daily, arm)
         st.markdown(
-            card(
+            region(
                 "Cumulative equity",
                 from_daily,
                 area or too_little(from_daily, missing),
@@ -2417,10 +2429,10 @@ def main(
     with bars_col:
         bars = fold_bars_svg(reference, arm)
         st.markdown(
-            card(
+            region(
                 "Return by fold",
-                measured,
-                bars or too_little(measured, "no reference-condition rows"),
+                from_results,
+                bars or too_little(from_results, "no reference-condition rows"),
             ),
             unsafe_allow_html=True,
         )
@@ -2442,7 +2454,9 @@ def main(
     with cal_col:
         heat = calendar_svg(daily, arm)
         st.markdown(
-            card("Daily results", from_daily, heat or too_little(from_daily, missing)),
+            region(
+                "Daily results", from_daily, heat or too_little(from_daily, missing)
+            ),
             unsafe_allow_html=True,
         )
 

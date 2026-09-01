@@ -5208,6 +5208,40 @@ unattended**; it is a claim that two short ones cost two cycles. GB-57 says whic
 
 ---
 
+## 2026-09-01 — The starfield is deterministic in position AND in phase
+
+**Decision.** The starfield's 48 points take both their coordinates *and* a **negative
+`animation-delay`** from one fixed seed. The delay is not a refinement of the seeding; it
+is the half that makes the seeding true.
+
+**Why, and this is the part that will look removable.** The instruction said *positions
+from a fixed seed so the field is identical on every render*, which addresses position and
+nothing else. Streamlit re-executes the script on every rerun and rebuilds the DOM, so the
+field is re-injected roughly once a minute — and **a CSS animation restarts when its node
+is replaced.** Seeding only the coordinates gives a field that is deterministic in position
+and random in phase: every star reappears at its assigned place, at whatever point in its
+25–40s drift the clock happened to land on. That is a reshuffle under another name, and it
+is exactly what the seed was introduced to prevent.
+
+A negative `animation-delay` starts the animation partway through its own cycle. Drawn from
+the same seed, it makes the phase at injection a function of the seed rather than of when
+the page loaded. Every render is then identical in both respects.
+
+**What is honestly not achieved, stated so nobody claims it.** The drift is not continuous
+across a rerun. Between reruns the field moves; at a rerun it returns to the same phase.
+Streamlit's execution model cannot deliver smooth motion across a DOM rebuild, and claiming
+it could would be claiming something the framework does not do. At 1.57:1 and 1.94:1 against
+the ground the snap is not visible — which is the same property that makes the whole field
+acceptable.
+
+**The hazard this entry exists to prevent.** The next person to touch the starfield will see
+`random.Random(STAR_SEED)`, conclude that determinism is handled, and read the negative
+delay as a stray detail worth tidying. It is load-bearing.
+`test_every_star_carries_a_negative_delay` fails if it is removed, and this entry says why
+the test is not being pedantic.
+
+---
+
 ## 2026-08-28 — The status palette, superseded by the console rebuild
 
 **Decision.** GB-63b replaces the whole visual language, and the status pair with it:

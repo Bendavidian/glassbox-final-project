@@ -1114,13 +1114,21 @@ def test_a_card_states_the_range_of_its_own_data_not_the_pages() -> None:
     partial daily file had both of its cards announcing folds 1-16 while holding three.
     A pill that reports the page's range rather than the card's is worse than no pill.
     """
-    source = Path(app.__file__).read_text(encoding="utf-8")
+    # **Counted over code, not over the file.** A count across raw source includes
+    # comments, so the comment explaining these two names inflated its own guard the
+    # moment it was written - the same shape as slicing a fixed width of stylesheet, and
+    # committed one turn after that one was recorded. A guard whose value changes when
+    # somebody explains the thing it guards punishes explanation.
+    body = "\n".join(
+        line
+        for line in Path(app.__file__).read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
 
-    assert "from_daily = Source(BACKTEST, fold_range(daily))" in source
-    # The two daily-sourced cards take from_daily; nothing else may.
-    assert (
-        source.count("from_daily") == 5
-    ), "a daily-sourced card is using the wrong pill"
+    assert "from_results = Source(BACKTEST, fold_range(reference))" in body
+    assert "from_daily = Source(BACKTEST, fold_range(daily))" in body
+    assert body.count("from_daily") == 5, "a daily-sourced region changed its pill"
+    assert body.count("from_results") == 5, "a results-sourced region changed its pill"
 
 
 # ── GB-63c: the starfield and the flat language ─────────────────────────────
@@ -1341,3 +1349,51 @@ def test_the_countdown_is_a_depleting_accent_rule() -> None:
     assert app.ACCENT in full and 'stroke-width="1"' in full
     assert "NEXT CYCLE" in full
     assert full != spent, "the rule must shorten as the seconds run down"
+
+
+# ── GB-63c region 4: the three regions where the pill defect lived ──────────
+
+
+def test_the_radar_has_six_measured_axes_and_no_composite() -> None:
+    """The reference dashboards show one number under the shape. This project has no such
+    quantity, and inventing one in a system whose thesis is exact attribution would be the
+    opposite of the point."""
+    ref = app.reference_rows(app.load_results())
+    if ref.empty:
+        pytest.skip("no results.csv to read")
+
+    axes = app.radar_axis_values(ref, "dlinear")
+
+    assert len(axes) == 6
+    for label, unit, printed in axes:
+        assert label and printed, "every axis is named and prints its measured value"
+        assert 0.0 <= unit <= 1.0
+    assert not hasattr(app, "edge_score")
+
+
+def test_flatness_is_an_axis_where_lower_is_better() -> None:
+    """A high flatness is a model declining to forecast. It earns its place for the reason
+    7.3 bans MAE from a table without it: across these arms MAE is close to a monotone
+    function of flatness, so a shape showing error without flatness would be showing one
+    axis twice and calling one of them accuracy."""
+    named = {label: higher for label, _, _, higher in app.RADAR_AXES}
+
+    assert "FLATNESS" in named
+    assert named["FLATNESS"] is False
+
+
+def test_the_two_backtest_files_are_labelled_separately() -> None:
+    """**The pill defect, asserted on the data rather than on the source text.**
+
+    results.csv and report/daily_equity.csv are two files that can be any number of folds
+    apart. A partial daily artefact had both of its regions announcing folds 1-16 while
+    holding three. Each range is computed from its own frame, so this fails if a future
+    edit derives one from the other.
+    """
+    results = app.reference_rows(app.load_results())
+    daily = app.load_daily_equity()
+    if results.empty or daily.empty:
+        pytest.skip("both artefacts are needed to compare their ranges")
+
+    assert app.fold_range(results) == f"folds 1-{int(results.fold.max())}"
+    assert app.fold_range(daily) == f"folds 1-{int(daily.fold.max())}"
