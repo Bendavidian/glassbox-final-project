@@ -296,25 +296,6 @@ class Source:
         )
 
 
-def card(title: str, source: Source, body: str, note: str = "") -> str:
-    """One card: title, source pill, body, and an optional note under it.
-
-    **One string, one ``st.markdown``.** Streamlit wraps every markdown call in its own
-    container, so a card assembled from several calls cannot hold a border or an equal
-    height - the wrappers land between the pieces. Building the whole card as a string
-    also keeps it a pure function, testable without a browser, which is how every other
-    surface in this module already works.
-    """
-    return (
-        '<div class="gb-card">'
-        f'<div class="gb-card-head"><span class="gb-card-title">{escape(title)}</span>'
-        f"{source.pill}</div>"
-        f'<div class="gb-card-body">{body}</div>'
-        + (f'<div class="gb-card-note">{escape(note)}</div>' if note else "")
-        + "</div>"
-    )
-
-
 def region(label: str, source: Source, body: str, note: str = "") -> str:
     """One section: a 2px accent rule, the label with its source pill, then the body.
 
@@ -2654,7 +2635,7 @@ def main(
             )
         )
         st.markdown(
-            card(
+            region(
                 "Session equity",
                 live_source,
                 body,
@@ -2664,7 +2645,7 @@ def main(
         )
     with right:
         st.markdown(
-            card(
+            region(
                 "Cycle",
                 Source(LIVE, "loop cadence"),
                 countdown_svg(
@@ -2721,7 +2702,7 @@ def main(
     closes = read_closes(cfg) if rows else {}
     pos_source = Source(LIVE, f"{len(rows)} held")
     st.markdown(
-        card(
+        region(
             "Positions",
             pos_source,
             (
@@ -2751,7 +2732,7 @@ def main(
     st.session_state["seen_decisions"] = seen
     activity_source = Source(LIVE, f"{len(decisions)} decisions, {len(trades)} trades")
     st.markdown(
-        card(
+        region(
             "Recent activity",
             activity_source,
             activity_table(decisions, trades, fresh=fresh)
@@ -2784,7 +2765,7 @@ def main(
             history = closes[symbol]
             with column:
                 st.markdown(
-                    card(
+                    region(
                         f"{symbol} close and forecast",
                         Source(LIVE, f"{latest[symbol].as_of:%Y-%m-%d} bar"),
                         forecast_svg(
@@ -2795,6 +2776,8 @@ def main(
                             thresholds,
                             symbol,
                         ),
+                        f"Last completed bar {latest[symbol].as_of:%Y-%m-%d} · "
+                        "advances once per trading day",
                     ),
                     unsafe_allow_html=True,
                 )

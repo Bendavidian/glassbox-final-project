@@ -928,12 +928,15 @@ def test_a_card_cannot_be_built_without_saying_where_its_numbers_came_from() -> 
         app.Source("GUESSED", "somewhere")
 
 
-def test_every_card_renders_its_source_pill() -> None:
-    html = app.card("Return by fold", a_source(), "<svg/>")
+def test_every_region_renders_its_source_pill() -> None:
+    """`card()` is gone as of GB-63c region 7 - there are no cards. The pill survives it
+    unchanged, which is the point: the source declaration outlived the container it was
+    first attached to, because it was never a property of the box."""
+    html = app.region("Return by fold", a_source(), "<svg/>")
 
     assert "gb-pill" in html
     assert "BACKTEST" in html
-    assert "folds 1-16" in html, "a backtest card must state its fold range"
+    assert "folds 1-16" in html, "a backtest region must state its fold range"
 
 
 def test_a_backtest_pill_states_a_fold_range_and_not_a_bare_label() -> None:
@@ -1778,3 +1781,28 @@ def test_both_answers_are_wired_and_neither_reuses_a_widget_key() -> None:
     assert source.count("key=f\"r-{entry['decision_id']}\"") == 1
     assert source.count('entry["decision_id"], True') == 1
     assert source.count('entry["decision_id"], False') == 1
+
+
+def test_card_is_gone_and_nothing_calls_it() -> None:
+    """**Deleted in region 7, when nothing called it.**
+
+    It survived six regions on purpose: removing it at the start would have left six
+    commits behind that could not render a page, which is the opposite of what committing
+    per region is for. The guard is on the module, not on the attribute alone, so a
+    re-introduced helper under the same name would fail here too.
+    """
+    source = Path(app.__file__).read_text(encoding="utf-8")
+
+    assert not hasattr(app, "card")
+    assert "def card(" not in source
+    assert "card(" not in source.replace("region(", ""), "a call site survived"
+
+
+def test_the_forecast_region_states_that_the_bar_advances_once_per_day() -> None:
+    """The model consumes completed daily bars and this subscription refuses intraday
+    quotes. Nothing on the page may be styled to imply a live feed, and the caption is
+    where that is said rather than left to be inferred from the chart."""
+    source = Path(app.__file__).read_text(encoding="utf-8")
+
+    assert "Last completed bar" in source
+    assert "advances once per trading day" in source
