@@ -20,7 +20,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from glassbox.contracts.schemas import Attribution, Forecast, Signal
+from glassbox.contracts.schemas import (
+    Attribution,
+    DecisionRecord,
+    Forecast,
+    Signal,
+)
 from glassbox.dashboard import app
 from glassbox.engine.reconcile import Book, Holding
 from glassbox.engine.signal import ENTER_LONG, HOLD, Thresholds
@@ -1641,3 +1646,95 @@ def test_a_fold_that_stood_aside_is_marked_rather_than_absent() -> None:
     assert "4 OF 4 FOLDS FLAT" in svg
     assert svg.count("<line") == 5, "the zero rule, plus a mark for each flat fold"
     assert app.GAIN not in svg, "a fold that stood aside was coloured as a gain"
+
+
+# ── GB-63c region 5: the row language ───────────────────────────────────────
+
+
+def a_decision(action: str, provenance: str = "live", symbol: str = "NVDA"):
+    """A DecisionRecord thin enough for the activity table, with the fields it reads."""
+    return DecisionRecord(
+        as_of=pd.Timestamp("2026-09-01"),
+        symbol=symbol,
+        forecast=Forecast(
+            path=np.array([0.01], dtype="float32"),
+            symbol=symbol,
+            as_of=pd.Timestamp("2026-09-01"),
+        ),
+        attribution=an_attribution(close_logret=0.01),
+        signal=Signal(
+            symbol=symbol,
+            action=action,
+            trend_strength=0.01,
+            up_points=3,
+            passed_threshold=True,
+        ),
+        order=None,
+        narrative="",
+        config_hash="c" * 64,
+        provenance=provenance,
+    )
+
+
+def test_action_is_recoverable_from_the_row_text() -> None:
+    """**The rule the whole row language rests on.**
+
+    The 2px left border is an ACCENT on a fact, never the fact itself. A reader who cannot
+    resolve the border - colour-blind, a greyscale print, a projector - must still be able
+    to say what the system did, and the WHAT column is where they read it.
+    """
+    html = app.activity_table(
+        [a_decision(app.ENTER_LONG), a_decision(app.EXIT), a_decision(app.HOLD)], []
+    )
+
+    for action in ("ENTER_LONG", "EXIT", "HOLD"):
+        assert action in html, f"{action} is not recoverable without the border"
+
+
+def test_the_border_states_what_the_system_did() -> None:
+    """The second channel: two independent statements in one row."""
+    html = app.activity_table([a_decision(app.ENTER_LONG), a_decision(app.EXIT)], [])
+
+    assert "gb-row-gain" in html
+    assert "gb-row-loss" in html
+
+
+def test_a_hold_row_is_dimmed_and_ruled_rather_than_coloured() -> None:
+    """Standing aside is not a gain or a loss, and colouring it either would be a claim
+    the system did not make."""
+    html = app.activity_table([a_decision(app.HOLD)], [])
+
+    assert "gb-row-hold" in html
+    assert "gb-row-gain" not in html and "gb-row-loss" not in html
+
+
+def test_a_rehearsal_row_is_marked_as_not_live() -> None:
+    """Vermillion is not an action. It marks a fact ABOUT the row - this did not come from
+    the deployed band - which is exactly the distinction the source pills exist for, at
+    row granularity."""
+    html = app.activity_table(
+        [a_decision(app.ENTER_LONG, provenance="rehearsal:gate2-execution-path")], []
+    )
+
+    assert "gb-row-accent" in html
+    assert "gb-row-gain" not in html, "provenance outranks the action"
+
+
+def test_a_freshly_written_row_takes_the_accent_for_one_refresh() -> None:
+    """Freshness outranks provenance, which outranks the action: is this new, is this
+    real, what was it. On the next refresh it settles to its durable mark."""
+    record = a_decision(app.HOLD)
+    key = {(record.as_of, record.symbol)}
+
+    marked = app.activity_table([record], [], fresh=key)
+    settled = app.activity_table([record], [], fresh=frozenset())
+
+    assert "gb-row-accent" in marked
+    assert "gb-row-accent" not in settled
+    assert "gb-row-hold" in settled
+
+
+def test_the_action_keys_come_from_the_engine_not_from_a_second_list() -> None:
+    """A dashboard that spelled its own 'enter_long' would be a second copy of the signal
+    vocabulary, and the two would diverge the first time the engine renamed one."""
+    assert set(app.ROW_CLASSES) == {app.ENTER_LONG, app.EXIT, app.HOLD}

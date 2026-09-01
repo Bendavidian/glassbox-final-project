@@ -72,7 +72,7 @@ from glassbox.dashboard.tokens import (
     TEXT,
 )
 from glassbox.engine.reconcile import Book
-from glassbox.engine.signal import Thresholds
+from glassbox.engine.signal import ENTER_LONG, EXIT, HOLD, Thresholds
 from glassbox.explain.channel import cancellation, shares
 
 # ── the palette ──────────────────────────────────────────────────────────────
@@ -1875,6 +1875,7 @@ def table_html(
     numeric: Sequence[int] = (),
     flagged: Sequence[tuple[int, int]] = (),
     raw: Sequence[int] = (),
+    row_classes: Sequence[str] = (),
 ) -> str:
     """A table in the design language, rendered as HTML.
 
@@ -1890,6 +1891,10 @@ def table_html(
             whether a number is a price, a share or a log return.
         numeric: Indices of columns to right-align with tabular figures, so digits line up
             in their columns and a reader can compare magnitudes down a column by eye.
+        row_classes: One CSS class per row, carrying the 2px left border that states what
+            the system did. **An accent on a fact the row already states in words** - the
+            WHAT column says ENTER_LONG, EXIT or HOLD - so a reader who cannot resolve the
+            border colour loses nothing. Empty for tables that have no action to state.
         raw: Indices of columns whose cells are **already HTML built by this module** -
             in practice the one column that carries :func:`status_html`. Escaping stays
             the default for every other cell and for every value that came from a file,
@@ -1918,7 +1923,9 @@ def table_html(
                 style += "gb-flag"
             shown = str(cell) if index in set(raw) else escape(cell)
             cells.append(f'<td class="{style.strip()}">{shown}</td>')
-        body.append(f"<tr>{''.join(cells)}</tr>")
+        klass = row_classes[number] if number < len(row_classes) else ""
+        opening = f'<tr class="gb-row {klass}">' if klass else "<tr>"
+        body.append(f"{opening}{''.join(cells)}</tr>")
     return (
         f'<table class="gb-table"><thead><tr>{head}</tr></thead>'
         f'<tbody>{"".join(body)}</tbody></table>'
@@ -2448,15 +2455,50 @@ def reliability_body(reliability: Reliability | None, band: BandContext | None) 
     return "".join(out)
 
 
+#: What the system did, as a row class. Vermillion is not an action - it marks a row
+#: whose provenance is not live, and a row written since the last refresh, both of which
+#: are facts *about* the row rather than things the system decided.
+ROW_CLASSES = {
+    ENTER_LONG: "gb-row-gain",
+    EXIT: "gb-row-loss",
+    HOLD: "gb-row-hold",
+}
+
+
+def row_class(action: str, provenance: str = records.LIVE, fresh: bool = False) -> str:
+    """The left border for one row, in priority order.
+
+    Freshness outranks provenance, which outranks the action. That order is the reading
+    order of the questions: *is this new*, then *is this real*, then *what was it*. A row
+    that is both new and a rehearsal shows new for one refresh and then settles to the
+    provenance mark, which is the more durable fact about it.
+    """
+    if fresh or provenance != records.LIVE:
+        return "gb-row-accent"
+    return ROW_CLASSES.get(action.lower(), "gb-row-hold")
+
+
 def activity_table(
-    decisions: Sequence[DecisionRecord], trades: Sequence, limit: int = 12
+    decisions: Sequence[DecisionRecord],
+    trades: Sequence,
+    limit: int = 12,
+    fresh: frozenset | set | None = None,
 ) -> str:
     """Recent activity: decisions, and any closed round trips beside them.
 
-    Both are LIVE and both come from the same state directory, so this is one source and
-    not a mix. Trades are shown by exit time because that is when the row became true.
+    **Two independent channels in one row.** The 2px left border states what the system
+    did; the numerals state which way it went. Neither is the only carrier of its fact -
+    the action is spelled in the WHAT column and the sign is carried by a glyph - so the
+    row survives being read without colour, which is what
+    `test_action_is_recoverable_from_the_row_text` holds.
+
+    Both sources are LIVE and both come from the same state directory, so this is one
+    source and not a mix. Trades are shown by exit time because that is when the row
+    became true.
     """
+    fresh = fresh or frozenset()
     rows: list[tuple] = []
+    classes: list[str] = []
     for trade in sorted(trades, key=lambda t: t.exit_time, reverse=True)[:limit]:
         rows.append(
             (
@@ -2467,15 +2509,24 @@ def activity_table(
                 status_html(trade.net_pnl, f"{trade.net_pnl:+,.2f}"),
             )
         )
+        classes.append("gb-row-gain" if trade.net_pnl >= 0 else "gb-row-loss")
     for record in list(decisions)[-limit:][::-1]:
         strength = record.signal.trend_strength
+        action = record.signal.action
         rows.append(
             (
                 f"{record.as_of:%Y-%m-%d}",
                 record.symbol,
-                escape(record.signal.action.upper()),
+                escape(action.upper()),
                 escape(provenance_label(record.provenance)),
                 status_html(strength, f"{strength:+.4f}"),
+            )
+        )
+        classes.append(
+            row_class(
+                action,
+                record.provenance,
+                fresh=(record.as_of, record.symbol) in fresh,
             )
         )
     if not rows:
@@ -2485,6 +2536,7 @@ def activity_table(
         rows[: limit * 2],
         numeric=(4,),
         raw=(4,),
+        row_classes=classes[: limit * 2],
     )
 
 
@@ -2672,12 +2724,20 @@ def main(
             st.markdown(sparkline_svg(history.tail(60), row), unsafe_allow_html=True)
 
     decisions = read_decisions(root, source)
+    # Computed here, before the activity region draws, because a row written since the
+    # last refresh takes the accent border for exactly one pass. Reading it after the
+    # table would have been reading it too late - the mark would always be one refresh
+    # behind the thing it marks.
+    fresh, seen = newly_written(
+        decisions, st.session_state.get("seen_decisions", set())
+    )
+    st.session_state["seen_decisions"] = seen
     activity_source = Source(LIVE, f"{len(decisions)} decisions, {len(trades)} trades")
     st.markdown(
         card(
             "Recent activity",
             activity_source,
-            activity_table(decisions, trades)
+            activity_table(decisions, trades, fresh=fresh)
             or too_little(activity_source, "NOTHING RECORDED IN THIS DIRECTORY YET"),
         ),
         unsafe_allow_html=True,
@@ -2688,11 +2748,6 @@ def main(
     if not decisions:
         _refresh(cfg, st)
         return
-
-    fresh, seen = newly_written(
-        decisions, st.session_state.get("seen_decisions", set())
-    )
-    st.session_state["seen_decisions"] = seen
 
     # ── row 6: forecast paths ────────────────────────────────────────────────
     latest = {record.symbol: record for record in decisions}

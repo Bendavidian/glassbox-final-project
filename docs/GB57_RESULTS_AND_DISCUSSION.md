@@ -327,6 +327,24 @@ wrong pill is worse than no pill, because it converts *I should check this* into
 checked this*. The corrective is unglamorous and the same as every other instance — derive
 the label from the thing it labels, and pin the call sites with a test.
 
+**A practice adopted for one reason keeps covering a failure nobody had connected to it,
+and that is now a pattern rather than luck.** Three instances. The data snapshot was
+committed so that a result could name the vintage it ran against; it is what made GB-59's
+clean-clone audit possible at all, because a clone with no data can run nothing. The
+one-decision-per-completed-bar rule was ruled to stop 1,950 identical rows a day being
+written; it is what stopped a stray relaunched rehearsal opening a second position against
+a live account, because the bar it would have decided had already been decided. And
+committing this console per region was asked for so a redesign could be bisected; what it
+actually paid for was recovery, when a scripted edit deleted sixteen tests from three
+already-committed regions and the previous commit made that a two-minute restore rather
+than a reconstruction from memory.
+
+The transferable form is not *these three practices are good*. It is that a constraint
+which forces work to be **decomposed and recorded at each step** buys options that cannot
+be named in advance — and that this is an argument for the constraint which does not depend
+on the reason it was adopted, and survives that reason turning out to be the less important
+one.
+
 **A test double more permissive than the system it stands for is a second implementation of
 your assumptions.** At one point 1,181 tests passed while the live execution path could not
 place a protected order at all. The fake broker permitted a standalone stop and a standalone
