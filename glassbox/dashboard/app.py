@@ -48,7 +48,7 @@ import math
 import random
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -112,9 +112,12 @@ ORANGE_DIM = RULE
 RAMP = ("#0A2239", "#123F63", "#1B6CA8", "#2E97D4", "#6FC3EC", "#B7E3F7")
 
 #: Area fills under the equity curves, at 15% - light enough that a rule reads through,
-#: solid enough to carry the sign at a glance.
+#: solid enough to carry the sign at a glance. **Three of them, because there are three
+#: cases**: this loop stands aside on most bars, so an exactly flat result is the common
+#: one and colouring it green says the system gained when it did nothing.
 GAIN_FILL = "rgba(34,197,94,0.15)"
 LOSS_FILL = "rgba(239,68,68,0.15)"
+FLAT_FILL = "rgba(125,135,148,0.15)"
 
 #: Every surface that encodes data with colour. The ramp's territory is exactly two charts;
 #: `test_the_ramp_stays_inside_attribution_and_spectral` holds both directions of that.
@@ -417,6 +420,23 @@ def reference_rows(results: pd.DataFrame, channels: str = "C0_base") -> pd.DataF
     return live
 
 
+def backtest_source(path: str, frame: pd.DataFrame) -> Source:
+    """The pill for a region drawn from ``frame``, naming the file ``frame`` was read from.
+
+    **Both halves come from the region's own data, which is region 4's whole subject.**
+    Two of these regions read `results.csv` and two read `report/daily_equity.csv`, and the
+    two artefacts can be any number of folds apart - a partial daily file had both of its
+    cards announcing "folds 1-16" while holding three, the overclaim the pills exist to
+    prevent, committed by the pills.
+
+    The detail names the file for the half of that defect the fix alone does not cover:
+    side by side, "folds 1-16" and "folds 1-3" read as a bug unless the pill says they are
+    two different files. The range is computed from ``frame``, never from a sibling region
+    and never from the config.
+    """
+    return Source(BACKTEST, f"{Path(path).name} {fold_range(frame)}")
+
+
 def fold_range(frame: pd.DataFrame) -> str:
     """``folds 1-16`` for a source pill, or a count when the folds are not contiguous."""
     if frame.empty or "fold" not in frame.columns:
@@ -457,6 +477,17 @@ def status_colour(value: float) -> str:
     if math.isnan(value) or value == 0:
         return MUTED
     return GAIN if value > 0 else LOSS
+
+
+def status_fill(value: float) -> str:
+    """The area fill matching :func:`status_colour`, flat included.
+
+    Paired with the stroke colour rather than chosen beside it, so an area and its outline
+    cannot end up making different claims about the same number.
+    """
+    if math.isnan(value) or value == 0:
+        return FLAT_FILL
+    return GAIN_FILL if value > 0 else LOSS_FILL
 
 
 def status_html(value: float, text: str) -> str:
@@ -703,6 +734,32 @@ def _segments(
     return [(colour, run) for colour, run in runs if len(run) > 1]
 
 
+def _vertical(
+    values: Sequence[float], top: float, bottom: float
+) -> tuple[Callable[[float], float], bool]:
+    """A y-mapper for a series, with the flat case centred rather than floored.
+
+    **One definition, because the flat case is the common one and it had been written
+    twice.** `equity_svg` got the fix in region 3 and `cumulative_equity_svg` did not: an
+    arm that stands aside in every fold chains to an exactly flat curve - persistence does,
+    in all sixteen - and `max(high - low, 1e-9)` drove every point of it to the floor of the
+    region under a column of empty space. Two copies of a scaling rule, one corrected, and
+    nothing to make them equal.
+
+    Returns the mapper and whether the series is flat, because a caller that fills under
+    its curve has to know which of the two it drew.
+    """
+    low, high = min(values), max(values)
+    flat = (high - low) <= abs(high) * 1e-9
+
+    def y(value: float) -> float:
+        if flat:
+            return (top + bottom) / 2
+        return bottom - (value - low) / (high - low) * (bottom - top)
+
+    return y, flat
+
+
 def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
     """The session equity curve: gain above the opening balance, loss below.
 
@@ -717,13 +774,7 @@ def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
     values = [float(value) for value in series.to_numpy(dtype="float64")]
     opening, latest = values[0], values[-1]
     change = latest - opening
-    low, high = min(values), max(values)
-    flat = (high - low) <= abs(high) * 1e-9
-
-    def y(value: float) -> float:
-        if flat:
-            return (top + bottom) / 2
-        return bottom - (value - low) / (high - low) * (bottom - top)
+    y, _ = _vertical(values, top, bottom)
 
     step = (right - left) / max(len(values) - 1, 1)
     points = [(left + index * step, y(value)) for index, value in enumerate(values)]
@@ -869,7 +920,32 @@ def staleness_html(age_seconds: float, heartbeat_seconds: float) -> str:
     return f'<span class="gb-stale">STALE &nbsp;·&nbsp; {age_seconds:.0f}S OLD</span>'
 
 
-# ── BACKTEST cards ───────────────────────────────────────────────────────────
+# ── BACKTEST regions ─────────────────────────────────────────────────────────
+
+
+def arm_rows(
+    frame: pd.DataFrame, model: str, channels: str = "C0_base"
+) -> pd.DataFrame:
+    """The rows of ``frame`` belonging to one arm: one model, one feature set.
+
+    **One selection rule, read by every chart in this section and by every pill beside
+    one.** The chart draws these rows and the pill states their range, so a label that
+    disagreed with its own picture would need this function to disagree with itself. Before
+    GB-63c each chart filtered inline and the pills were computed from the whole frame,
+    which is the shape the fold-range defect took.
+
+    Both artefacts carry every arm of the reference condition, so a filter on ``model``
+    alone leaves two copies of each curve - one per channel set - and every date is then
+    counted twice. Buy-and-hold carries no channel set, having no features, so it survives
+    on the null rather than being filtered out with the second copies.
+    """
+    if "model" not in frame.columns:
+        return frame
+    arm = frame[frame["model"] == model]
+    if "channels" in arm.columns:
+        arm = arm[arm["channels"].isna() | (arm["channels"] == channels)]
+    return arm
+
 
 #: The radar's axes. Each is a measured metric with **its own** reference, because these
 #: quantities are not commensurable and pretending otherwise is how a composite score gets
@@ -900,7 +976,7 @@ def radar_axis_values(rows: pd.DataFrame, model: str) -> list[tuple[str, float, 
     project. Inventing one in a system whose thesis is exact attribution would be the
     opposite of the point.
     """
-    arm = rows[rows["model"] == model]
+    arm = arm_rows(rows, model)
     out: list[tuple[str, float, str]] = []
     if arm.empty:
         return out
@@ -965,28 +1041,17 @@ def radar_svg(
     return _svg(width, height, "".join(body), f"{model} performance shape")
 
 
-def _one_arm(
-    daily: pd.DataFrame, model: str, channels: str = "C0_base"
-) -> pd.DataFrame:
-    """One model's curves, one feature set. See :func:`reference_rows` for why both.
-
-    The daily artefact carries every arm of the reference condition, so a filter on `model`
-    alone leaves two copies of the same curve - one per channel set - and every date is
-    then counted twice.
-    """
-    arm = daily[daily["model"] == model]
-    if "channels" in arm.columns:
-        arm = arm[arm["channels"].isna() | (arm["channels"] == channels)]
-    return arm
-
-
 def cumulative_equity_svg(
     daily: pd.DataFrame, model: str, width: int = 460, height: int = 300
 ) -> str:
-    """Cumulative equity across the folds, as a filled area coloured by its own sign."""
+    """Cumulative equity across the folds, as a filled area coloured by its own sign.
+
+    Three signs, not two: an arm that stands aside in every fold chains to an exactly flat
+    curve, which is a result rather than a gain.
+    """
     if daily.empty or "model" not in daily.columns:
         return ""
-    arm = _one_arm(daily, model).sort_values(["fold", "date"])
+    arm = arm_rows(daily, model).sort_values(["fold", "date"])
     if arm.empty:
         return ""
     # Each fold restarts at its own opening capital, so the folds are chained on their
@@ -1004,16 +1069,17 @@ def cumulative_equity_svg(
         return ""
     series = [point for point, _ in curve]
     left, right, top, bottom = 54, width - 12, 16, height - 30
-    low, high = min(series), max(series)
-    span = max(high - low, 1e-9)
-
-    def y(value: float) -> float:
-        return bottom - (value - low) / span * (bottom - top)
+    # A flat chained curve sits at exactly 1.00, so the baseline rule and the curve are the
+    # same line and both land in the middle - which is where a curve that never moved
+    # belongs. See :func:`_vertical` for why this is not `max(high - low, 1e-9)`.
+    y, _ = _vertical(series, top, bottom)
 
     step = (right - left) / max(len(series) - 1, 1)
     points = [f"{left + i * step:.1f},{y(v):.1f}" for i, v in enumerate(series)]
     change = series[-1] - 1.0
-    colour, fill = (GAIN, GAIN_FILL) if change >= 0 else (LOSS, LOSS_FILL)
+    # `>= 0` would paint an arm that never traded green. Persistence stands aside in all
+    # sixteen folds and its curve is exactly flat, which is a result and not a gain.
+    colour, fill = status_colour(change), status_fill(change)
     area = f"{left},{y(1.0):.1f} " + " ".join(points) + f" {right},{y(1.0):.1f}"
     body = [
         f'<polygon points="{area}" fill="{fill}" stroke="none"/>',
@@ -1036,8 +1102,13 @@ def cumulative_equity_svg(
 def fold_bars_svg(
     rows: pd.DataFrame, model: str, width: int = 460, height: int = 300
 ) -> str:
-    """One bar per walk-forward fold, green above zero and red below."""
-    arm = rows[rows["model"] == model].sort_values("fold")
+    """One bar per fold: green above zero, red below, a rule for a fold that stood aside.
+
+    The third mark is not decoration. A fold that stood aside returns exactly zero, and a
+    zero bar has no height - persistence stands aside in all sixteen, so without a mark of
+    its own that arm renders as an empty axis.
+    """
+    arm = arm_rows(rows, model).sort_values("fold")
     if arm.empty:
         return ""
     values = [(int(r.fold), float(r.total_return)) for r in arm.itertuples()]
@@ -1052,14 +1123,22 @@ def fold_bars_svg(
         _rule(left, zero, right, zero, HAIRLINE),
         _text(left - 6, zero + 3, "0%", MUTED, size=8, anchor="end"),
     ]
+    flat = sum(1 for _, value in values if value == 0)
     for index, (fold, value) in enumerate(values):
         magnitude = abs(value) / peak * (bottom - top) / 2
         x = left + index * slot + slot * 0.18
         w = slot * 0.64
-        y0 = zero - magnitude if value >= 0 else zero
+        if value == 0:
+            # **A fold that stood aside is not a fold that gained nothing.** Its bar has no
+            # height, so without a mark of its own it is indistinguishable from a fold that
+            # was never measured - and it is not a rare case: persistence stands aside in
+            # all sixteen, and FITS in three.
+            body.append(_rule(x, zero, x + w, zero, MUTED))
+            continue
+        y0 = zero - magnitude if value > 0 else zero
         body.append(
             f'<rect x="{x:.1f}" y="{y0:.1f}" width="{w:.1f}" height="{magnitude:.1f}" '
-            f'fill="{GAIN if value >= 0 else LOSS}"/>'
+            f'fill="{status_colour(value)}"/>'
         )
         if index % 3 == 0:
             body.append(
@@ -1068,29 +1147,89 @@ def fold_bars_svg(
                 )
             )
     best, worst = max(values, key=lambda v: v[1]), min(values, key=lambda v: v[1])
+    # Coloured by what they are rather than by which end they sit at: the best of sixteen
+    # flat folds is +0.00%, and printing that in green is the chart asserting a win.
     body.append(
-        _text(left, top - 6, f"BEST f{best[0]} {best[1] * 100:+.2f}%", GAIN, size=8)
+        _text(
+            left,
+            top - 6,
+            f"BEST f{best[0]} {best[1] * 100:+.2f}%",
+            status_colour(best[1]),
+            size=8,
+        )
     )
     body.append(
         _text(
             right,
             top - 6,
             f"WORST f{worst[0]} {worst[1] * 100:+.2f}%",
-            LOSS,
+            status_colour(worst[1]),
             size=8,
             anchor="end",
         )
     )
+    if flat:
+        body.append(
+            _text(
+                (left + right) / 2,
+                bottom + 28,
+                f"{flat} OF {len(values)} FOLDS FLAT - STOOD ASIDE",
+                MUTED,
+                size=8,
+                anchor="middle",
+            )
+        )
     return _svg(width, height, "".join(body), f"{model} return by fold")
 
 
-def calendar_svg(
-    daily: pd.DataFrame, model: str, width: int = 700, height: int = 280
-) -> str:
-    """A heatmap of daily equity change, one tile per trading day, by calendar week."""
+#: Tile and gap in px, largest first. The calendar keeps **one tile per trading day** and
+#: shrinks the tile until the whole span fits, rather than dropping the days that do not.
+CALENDAR_SCALES = ((13, 3), (9, 2), (6, 2), (4, 1), (3, 1), (2, 1), (2, 0))
+
+#: What the weekday ruler occupies on the left, and the margin kept on the right.
+CALENDAR_LEFT, CALENDAR_RIGHT = 40, 12
+
+#: Where the tiles start, and the room the footer line needs beneath them.
+CALENDAR_TOP, CALENDAR_FOOT = 26, 24
+
+#: Below this row pitch the three weekday labels collide, and the axis they name is too
+#: dense to read a day off anyway, so the band is labelled once instead of three times.
+CALENDAR_RULER_PITCH = 12
+
+
+def calendar_scale(weeks: int, width: int) -> tuple[int, int, int]:
+    """``(tile, gap, weeks shown)`` for a span of ``weeks``. **Never a silent truncation.**
+
+    The daily artefact holds three folds today and sixteen after the next grid - about 190
+    weeks, fifteen times what a fixed 13px tile fits in this width. The first version drew
+    every tile at 13px and dropped the ones past the right edge with a bare ``continue``
+    while the footer went on counting the days it had not drawn. That is the pill defect
+    one level down - a caption describing more data than the picture holds - and unlike the
+    pill it would have arrived silently, on the first grid wide enough to trigger it.
+
+    So the tile shrinks first, and only past the smallest tile that still reads as a mark
+    does the chart drop anything: the oldest weeks, the recent end being the one a reader
+    came for, and :func:`calendar_svg` then says how many weeks went with them.
+    """
+    span = max(width - CALENDAR_LEFT - CALENDAR_RIGHT, 1)
+    for tile, gap in CALENDAR_SCALES:
+        if weeks * (tile + gap) <= span:
+            return tile, gap, weeks
+    tile, gap = CALENDAR_SCALES[-1]
+    return tile, gap, max(span // (tile + gap), 1)
+
+
+def calendar_svg(daily: pd.DataFrame, model: str, width: int = 700) -> str:
+    """A heatmap of daily equity change, one tile per trading day, by calendar week.
+
+    **The height is derived rather than fixed**, because five weekday rows at the fitted
+    tile size is the whole of what this chart is tall. A fixed 280 left the three-fold span
+    ending at y=103 with 150px of nothing beneath it, which is the flat-equity lesson
+    again: the case the chart is usually in was the one that looked broken.
+    """
     if daily.empty or "model" not in daily.columns:
         return ""
-    arm = _one_arm(daily, model).sort_values(["fold", "date"])
+    arm = arm_rows(daily, model).sort_values(["fold", "date"])
     if arm.empty:
         return ""
     changes: dict[pd.Timestamp, float] = {}
@@ -1105,45 +1244,130 @@ def calendar_svg(
     days = sorted(changes)
     peak = max(abs(v) for v in changes.values()) or 1e-9
     first = days[0] - pd.Timedelta(days=int(days[0].dayofweek))
-    tile, gap = 13, 3
+    weeks = int((days[-1] - first).days // 7) + 1
+    tile, gap, shown = calendar_scale(weeks, width)
+    dropped, pitch = weeks - shown, tile + gap
+    height = CALENDAR_TOP + 5 * pitch + CALENDAR_FOOT
+    drawn = [day for day in days if int((day - first).days // 7) >= dropped]
     body = []
-    for day in days:
-        week = int((day - first).days // 7)
-        x = 40 + week * (tile + gap)
-        y = 26 + int(day.dayofweek) * (tile + gap)
-        if x > width - tile:
-            continue
+    for day in drawn:
         value = changes[day]
+        week = int((day - first).days // 7) - dropped
         opacity = 0.18 + 0.82 * min(abs(value) / peak, 1.0)
         body.append(
-            f'<rect x="{x}" y="{y}" width="{tile}" height="{tile}" rx="2" '
-            f'fill="{GAIN if value >= 0 else LOSS}" fill-opacity="{opacity:.2f}"/>'
+            f'<rect x="{CALENDAR_LEFT + week * pitch}" '
+            f'y="{CALENDAR_TOP + int(day.dayofweek) * pitch}" '
+            f'width="{tile}" height="{tile}" rx="2" '
+            f'fill="{status_colour(value)}" fill-opacity="{opacity:.2f}"/>'
         )
-    for index, label in enumerate(("MON", "", "WED", "", "FRI")):
-        if label:
-            body.append(
-                _text(
-                    34,
-                    26 + index * (tile + gap) + 10,
-                    label,
-                    MUTED,
-                    size=7,
-                    anchor="end",
+    if pitch >= CALENDAR_RULER_PITCH:
+        for index, label in enumerate(("MON", "", "WED", "", "FRI")):
+            if label:
+                body.append(
+                    _text(
+                        CALENDAR_LEFT - 6,
+                        CALENDAR_TOP + index * pitch + tile - 3,
+                        label,
+                        MUTED,
+                        size=7,
+                        anchor="end",
+                    )
                 )
+    else:
+        body.append(
+            _text(
+                CALENDAR_LEFT - 6,
+                CALENDAR_TOP + 2 * pitch + tile / 2 + 3,
+                "MON-FRI",
+                MUTED,
+                size=7,
+                anchor="end",
             )
-    up = sum(1 for v in changes.values() if v > 0)
-    body.append(_text(40, height - 10, f"{len(changes)} TRADING DAYS", MUTED, size=8))
+        )
+    up = sum(1 for day in drawn if changes[day] > 0)
+    down = sum(1 for day in drawn if changes[day] < 0)
+    # **The caption counts the tiles, not the rows.** They are the same number until the
+    # span outgrows the width, and the case where they are not is the whole reason the
+    # sentence is built rather than written.
+    counted = (
+        f"{len(drawn)} TRADING DAYS"
+        if not dropped
+        else f"{len(drawn)} OF {len(days)} TRADING DAYS - "
+        f"{dropped} EARLIER WEEKS NOT SHOWN"
+    )
+    body.append(_text(CALENDAR_LEFT, height - 8, counted, MUTED, size=8))
     body.append(
         _text(
-            width - 12,
-            height - 10,
-            f"{up} UP / {len(changes) - up} DOWN",
+            width - CALENDAR_RIGHT,
+            height - 8,
+            f"{up} UP / {down} DOWN / {len(drawn) - up - down} FLAT",
             MUTED,
             size=8,
             anchor="end",
         )
     )
     return _svg(width, height, "".join(body), f"{model} daily results calendar")
+
+
+# ── the four measured regions, one frame each ────────────────────────────────
+#
+# **Each takes exactly one frame, and that is the mechanism.** A region cannot label itself
+# with a sibling's range because no sibling's frame is in scope: the pill is built from the
+# rows the chart draws, inside the function that draws them. Naming the locals
+# `from_results` and `from_daily` in `main` was the previous attempt, and a convention a
+# reader has to honour is a note - `test_a_region_has_one_frame_in_scope` pins the
+# signatures so a second frame cannot be threaded back in without the test saying so.
+
+#: What a region says when its artefact holds nothing to draw. Both name the file, built
+#: from the same constant the loader defaults to, so neither can outlive a rename.
+NO_REFERENCE_ROWS = f"no reference-condition rows in {RESULTS_PATH}"
+NO_DAILY = f"{DAILY_EQUITY_PATH} not generated - run the study grid"
+
+
+def shape_region(reference: pd.DataFrame, model: str) -> str:
+    """The radar. Reads `results.csv`."""
+    arm = arm_rows(reference, model)
+    source = backtest_source(RESULTS_PATH, arm)
+    return region(
+        f"{model.upper()} performance shape",
+        source,
+        radar_svg(arm, model) or too_little(source, NO_REFERENCE_ROWS),
+        "Six measured axes, each against its own reference. No composite score.",
+    )
+
+
+def cumulative_region(daily: pd.DataFrame, model: str) -> str:
+    """The equity area. Reads `report/daily_equity.csv`."""
+    arm = arm_rows(daily, model)
+    source = backtest_source(DAILY_EQUITY_PATH, arm)
+    return region(
+        "Cumulative equity",
+        source,
+        cumulative_equity_svg(arm, model) or too_little(source, NO_DAILY),
+        "Folds chained on returns, not concatenated on levels.",
+    )
+
+
+def fold_region(reference: pd.DataFrame, model: str) -> str:
+    """The per-fold bars. Reads `results.csv`."""
+    arm = arm_rows(reference, model)
+    source = backtest_source(RESULTS_PATH, arm)
+    return region(
+        "Return by fold",
+        source,
+        fold_bars_svg(arm, model) or too_little(source, NO_REFERENCE_ROWS),
+    )
+
+
+def calendar_region(daily: pd.DataFrame, model: str) -> str:
+    """The daily heatmap. Reads `report/daily_equity.csv`."""
+    arm = arm_rows(daily, model)
+    source = backtest_source(DAILY_EQUITY_PATH, arm)
+    return region(
+        "Daily results",
+        source,
+        calendar_svg(arm, model) or too_little(source, NO_DAILY),
+    )
 
 
 # ── GB-35: the forecast path ─────────────────────────────────────────────────
@@ -2384,58 +2608,27 @@ def main(
         )
 
     # ── rows 2-3: measured ───────────────────────────────────────────────────
+    #
+    # **This is where the pill defect lived, and the fix is that it is no longer here.**
+    # Two of these regions read `results.csv` and two read `report/daily_equity.csv`; a
+    # partial daily artefact had both of its cards labelled with the results file's range,
+    # announcing "folds 1-16" while holding three. The first repair named the two locals
+    # `from_results` and `from_daily` so a call site could not pick the wrong one without
+    # it reading wrong - which is a convention, and a convention is a note. The pill is now
+    # built inside the region, from the rows that region draws, so there is no second frame
+    # here to pick wrongly from.
     results = read_results()
     reference = reference_rows(results)
     daily = read_daily()
     arm = cfg.model.active
-    # **Two sources, because there are two files.** This is where the pill defect lived:
-    # the equity area and the calendar read `daily_equity.csv` and were labelled with
-    # `results.csv`'s range, announcing "folds 1-16" while holding three. A source is
-    # derived from the frame the region actually renders, never from a sibling region and
-    # never from the config. Named `from_results` and `from_daily` rather than `measured`
-    # so a call site cannot pick the wrong one without it reading wrong.
-    from_results = Source(BACKTEST, fold_range(reference))
-    # **A card's pill states ITS OWN data's range, not the page's.** The equity area and
-    # the calendar read , which can lag  by any number of
-    # folds - a partial artefact from a short run had them announcing "folds 1-16" while
-    # holding three. That is precisely the overclaim the source pills exist to prevent,
-    # committed by the mechanism meant to prevent it.
-    from_daily = Source(BACKTEST, fold_range(daily))
-    missing = "report/daily_equity.csv not generated - run the study grid"
 
     radar_col, equity_col, bars_col = st.columns(3)
     with radar_col:
-        radar = radar_svg(reference, arm)
-        st.markdown(
-            region(
-                f"{arm.upper()} performance shape",
-                from_results,
-                radar or too_little(from_results, "no reference-condition rows"),
-                "Six measured axes, each against its own reference. No composite score.",
-            ),
-            unsafe_allow_html=True,
-        )
+        st.markdown(shape_region(reference, arm), unsafe_allow_html=True)
     with equity_col:
-        area = cumulative_equity_svg(daily, arm)
-        st.markdown(
-            region(
-                "Cumulative equity",
-                from_daily,
-                area or too_little(from_daily, missing),
-                "Folds chained on returns, not concatenated on levels.",
-            ),
-            unsafe_allow_html=True,
-        )
+        st.markdown(cumulative_region(daily, arm), unsafe_allow_html=True)
     with bars_col:
-        bars = fold_bars_svg(reference, arm)
-        st.markdown(
-            region(
-                "Return by fold",
-                from_results,
-                bars or too_little(from_results, "no reference-condition rows"),
-            ),
-            unsafe_allow_html=True,
-        )
+        st.markdown(fold_region(reference, arm), unsafe_allow_html=True)
 
     rel_col, cal_col = st.columns(2)
     with rel_col:
@@ -2452,13 +2645,7 @@ def main(
             unsafe_allow_html=True,
         )
     with cal_col:
-        heat = calendar_svg(daily, arm)
-        st.markdown(
-            region(
-                "Daily results", from_daily, heat or too_little(from_daily, missing)
-            ),
-            unsafe_allow_html=True,
-        )
+        st.markdown(calendar_region(daily, arm), unsafe_allow_html=True)
 
     # ── row 4: positions and activity ────────────────────────────────────────
     rows = position_rows(book, quantities, prices)

@@ -76,6 +76,12 @@ SPEC_MODULES = (
     "replay.py",
     "smoke_offline.py",
     "dashboard/app.py",
+    # GB-63c: the palette, split out of `app.py`. Its own module because the contrast test
+    # has to walk every colour without knowing their names - a palette scattered through a
+    # 2,400-line view module can only be checked by a test that lists what it expects to
+    # find, and that list and the palette then drift apart while both stay internally
+    # consistent.
+    "dashboard/tokens.py",
 )
 
 PACKAGE_DIRS = (

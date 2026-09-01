@@ -9,6 +9,8 @@ and that orange never leaks into a data mark.
 
 from __future__ import annotations
 
+import csv
+import inspect
 import json
 import math
 import re
@@ -1101,34 +1103,9 @@ def test_a_daily_curve_has_one_point_per_date() -> None:
     if daily.empty:
         pytest.skip("report/daily_equity.csv not generated")
 
-    arm = app._one_arm(daily, "dlinear")
+    arm = app.arm_rows(daily, "dlinear")
 
     assert len(arm) == arm.date.nunique()
-
-
-def test_a_card_states_the_range_of_its_own_data_not_the_pages() -> None:
-    """**The overclaim the pills exist to prevent, committed by the pills.**
-
-    The equity area and the calendar read report/daily_equity.csv; the radar and the fold
-    chart read results.csv. Those two artefacts can be any number of folds apart, and a
-    partial daily file had both of its cards announcing folds 1-16 while holding three.
-    A pill that reports the page's range rather than the card's is worse than no pill.
-    """
-    # **Counted over code, not over the file.** A count across raw source includes
-    # comments, so the comment explaining these two names inflated its own guard the
-    # moment it was written - the same shape as slicing a fixed width of stylesheet, and
-    # committed one turn after that one was recorded. A guard whose value changes when
-    # somebody explains the thing it guards punishes explanation.
-    body = "\n".join(
-        line
-        for line in Path(app.__file__).read_text(encoding="utf-8").splitlines()
-        if not line.lstrip().startswith("#")
-    )
-
-    assert "from_results = Source(BACKTEST, fold_range(reference))" in body
-    assert "from_daily = Source(BACKTEST, fold_range(daily))" in body
-    assert body.count("from_daily") == 5, "a daily-sourced region changed its pill"
-    assert body.count("from_results") == 5, "a results-sourced region changed its pill"
 
 
 # ── GB-63c: the starfield and the flat language ─────────────────────────────
@@ -1351,7 +1328,56 @@ def test_the_countdown_is_a_depleting_accent_rule() -> None:
     assert full != spent, "the rule must shorten as the seconds run down"
 
 
-# ── GB-63c region 4: the three regions where the pill defect lived ──────────
+# ── GB-63c region 4: the four regions where the pill defect lived ───────────
+
+
+def a_results_frame(
+    folds: int = 16, model: str = "dlinear", **override
+) -> pd.DataFrame:
+    """A reference-condition results frame: one row per fold, one arm, one feature set."""
+    row = {
+        "model": model,
+        "channels": "C0_base",
+        "direction": 0.51,
+        "direction_reference": 0.55,
+        "sharpe": -0.31,
+        "total_return": -0.012,
+        "max_drawdown": 0.08,
+        "cancellation": 0.61,
+        "flatness": 0.42,
+    }
+    row.update(override)
+    return pd.DataFrame([{**row, "fold": fold} for fold in range(1, folds + 1)])
+
+
+def a_daily_frame(
+    folds: int = 3,
+    days_per_fold: int = 60,
+    model: str = "dlinear",
+    drift: float = 0.001,
+) -> pd.DataFrame:
+    """Dated daily equity for one arm: consecutive business days, folds end to end.
+
+    `drift=0.0` gives an exactly flat curve, which is what an arm that stands aside in
+    every fold actually produces - persistence does, in all sixteen.
+    """
+    dates = pd.bdate_range("2022-07-04", periods=folds * days_per_fold)
+    rows, step = [], 0
+    for fold in range(1, folds + 1):
+        equity = 100000.0
+        for index in range(days_per_fold):
+            equity *= 1.0 + (drift if index % 2 else -drift)
+            rows.append(
+                {
+                    "model": model,
+                    "channels": "C0_base",
+                    "fold": fold,
+                    "date": dates[step],
+                    "equity": equity,
+                }
+            )
+            step += 1
+    return pd.DataFrame(rows)
 
 
 def test_the_radar_has_six_measured_axes_and_no_composite() -> None:
@@ -1382,18 +1408,236 @@ def test_flatness_is_an_axis_where_lower_is_better() -> None:
     assert named["FLATNESS"] is False
 
 
-def test_the_two_backtest_files_are_labelled_separately() -> None:
-    """**The pill defect, asserted on the data rather than on the source text.**
+def _folds_in(path: str, model: str) -> list[int]:
+    """The folds one arm holds in a CSV, read with the stdlib rather than through the
+    module under test.
 
-    results.csv and report/daily_equity.csv are two files that can be any number of folds
-    apart. A partial daily artefact had both of its regions announcing folds 1-16 while
-    holding three. Each range is computed from its own frame, so this fails if a future
-    edit derives one from the other.
+    An independent parse on purpose: comparing `fold_range(load_results())` against
+    `fold_range(load_results())` would pass with both sides wrong in the same direction,
+    which is the shape the defect had in the first place.
     """
-    results = app.reference_rows(app.load_results())
-    daily = app.load_daily_equity()
-    if results.empty or daily.empty:
+    condition = {
+        "anchor": "0",
+        "lr": "0.001",
+        "control": "real",
+        "target_in_loop": "True",
+        "cutoff_period_days": "5",
+    }
+    folds = set()
+    with open(path, newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            if row["model"] != model or row.get("skipped") == "True":
+                continue
+            if row.get("channels") not in ("", "C0_base"):
+                continue
+            if any(row[key] != value for key, value in condition.items() if key in row):
+                continue
+            folds.add(int(row["fold"]))
+    return sorted(folds)
+
+
+def test_each_region_states_the_range_of_the_file_it_actually_read() -> None:
+    """**The pill defect, verified against the files rather than against the source text.**
+
+    `results.csv` and `report/daily_equity.csv` are two artefacts that can be any number of
+    folds apart, and today they are: sixteen against three. A partial daily file had all
+    four of these regions announcing "folds 1-16", the overclaim the pills exist to prevent
+    committed by the pills. Each range is checked against the CSV that region read, parsed
+    here by an independent path - not against the config, and not against a sibling region.
+    """
+    if not (Path(app.RESULTS_PATH).is_file() and Path(app.DAILY_EQUITY_PATH).is_file()):
         pytest.skip("both artefacts are needed to compare their ranges")
 
-    assert app.fold_range(results) == f"folds 1-{int(results.fold.max())}"
-    assert app.fold_range(daily) == f"folds 1-{int(daily.fold.max())}"
+    reference, daily = app.reference_rows(app.load_results()), app.load_daily_equity()
+    cases = (
+        (app.shape_region, reference, app.RESULTS_PATH),
+        (app.fold_region, reference, app.RESULTS_PATH),
+        (app.cumulative_region, daily, app.DAILY_EQUITY_PATH),
+        (app.calendar_region, daily, app.DAILY_EQUITY_PATH),
+    )
+    for build, frame, path in cases:
+        folds = _folds_in(path, "dlinear")
+        assert folds == list(
+            range(1, len(folds) + 1)
+        ), f"{path} is no longer contiguous; this fixture assumes it is"
+        expected = f"{Path(path).name} folds 1-{folds[-1]}"
+
+        rendered = build(frame, "dlinear")
+
+        assert expected in rendered, f"{build.__name__} does not state its own range"
+
+
+def test_a_region_cannot_borrow_a_siblings_range() -> None:
+    """The same defect on frames chosen to disagree, so the assertion has something to
+    catch on the day the two artefacts happen to hold the same folds."""
+    reference, daily = a_results_frame(folds=16), a_daily_frame(folds=3)
+
+    from_results = (
+        app.shape_region(reference, "dlinear"),
+        app.fold_region(reference, "dlinear"),
+    )
+    from_daily = (
+        app.cumulative_region(daily, "dlinear"),
+        app.calendar_region(daily, "dlinear"),
+    )
+
+    for rendered in from_results:
+        assert "results.csv folds 1-16" in rendered
+        assert "folds 1-3" not in rendered, "a results region took the daily range"
+    for rendered in from_daily:
+        assert "daily_equity.csv folds 1-3" in rendered
+        assert "folds 1-16" not in rendered, "a daily region took the results range"
+
+
+def test_a_region_names_the_file_and_not_only_the_kind() -> None:
+    """Side by side, "folds 1-16" and "folds 1-3" read as a bug. BACKTEST alone lets a
+    reader take two regions as disagreeing about the same data rather than agreeing about
+    different data, which is the half of the defect a correct range does not fix."""
+    rendered = app.calendar_region(a_daily_frame(folds=3), "dlinear")
+
+    assert "daily_equity.csv" in rendered
+    assert "BACKTEST" in rendered
+
+
+def test_a_region_has_one_frame_in_scope() -> None:
+    """**The mechanism, rather than the convention it replaced.**
+
+    Naming the locals `from_results` and `from_daily` in `main` asked a reader to pick the
+    right one. This asks nothing of anybody: the pill is built from the rows the chart
+    draws, inside the function that draws them, and no second frame is present to pick
+    wrongly from. The signature is what holds that, so the signature is what is pinned - a
+    region that grows a second frame fails here rather than in a screenshot.
+    """
+    regions = (
+        app.shape_region,
+        app.cumulative_region,
+        app.fold_region,
+        app.calendar_region,
+    )
+    for build in regions:
+        parameters = list(inspect.signature(build).parameters)
+
+        assert len(parameters) == 2, f"{build.__name__} has a second frame in scope"
+        assert parameters[0] in ("reference", "daily")
+        assert parameters[1] == "model"
+
+
+def test_one_selection_rule_serves_both_the_chart_and_its_pill() -> None:
+    """A label disagreeing with its own picture would need `arm_rows` to disagree with
+    itself. The filter is not optional: both artefacts carry each arm twice, once per
+    channel set, and filtering on `model` alone counted every date twice."""
+    daily = a_daily_frame(folds=2)
+    doubled = pd.concat([daily, daily.assign(channels="C1_wide")], ignore_index=True)
+
+    arm = app.arm_rows(doubled, "dlinear")
+
+    assert len(arm) == len(daily)
+    assert app.fold_range(arm) == "folds 1-2"
+
+
+def test_the_calendar_counts_the_days_it_drew() -> None:
+    """**The pill defect one level down, and it would have arrived silently.**
+
+    The first version drew 13px tiles and dropped everything past the right edge with a
+    bare `continue` while the footer went on counting the days it had not drawn. Three
+    folds fit, so nothing looked wrong; sixteen folds is about 190 weeks, and the first
+    grid wide enough to trigger it would have shipped a caption describing several times
+    the data the picture held.
+    """
+    for daily in (
+        a_daily_frame(folds=3),
+        a_daily_frame(folds=16),
+        a_daily_frame(folds=40),
+    ):
+        svg = app.calendar_svg(daily, "dlinear")
+        tiles = re.findall(
+            r'<rect x="(\d+)" y="(\d+)" width="(\d+)" height="\d+" rx="2"', svg
+        )
+        edge = int(re.search(r'viewBox="0 0 (\d+) (\d+)"', svg).group(2))
+
+        counted = re.search(r"(\d+)(?: OF (\d+))? TRADING DAYS", svg)
+
+        assert counted, "the calendar drew no day count"
+        assert int(counted.group(1)) == len(
+            tiles
+        ), "the caption counts days it did not draw"
+        # The other half of the same claim: a tile pushed off the canvas is as absent as
+        # one never drawn, and it would leave the count and the picture agreeing on paper.
+        assert all(
+            int(x) + int(side) <= 700 and int(y) + int(side) <= edge
+            for x, y, side in tiles
+        ), "a tile fell outside the chart"
+
+
+def test_the_calendar_says_so_when_a_span_will_not_fit() -> None:
+    """No silent cap. Past the smallest tile that still reads as a mark the chart keeps the
+    recent weeks and states how many it dropped."""
+    tile, gap, shown = app.calendar_scale(400, 700)
+
+    assert shown < 400, "this span cannot fit, and the scale must say which part does"
+    assert (tile, gap) == app.CALENDAR_SCALES[-1]
+
+    svg = app.calendar_svg(a_daily_frame(folds=40), "dlinear")
+
+    assert "WEEKS NOT SHOWN" in svg
+    assert " OF " in svg, "a truncated calendar states the total it drew from"
+
+
+def test_the_calendar_height_follows_its_tiles() -> None:
+    """Five weekday rows at the fitted tile size is the whole of what this chart is tall. A
+    fixed 280 left the three-fold span ending at y=103 under 150px of nothing, which is the
+    flat-equity lesson: the case the chart is usually in was the one that looked broken.
+    """
+
+    def height(svg: str) -> int:
+        return int(re.search(r'viewBox="0 0 \d+ (\d+)"', svg).group(1))
+
+    short = app.calendar_svg(a_daily_frame(folds=3), "dlinear")
+    long = app.calendar_svg(a_daily_frame(folds=16), "dlinear")
+
+    assert height(short) < 200, "the tiles end long before a fixed 280 would"
+    assert height(long) < height(short), "smaller tiles make a shorter chart"
+
+
+def test_a_flat_result_is_never_drawn_as_a_gain() -> None:
+    """**Flat is the common case here, not the edge case.** This loop stands aside on most
+    bars: persistence stands aside in all sixteen folds, and 143 of FITS's 175 daily
+    changes are exactly zero. `>= 0` painted every one of them green, so the calendar read
+    as a mostly-green year for an arm that did nothing."""
+    flat = a_daily_frame(folds=2, drift=0.0)
+
+    calendar = app.calendar_svg(flat, "dlinear")
+    area = app.cumulative_equity_svg(flat, "dlinear")
+
+    assert app.GAIN not in calendar, "a flat day was drawn as a gain"
+    assert app.GAIN not in area and app.GAIN_FILL not in area
+    assert "0 UP / 0 DOWN /" in calendar, "the caption must name the third case"
+
+
+def test_a_flat_cumulative_curve_is_centred_not_floored() -> None:
+    """The same scaling rule as the session curve, and it had been fixed in only one of
+    the two places it was written. An arm aside in every fold chains to an exactly flat
+    curve, and `max(high - low, 1e-9)` drove every point of it to the floor."""
+    top, bottom = 16.0, 270.0
+
+    y, flat = app._vertical([1.0, 1.0, 1.0], top, bottom)
+
+    assert flat
+    assert y(1.0) == (top + bottom) / 2
+
+    moving, not_flat = app._vertical([1.0, 2.0], top, bottom)
+
+    assert not not_flat
+    assert moving(2.0) == top and moving(1.0) == bottom
+
+
+def test_a_fold_that_stood_aside_is_marked_rather_than_absent() -> None:
+    """A zero bar has no height, so without a mark of its own it is indistinguishable from
+    a fold that was never measured - and it is not a rare case."""
+    rows = a_results_frame(folds=4, total_return=0.0)
+
+    svg = app.fold_bars_svg(rows, "dlinear")
+
+    assert "4 OF 4 FOLDS FLAT" in svg
+    assert svg.count("<line") == 5, "the zero rule, plus a mark for each flat fold"
+    assert app.GAIN not in svg, "a fold that stood aside was coloured as a gain"

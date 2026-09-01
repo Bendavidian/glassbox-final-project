@@ -287,7 +287,8 @@ glassbox/
 ├── replay.py                  # recorded-day playback
 ├── smoke_offline.py           # offline end-to-end smoke command, GB-24
 └── dashboard/
-    └── app.py                 # Streamlit
+    ├── app.py                 # Streamlit
+    └── tokens.py              # the palette, walked by the contrast test, GB-63c
 ```
 
 **Outside the package.** `scripts/` holds operational entry points — `smoke_alpaca.py`
