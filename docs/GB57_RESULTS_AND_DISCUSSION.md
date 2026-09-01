@@ -345,6 +345,35 @@ be named in advance — and that this is an argument for the constraint which do
 on the reason it was adopted, and survives that reason turning out to be the less important
 one.
 
+**The honesty layer misreported the thing it exists to report, twice, and two instances
+make it a pattern.** The source pills were built so that a reader could never mistake
+backtest numbers for live ones; two of them then announced *folds 1-16* while holding
+three, because the pill was derived once for the page from the frame most regions happened
+to use. The calendar was built so that a reader could see what the system did on each day;
+it coloured a day of exactly zero change **green**, using `GAIN if value >= 0`, and since
+this system stands aside on **152 of 175 trading days** the result was a calendar that
+rendered the project's central finding — *the system declines to trade* — as a mostly
+winning year. Both were fixed by deriving the display from a function that already knew
+better: `fold_range` of the frame actually rendered, and `status_colour`, which returns a
+muted grey for zero precisely because zero is not a direction.
+
+The pattern is worth more than either instance. **A mechanism built to prevent a class of
+misreading is not outside that class**, and it is most dangerous where it is most
+convenient: a wrong pill converts *I should check this* into *I have checked this*, and a
+green tile converts *nothing happened* into *something good happened*. The correctives were
+identical in shape and unglamorous in both cases — derive the label from the thing it
+labels, and pin the call sites with a test.
+
+**A test that has to be deleted to let a design through is a test whose premise moved.**
+`test_status_colour_never_enters_a_data_encoding_chart` forbade green and red inside any
+chart, which was correct while the blue ramp was the only data family. When the console
+moved to green-and-red as its primary language, a forecast dashed in green became correct
+and the test became an obstacle — and the cheap resolution, deleting it, would have
+discarded the rule along with its stale premise. It was **narrowed** instead: the two
+colour families must not meet *inside one chart*, which is the part that was always the
+point. Narrowing preserves the constraint; deleting trades it for the convenience of the
+moment.
+
 **A test double more permissive than the system it stands for is a second implementation of
 your assumptions.** At one point 1,181 tests passed while the live execution path could not
 place a protected order at all. The fake broker permitted a standalone stop and a standalone
