@@ -1171,8 +1171,19 @@ def test_nothing_is_filled_and_nothing_is_rounded() -> None:
     which are 1px circles and the one place a radius means something."""
     css = app.stylesheet()
 
-    fills = re.findall(r"background:\s*([^;]+);", css)
-    assert set(fills) <= {app.GROUND, "transparent"}, f"a fill crept back: {fills}"
+    # Approve and Reject are the two deliberate exceptions and the assertion names them,
+    # rather than loosening to "some fills are allowed". They are the only place a click
+    # moves money, and the fill is the warning - so the test's job is to prove they are
+    # still the ONLY two, which a set comparison does and a count would not.
+    fills = {fill.strip() for fill in re.findall(r"background:\s*([^;!]+)", css)}
+    assert fills == {
+        app.GROUND,
+        "transparent",
+        app.GAIN,
+        app.LOSS,
+    }, f"a fill crept back, or an exception was lost: {sorted(fills)}"
+    assert css.count(f"background: {app.GAIN} !important") == 1, "one Approve"
+    assert css.count(f"background: {app.LOSS} !important") == 1, "one Reject"
 
     radii = re.findall(r"border-radius:\s*([^;]+);", css)
     assert set(radii) <= {"0", "50%"}, f"a rounded container crept back: {radii}"
@@ -1738,3 +1749,32 @@ def test_the_action_keys_come_from_the_engine_not_from_a_second_list() -> None:
     """A dashboard that spelled its own 'enter_long' would be a second copy of the signal
     vocabulary, and the two would diverge the first time the engine renamed one."""
     assert set(app.ROW_CLASSES) == {app.ENTER_LONG, app.EXIT, app.HOLD}
+
+
+def test_approve_and_reject_are_the_only_filled_elements() -> None:
+    """**The one place a click moves money, and the only place with a fill.**
+
+    Every other surface on the page is type and rules on the ground. The weight of these
+    two is the warning, and ground-coloured text on a solid field is what makes them read
+    as controls rather than as a status somebody is being shown.
+    """
+    css = app.stylesheet()
+
+    assert f"background: {app.GAIN} !important" in css
+    assert f"background: {app.LOSS} !important" in css
+    assert css.count(f"color: {app.GROUND} !important") >= 2
+
+
+def test_both_answers_are_wired_and_neither_reuses_a_widget_key() -> None:
+    """Streamlit registers a button by key, so two buttons sharing one would collide - and
+    the first version of this panel left the old REJECT branch behind alongside the new
+    one, which is exactly that collision. Both answers reach `answer_pending`, one True
+    and one False, because a rejection that left no trace would make the log a record of
+    what the system wanted rather than of what happened.
+    """
+    source = Path(app.__file__).read_text(encoding="utf-8")
+
+    assert source.count("key=f\"a-{entry['decision_id']}\"") == 1
+    assert source.count("key=f\"r-{entry['decision_id']}\"") == 1
+    assert source.count('entry["decision_id"], True') == 1
+    assert source.count('entry["decision_id"], False') == 1

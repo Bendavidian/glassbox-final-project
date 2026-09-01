@@ -2290,12 +2290,29 @@ def stylesheet() -> str:
   [data-testid="stExpander"] summary svg {{ fill: {DIM}; }}
   [data-testid="stExpander"] details > div {{ background: transparent; border: none; }}
 
-  /* ── buttons: unfilled everywhere except Co-Pilot, which fills them ──── */
+  /* ── buttons ─────────────────────────────────────────────────────────── */
   .stButton > button {{
       background: transparent; color: {TEXT}; border: 1px solid {RULE};
       border-radius: 0; font-family: {MONO}; font-size: 11.5px; letter-spacing: .08em;
+      width: 100%;
   }}
   .stButton > button:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
+
+  /* **The only two filled elements on the entire page.** Everything else sits on the
+     ground with rules and space; these two are solid because this is the one place a
+     click moves money, and the weight is the warning. Ground-coloured text on a gain or
+     loss field, so the fill is unmistakably the control rather than a status. */
+  .gb-approve button {{
+      background: {GAIN} !important; color: {GROUND} !important;
+      border-color: {GAIN} !important; font-weight: 500;
+  }}
+  .gb-reject button {{
+      background: {LOSS} !important; color: {GROUND} !important;
+      border-color: {LOSS} !important; font-weight: 500;
+  }}
+  .gb-approve button:hover, .gb-reject button:hover {{
+      color: {GROUND} !important; filter: brightness(1.12);
+  }}
 </style>
 """
 
@@ -2900,9 +2917,16 @@ def _recent_decisions(
 def _copilot_panel(root: Path, cfg: Config, st) -> None:  # pragma: no cover - widgets
     """Recommendations awaiting an answer, with Approve and Reject. **GB-37.**
 
-    Rendered above the log because it is the only thing on the page that is waiting for a
-    person. **No expiry**: a recommendation waits until it is answered, because a timer
-    would be the system deciding "no" on the operator's behalf and recording nothing.
+    Rendered above the log because it is the only thing on the page waiting for a person.
+    **No expiry**: a recommendation waits until it is answered, because a timer would be
+    the system deciding "no" on the operator's behalf and recording nothing.
+
+    **The two buttons are the only filled elements on the page**, and that is the design
+    rather than emphasis. Every other surface is type and rules on the ground; these are
+    solid because this is the one place a click moves money, and the weight is the
+    warning. Both answers are recorded - a rejection that left no trace would make the log
+    a record of what the system wanted rather than of what happened, and "the operator
+    said no" is the only place a human enters the loop.
     """
     from glassbox.engine.executor import AlpacaBroker
     from glassbox.live_loop import answer_pending
@@ -2911,23 +2935,39 @@ def _copilot_panel(root: Path, cfg: Config, st) -> None:  # pragma: no cover - w
     if not queue:
         return
 
+    body = []
+    for entry in queue:
+        body.append(
+            f'<div class="gb-meta">{escape(entry["decision_id"])} &nbsp;·&nbsp; '
+            f"{escape(provenance_label(entry.get('provenance', records.LIVE)))}</div>"
+            f'<div class="gb-emph" style="padding:.4rem 0 .2rem">'
+            f"{escape(pending_summary(entry))}</div>"
+        )
     st.markdown(
-        '<div class="gb-label">AWAITING APPROVAL — CO-PILOT</div>',
+        region(
+            "Awaiting approval — Co-Pilot",
+            Source(LIVE, f"{len(queue)} pending"),
+            "".join(body),
+            "A rejection is recorded too: the log is what happened, not what was wanted.",
+        ),
         unsafe_allow_html=True,
     )
+
     for entry in queue:
-        st.markdown(
-            f'<div class="gb-panel"><div class="gb-meta">{entry["decision_id"]}'
-            f" &nbsp;·&nbsp; {provenance_label(entry.get('provenance', records.LIVE))}"
-            f'</div><div class="gb-figure">{pending_summary(entry)}</div></div>',
-            unsafe_allow_html=True,
-        )
         st.markdown(narrative_html(entry.get("narrative", "")), unsafe_allow_html=True)
         approve_col, reject_col = st.columns(2)
-        if approve_col.button("APPROVE", key=f"a-{entry['decision_id']}"):
+        with approve_col:
+            st.markdown('<div class="gb-approve">', unsafe_allow_html=True)
+            approved = st.button("APPROVE", key=f"a-{entry['decision_id']}")
+            st.markdown("</div>", unsafe_allow_html=True)
+        with reject_col:
+            st.markdown('<div class="gb-reject">', unsafe_allow_html=True)
+            rejected = st.button("REJECT", key=f"r-{entry['decision_id']}")
+            st.markdown("</div>", unsafe_allow_html=True)
+        if approved:
             answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], True)
             st.rerun()
-        if reject_col.button("REJECT", key=f"r-{entry['decision_id']}"):
+        if rejected:
             answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], False)
             st.rerun()
 
