@@ -312,6 +312,52 @@ depends on nothing in the model layer.
 | Execution fidelity measured, not asserted | 26 Aug 2026 | Ben | **39 of 166 trades were target exits worth +25,434.01, and the live loop cannot reach one of them** — it never sees intraday. `target_in_loop` is now a `Condition` axis with `true` the **default** and `false` a spoke. Paired per fold at the reference condition: DLinear −0.003119 → −0.003948, FITS +0.004188 → +0.007019, WITS +0.001801 → +0.004564; trades 166→140, 242→208, 218→155. **The difference is inside fold noise** — mean/(sd/√16) = −0.52, +1.27, +0.47 — which narrows the earlier "32.7% worse" from a single whole-universe run to a point estimate 16 folds cannot resolve. Direction, MAE and flatness are **byte-identical** across arms, the check that the axis touches execution and nothing else. **The null strengthens under the buildable model:** FITS and WITS both score higher on white noise (0.5041, 0.5050) and on shuffled returns (0.5039, 0.5074) than on real data (0.4958, 0.5031), and no model reaches the always-long reference at any anchor. `false` is a spoke, so it runs at anchor 0 only — the divergence has no grid-sensitivity measurement and GB-57 must say so. |
 | The axis broke the report, and the fixture was the second copy | 26 Aug 2026 | Ben | **Nine report tests failed on a fixture that hand-listed the condition axes.** `target_in_loop` was not among them, so every synthetic row left it blank, the spoke and the centre differed in **no column at all**, and the paired Wilcoxon read 32 folds where there are 16. Each list was internally consistent, which is why nothing caught it until the pairing crashed. Fixed by **derivation, not by adding a line**: `Condition.columns` is the one list, read by `_row`, `_skipped_row`, the fixture, **and `PAIR_KEYS`**, which is now `tuple(...columns)` so an axis added to `Condition` joins the pairing by construction. Guarded by `test_a_condition_is_identified_by_the_columns_it_writes`, which fails whenever two conditions would write identical columns — the exact shape of this defect. **Same day, same root:** two backtest tests silently changed meaning when the default flipped, because their premise lived in the config rather than in the test; both are now pinned to `target_in_loop=False` explicitly. Both are new instances in CLAUDE.md. |
 | The log rolled on UTC and stamped local | 26 Aug 2026 | Ben | `DailyLogFile` names its file for the **UTC** day while `%(asctime)s` defaulted to **local**, so `live-2026-08-25.log` carried lines stamped `2026-08-26 00:00` — a reader looking for 01:00 on the 26th opens the wrong file, which is exactly the confusion a gate log must not have. Both handlers now share one formatter with `converter = time.gmtime` and `datefmt` matching the heartbeat's own `...Z`. Pinned by a test asserting the filename day equals the line day, **asserted rather than commented** because the two copies are three hours apart here and zero apart on a UTC machine, where a convention would look fine and stay wrong. **The running session keeps the old formatter and cannot be fixed without a restart** — but sessions run 13:30–20:00 UTC, the same calendar day in both zones, so **no session line can be misfiled**; only overnight heartbeats, each of which carries an unambiguous `...Z` in its own message body. |
+| The honesty layer's third instance, and the rate claim refused | 1 Sep 2026 | Ben | **GB-57 §4 now carries five instances of the honesty layer misreporting itself, not two.** Step 4's label in `live_loop.py` still names the two-leg policy **retired 26 Aug** (Ben's note said 28 Aug; `DECISIONS.md` dates the ruling 26th and the chapter uses that). The session summary had already misreported twice on its own account and both were documented only as docstrings: `positions flattened : 0` on a rehearsal that cancelled a stop and sold the position, because the close-out runs after the cycle list closes; and `open orders at exit : 0`, the cleanest-looking line in the summary, which is exactly what a *failed* close-out prints. Four of the five are fixed by deriving the display from something that already knew better (`fold_range`, `status_colour`, the close-out tuple, `positions at exit`); the step label is recorded **unfixed** because its repair is gated behind GB-61's grid. **The rate comparison was refused rather than written.** "Failed as often as the code it describes" needs a per-component defect rate the project never measured, and a denominator that would have to include the mechanisms that have held — `data_snapshot_last_bar`, `metrics.COMPANIONS`, `is_reportable`. The chapter claims the count and the direction of the error, and says plainly that asserting an unquantified rate *in that paragraph* would be the next instance of the pattern it describes. The duplicated telling of the source-pill instance was consolidated at the same time. |
+
+### Found in the 1 Sep session log — deferred behind GB-61's grid (recorded 1 Sep 2026)
+
+Four findings from reading cycles 135–142 of the 1 Sep live session. **The loop is healthy**
+— all ten steps, zero errors, the once-per-bar rule holding, the in-progress bar dropped on
+all five symbols. These are behaviour and evidence defects, not failures. **Ben's sequencing
+is explicit: after the push and after GB-61's `universe:` flip and grid re-run.** The push is
+done (`57a7f41` is on `origin/main`); the grid is **not** — PROGRESS records only GB-61's safe
+half, and `results.csv` is still the 26 Aug five-symbol grid. None is urgent and none may
+delay the report.
+
+1. **Step 4's label describes a policy that no longer exists.** `live_loop.py:959` reads
+   `step 4/10 protection: verify both legs, re-arm, flatten on a second failure`. The two-leg
+   policy was retired **26 Aug 2026** (DECISIONS): one protective order reaches the broker and
+   it is the stop, the target is evaluated in the loop. This line is the gate evidence log, so
+   a reader in October concludes the retired policy is in force. **The sweep is wider than the
+   one label** — `live_loop.py` also carries two-leg language at lines **1314** (`Cancel both
+   legs and sell at market`), **1780** (`Verify both legs of every managed position`) and
+   **2029** (`take it back on that cycle and arm both legs`). Acceptance: a test that the
+   protection step's label names **one** leg, plus the full sweep of step labels, log messages
+   and docstrings in that file, reported.
+2. **Step 9 reads as the opposite of the state.** Step 7 reports `0 undecided, 5 settled` and
+   step 9 then says `bars not yet decided`. Reword so the message states what is true: nothing
+   to execute because every bar is settled.
+3. **The loop re-fetches 3,055 bars every 60 s for a decision that cannot change.** 611 bars
+   × 5 symbols, roughly 390 cycles a session, all identical because the last completed bar does
+   not move until tomorrow. Steps 1–4 must run every cycle — that is risk management. Steps 5–6
+   need only run when a new completed bar might exist. **Report before deciding**: measured API
+   calls per session, wall time of steps 5–6 against the cycle total, and whether the fetch can
+   be gated on a cheap check that the latest bar has advanced. **The argument against must be
+   made, not assumed**: a late correction from the provider is the case for keeping the waste,
+   and Ben would rather keep it than introduce a cache that can serve a stale bar.
+4. **The cadence drifts.** Intervals measure 64–65 s against `poll_seconds: 60`, because the
+   loop sleeps a fixed interval *after* the work rather than targeting a fixed cadence — roughly
+   25 fewer cycles a session than the configuration implies. Not a fault, but *cycles per
+   session* is a number the gate log quotes and is currently unpredictable. Decide: target the
+   cadence, or document the drift. Say which.
+
+**Open recommendation, and it is a tension between two of this project's own rules.** CLAUDE.md
+instance 3 says a gap you are not closing now gets a **failing guard** — an `xfail(strict=True)`
+or an assertion — because a written note is not a mechanism, and the block above is exactly a
+written note. It is a note *by instruction*, since the work is deferred. The cheap way to make
+findings 1 and 2 mechanisms without doing the deferred work is a strict-xfail apiece, which
+fails the moment somebody "fixes" them silently and costs nothing now. **Not done: it is Ben's
+call, because it puts two red-by-design tests in the suite while GATE 2 evidence is being read.**
 
 ---
 

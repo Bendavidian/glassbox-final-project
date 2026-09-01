@@ -320,12 +320,8 @@ another: they announced **"folds 1-16" while holding three**. The pill was deriv
 the page from the frame most cards used, and the two cards that read a different file
 inherited a claim about somebody else's rows.
 
-This is the two-places family with the second place being *a label about the data*, and it
-is worth stating generally because the irony is the instructive part: **building a
-mechanism against a class of error does not place the mechanism outside that class.** A
-wrong pill is worse than no pill, because it converts *I should check this* into *I have
-checked this*. The corrective is unglamorous and the same as every other instance — derive
-the label from the thing it labels, and pin the call sites with a test.
+This is the two-places family with the second place being *a label about the data*. The
+general form is taken up below, once the other instances are on the table.
 
 **A practice adopted for one reason keeps covering a failure nobody had connected to it,
 and that is now a pattern rather than luck.** Three instances. The data snapshot was
@@ -345,24 +341,53 @@ be named in advance — and that this is an argument for the constraint which do
 on the reason it was adopted, and survives that reason turning out to be the less important
 one.
 
-**The honesty layer misreported the thing it exists to report, twice, and two instances
-make it a pattern.** The source pills were built so that a reader could never mistake
-backtest numbers for live ones; two of them then announced *folds 1-16* while holding
-three, because the pill was derived once for the page from the frame most regions happened
-to use. The calendar was built so that a reader could see what the system did on each day;
-it coloured a day of exactly zero change **green**, using `GAIN if value >= 0`, and since
-this system stands aside on **152 of 175 trading days** the result was a calendar that
-rendered the project's central finding — *the system declines to trade* — as a mostly
-winning year. Both were fixed by deriving the display from a function that already knew
-better: `fold_range` of the frame actually rendered, and `status_colour`, which returns a
-muted grey for zero precisely because zero is not a direction.
+**The honesty layer misreported the thing it exists to report, and five instances are now
+on record.** The source pills, above, announced *folds 1-16* while holding three. The
+calendar was built so that a reader could see what the system did on each day; it coloured
+a day of exactly zero change **green**, using `GAIN if value >= 0`, and since this system
+stands aside on **152 of 175 trading days** the result was a calendar that rendered the
+project's central finding — *the system declines to trade* — as a mostly winning year. The
+live loop's fourth step announces `protection: verify both legs, re-arm, flatten on a
+second failure`, which is the policy retired on **26 August 2026**: one protective order
+reaches the broker and it is the stop, and the target is evaluated in the loop against
+completed bars. The line a reader takes as the gate's evidence of the protection policy
+describes a policy the system no longer runs. And the session summary — which *is* the gate
+evidence — has misreported twice on its own account: a rehearsal that cancelled a stop and
+sold the position on shutdown printed `positions flattened : 0`, because the close-out runs
+after the cycle list is closed and its work is invisible to a sum over cycles; and
+`open orders at exit : 0`, the cleanest-looking line in the summary, is precisely what a
+*failed* close-out prints, having cancelled the protective legs and then failed to sell.
 
-The pattern is worth more than either instance. **A mechanism built to prevent a class of
-misreading is not outside that class**, and it is most dangerous where it is most
-convenient: a wrong pill converts *I should check this* into *I have checked this*, and a
-green tile converts *nothing happened* into *something good happened*. The correctives were
-identical in shape and unglamorous in both cases — derive the label from the thing it
-labels, and pin the call sites with a test.
+Four of the five were fixed by deriving the display from something that already knew
+better — `fold_range` of the frame actually rendered; `status_colour`, which returns a muted
+grey for zero precisely because zero is not a direction; the close-out's own tuple printed
+beside the in-cycle count; and `positions at exit` printed beside the order count, because
+only the pair is an answer. The stale step label was found on 1 September 2026 by reading a
+session log rather than by any test, and is recorded here unfixed.
+
+**The pattern is worth more than any of the instances: a mechanism built to prevent a class
+of misreading is not outside that class**, and it is most dangerous where it is most
+convenient. A wrong pill converts *I should check this* into *I have checked this*; a green
+tile converts *nothing happened* into *something good happened*; a stale step label converts
+*this is what the system does* into *this is what the system was once designed to do*; and a
+zero converts *the instrument did not look* into *there was nothing to see*. Counted across
+families rather than within this one, the report's own hardcoded Spearman sentence above is
+a sixth: prose that asserted a conclusion whatever the number turned out to be.
+
+What this chapter claims here is the count and the direction of the error, both dated and
+on record. What it deliberately does **not** claim is a **rate** — that the reporting
+machinery failed as often as, or more often than, the code it describes. That comparison
+needs a defect rate per component for the rest of the system, which this project never
+measured, and a denominator for the honesty layer that would have to include the mechanisms
+that have held: the `data_snapshot_last_bar` header, which refuses a file whose rows
+disagree about it; the MAE-with-flatness pairing, which is structural in
+`metrics.COMPANIONS` rather than remembered; and the `is_reportable` provenance filter,
+which says in exactly one place which runs may reach a metric. Asserting an unquantified
+rate in this paragraph in particular would be the next instance of the pattern it describes.
+The defensible statement is the weaker and the more useful one: **the honesty layer earned
+no exemption.** Building a mechanism against a class of error placed it inside that class
+five times over, and being the instrument that reports on the system conferred no observable
+reliability the system itself did not have.
 
 **A test that has to be deleted to let a design through is a test whose premise moved.**
 `test_status_colour_never_enters_a_data_encoding_chart` forbade green and red inside any
