@@ -666,26 +666,58 @@ def load_equity(root: str | Path, now: pd.Timestamp) -> pd.Series:
     return series[series.index >= now - pd.Timedelta(seconds=EQUITY_WINDOW_SECONDS)]
 
 
-def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
-    """The session equity curve. Flat until something happens, and that is correct.
+def _segments(
+    points: list[tuple[float, float]], values: list[float], opening: float
+) -> list[tuple[str, list[tuple[float, float]]]]:
+    """Split a polyline where it crosses the opening level, one run per side.
 
-    Coloured by its own sign against the session's first reading, because equity is a P&L
-    quantity and the palette's status role is exactly for that. The opening level is drawn
-    as a rule so the sign is readable as geometry and not only as colour.
+    **Colouring the whole line by its final sign was the wrong reading of the data.** A
+    session that spends most of itself under water and closes a cent up is not a green
+    session, and one line in one colour cannot say that. Splitting at the crossing lets
+    the chart state where the equity *was*, not only where it ended.
+
+    The crossing point is interpolated rather than snapped to the nearer sample, so the
+    colour changes exactly at the opening level and the two runs meet on the rule instead
+    of overlapping it.
+    """
+    runs: list[tuple[str, list[tuple[float, float]]]] = []
+    current: list[tuple[float, float]] = []
+    # **Seeded from the first value that actually differs from the opening.** The first
+    # point IS the opening, so `values[0] >= opening` is always true and every session
+    # would begin with a green stub - including one that falls from the first tick. The
+    # opening is not on a side; the first move is.
+    first_move = next((value for value in values if value != opening), opening)
+    side = GAIN if first_move >= opening else LOSS
+    for index, point in enumerate(points):
+        if index and (values[index] >= opening) != (values[index - 1] >= opening):
+            previous, now = values[index - 1], values[index]
+            fraction = (opening - previous) / (now - previous)
+            (x0, y0), (x1, y1) = points[index - 1], point
+            crossing = (x0 + (x1 - x0) * fraction, y0 + (y1 - y0) * fraction)
+            current.append(crossing)
+            runs.append((side, current))
+            side = GAIN if now >= opening else LOSS
+            current = [crossing]
+        current.append(point)
+    runs.append((side, current))
+    return [(colour, run) for colour, run in runs if len(run) > 1]
+
+
+def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
+    """The session equity curve: gain above the opening balance, loss below.
+
+    **A flat session is the common case here, not an edge case.** The loop stands aside on
+    most bars, so equity does not move, and scaling by ``max(high - low, 1e-9)`` once drove
+    every point to the floor of the region under a column of empty space. A span negligible
+    against the level is drawn as a centred flat line, which is what it is.
     """
     if series.empty:
         return ""
     left, right, top, bottom = 90, width - 20, 24, height - 26
-    opening = float(series.iloc[0])
-    latest = float(series.iloc[-1])
+    values = [float(value) for value in series.to_numpy(dtype="float64")]
+    opening, latest = values[0], values[-1]
     change = latest - opening
-    low, high = float(series.min()), float(series.max())
-
-    # **A flat session is the common case here, not an edge case.** The loop stands aside
-    # on most bars, so equity does not move, and dividing by max(high - low, 1e-9) drove
-    # every point to  - the line and its label sat on the floor of the card under a
-    # column of empty space. A span that is negligible against the level is drawn as a
-    # centred flat line, which is what it is.
+    low, high = min(values), max(values)
     flat = (high - low) <= abs(high) * 1e-9
 
     def y(value: float) -> float:
@@ -693,28 +725,33 @@ def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
             return (top + bottom) / 2
         return bottom - (value - low) / (high - low) * (bottom - top)
 
-    step = (right - left) / max(len(series) - 1, 1)
-    points = " ".join(
-        f"{left + index * step:.1f},{y(value):.1f}"
-        for index, value in enumerate(series.to_numpy(dtype="float64"))
-    )
+    step = (right - left) / max(len(values) - 1, 1)
+    points = [(left + index * step, y(value)) for index, value in enumerate(values)]
+
     body = [
-        _text(12, top + 4, "EQUITY", ORANGE),
-        _rule(left, y(opening), right, y(opening), HAIRLINE, dash="2 3"),
-        _text(left - 6, y(opening) + 3, f"{opening:,.0f}", MUTED, anchor="end"),
-        (
-            f'<polyline points="{points}" fill="none" '
-            f'stroke="{status_colour(change)}" stroke-width="1.5"/>'
-        ),
+        _text(12, top + 4, "EQUITY", DIM, size=9),
+        _rule(left, y(opening), right, y(opening), RULE, dash="2 3"),
+        _text(left - 6, y(opening) + 3, f"{opening:,.0f}", DIM, anchor="end"),
+    ]
+    for colour, run in _segments(points, values, opening):
+        drawn = " ".join(f"{x:.1f},{point_y:.1f}" for x, point_y in run)
+        body.append(
+            f'<polyline points="{drawn}" fill="none" stroke="{colour}" '
+            'stroke-width="1.5"/>'
+        )
+    body.append(
         _text(
             right,
             top + 4,
             f"{status_glyph(change)} {change:+,.2f}",
             status_colour(change),
+            size=11,
             anchor="end",
-        ),
-        _text(12, bottom + 16, f"{len(series)} READINGS THIS SESSION", MUTED, size=8),
-    ]
+        )
+    )
+    body.append(
+        _text(12, bottom + 16, f"{len(values)} READINGS THIS SESSION", DIM, size=9)
+    )
     return _svg(width, height, "".join(body), "session equity curve")
 
 
@@ -783,26 +820,28 @@ def sparkline_svg(
 
 
 def countdown_svg(
-    remaining: float, total: float, width: int = 460, height: int = 40
+    remaining: float, total: float, width: int = 460, height: int = 34
 ) -> str:
-    """The cycle countdown, as a rule that depletes. No motion, no pulse.
+    """Seconds to the next cycle, as a 1px accent rule that depletes.
 
-    It redraws shorter each refresh because time has actually passed, which is the whole
-    distinction this panel is built on: the mark moves because the quantity moved.
+    **It moves because time passed, which is the distinction the whole console rests on.**
+    The remaining seconds come from the loop's own last write, not from this page's refresh
+    timer - a timer would deplete smoothly past a dead loop, which would be an animation of
+    something that had stopped happening.
     """
     total = max(total, 1e-9)
     left = max(0.0, min(remaining, total))
-    track_from, track_to = 12, width - 54
+    track_from, track_to = 12, width - 48
     filled = (track_to - track_from) * (left / total)
     return _svg(
         width,
         height,
         "".join(
             [
-                _text(12, 14, "NEXT CYCLE", MUTED, size=8),
-                _rule(track_from, 28, track_to, 28, HAIRLINE),
-                _rule(track_from, 28, track_from + filled, 28, ACCENT),
-                _text(width - 12, 31, f"{left:.0f}s", PAPER, size=10, anchor="end"),
+                _text(12, 13, "NEXT CYCLE", DIM, size=9),
+                _rule(track_from, 25, track_to, 25, RULE),
+                _rule(track_from, 25, track_from + filled, 25, ACCENT),
+                _text(width - 12, 28, f"{left:.0f}s", TEXT, size=11, anchor="end"),
             ]
         ),
         "seconds until the next cycle",

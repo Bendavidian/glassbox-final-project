@@ -1287,3 +1287,57 @@ def test_the_status_strip_is_one_line_of_stated_facts(cfg_stub) -> None:
         assert key in html, f"the strip dropped {key}"
     assert "checkpoints/rehearsal" in html
     assert "gb-strip" in html
+
+
+def _equity(values: list[float]) -> str:
+    index = pd.date_range("2026-08-29 16:30", periods=len(values), freq="min", tz="UTC")
+    return app.equity_svg(pd.Series(values, index=index))
+
+
+def test_the_equity_curve_is_green_above_the_opening_and_red_below() -> None:
+    """Colouring the whole line by its closing sign was the wrong reading of the data: a
+    session that spends most of itself under water and closes a cent up is not a green
+    session, and one line in one colour cannot say that."""
+    assert app.GAIN in _equity([100.0, 101.0, 102.0])
+    assert app.LOSS not in _equity([100.0, 101.0, 102.0])
+
+    assert app.LOSS in _equity([100.0, 99.0, 98.0])
+    assert app.GAIN not in _equity([100.0, 99.0, 98.0])
+
+
+def test_the_opening_point_does_not_decide_the_side() -> None:
+    """**The edge the first implementation got wrong.**
+
+    The first point *is* the opening, so `values[0] >= opening` is always true and every
+    session began with a green stub - including one that fell from the first tick. The
+    opening is not on a side; the first move is.
+    """
+    falling = _equity([100.0, 99.0, 98.0])
+
+    assert app.GAIN not in falling, "a falling session opened with a green segment"
+
+
+def test_a_curve_that_crosses_the_opening_changes_colour_at_the_crossing() -> None:
+    crossing = _equity([100.0, 102.0, 98.0, 103.0])
+
+    assert crossing.count("<polyline") == 3, "one run per side of the opening"
+    assert app.GAIN in crossing and app.LOSS in crossing
+
+
+def test_a_flat_session_still_renders_and_is_centred() -> None:
+    """Flat is the common case: the loop stands aside on most bars."""
+    flat = _equity([100.0, 100.0, 100.0])
+
+    assert "READINGS THIS SESSION" in flat
+    assert "<polyline" in flat
+
+
+def test_the_countdown_is_a_depleting_accent_rule() -> None:
+    """One pixel, vermillion, and it moves because time passed - not because a timer on
+    this page is running. The seconds come from the loop's own last write."""
+    full = app.countdown_svg(60, 60)
+    spent = app.countdown_svg(0, 60)
+
+    assert app.ACCENT in full and 'stroke-width="1"' in full
+    assert "NEXT CYCLE" in full
+    assert full != spent, "the rule must shorten as the seconds run down"
