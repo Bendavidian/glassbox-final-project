@@ -133,11 +133,14 @@ def test_the_harness_reproduces_the_parity_floor_finding(tail, expectation) -> N
     """Replay the measurement that caused this harness to exist.
 
     At the declared floor every cell holds; at the old 352-bar floor none do. **When this
-    was written the 352 case was 32 of 125** — a partial result, which is precisely what a
-    hand measurement reports as "verified" if it happens to land on one of the 32. It reads
-    0 of 125 now only because the second half of GB-27 unified the emit warm-up with the
-    parity warm-up, so a 352-bar tail no longer assembles a window at all and the builder
-    refuses instead of differing quietly.
+    was written the 352 case was 32 of 125** — measured over the five symbols the universe
+    held then, and a partial result, which is precisely what a hand measurement reports as
+    "verified" if it happens to land on one of the 32. It holds in **0 of
+    `len(stamps) * len(cfg.universe)`** cells now — 100 at today's twenty symbols, and
+    stated as the product rather than as a number so it cannot go stale the way `== 25`
+    did — only because the second half of GB-27 unified the emit warm-up with the parity
+    warm-up, so a 352-bar tail no longer assembles a window at all and the builder refuses
+    instead of differing quietly.
 
     The synthetic partial sweeps above carry that property now; this one carries the real
     data. Both matter: a harness that could only ever report all-or-nothing would be a
@@ -183,7 +186,11 @@ def test_the_harness_reproduces_the_parity_floor_finding(tail, expectation) -> N
 
     result = sweep(identical, list(cfg.universe), stamps)
 
-    assert result.total == 25
+    # **Derived, never pinned.** This read `== 25` - five timestamps times the five
+    # symbols of the time - and GB-61's universe flip turned it into 100 while the
+    # assertion still said 25. `test_train_live_parity` writes the same product and
+    # survived the flip untouched; the difference between the two files was this line.
+    assert result.total == len(stamps) * len(cfg.universe)
     if expectation == "all":
         assert result.all_held, result.summary()
     else:

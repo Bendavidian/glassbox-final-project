@@ -11,7 +11,8 @@ one-bar offset survives review. A tolerance is a place bugs live.
 **It sweeps rather than samples, and that is the whole lesson of this task.** The first
 version of this file checked one symbol at one timestamp, found byte-identity at the
 then-declared floor of 352 bars, and passed. A sweep over five symbols and twenty-five
-timestamps found byte-identity in **32 of 125 pairs** at that floor. The single point was
+timestamps found byte-identity in **32 of 125 pairs** at that floor - five symbols was
+the universe then, and GB-61 widened it to twenty and the sweep to 500. The single point was
 one of the lucky ones. A parity test that samples can certify a floor that does not hold,
 which is exactly what happened, so this one sweeps by construction and any future channel
 inherits the sweep.
@@ -58,13 +59,17 @@ from glassbox.features.builder import (
 SYMBOL = "AAPL"
 OTHER = "MSFT"
 
-# The floor derived at a 1e-9 target rather than 1e-10. Measured over the same sweep:
-# 120 of 125 pairs, so it is NOT universally byte-identical and the extra margin in the
-# declared floor is doing real work rather than padding a number.
+# The floor derived at a 1e-9 target rather than 1e-10. Measured on GB-27's five-symbol
+# sweep: 120 of 125 pairs, so it is NOT universally byte-identical and the extra margin in
+# the declared floor is doing real work rather than padding a number. **That count is a
+# recorded measurement and stays 125.** GB-61 widened the live sweep to 500 without
+# re-measuring the 414 floor, and renumbering it here would invent a result.
 FLOOR_AT_1E9 = 414
 
-# Enough timestamps that a lucky one cannot carry the suite. Twenty-five, over five
-# symbols, is 125 comparisons per assertion.
+# Enough timestamps that a lucky one cannot carry the suite. Twenty-five, over the twenty
+# symbols GB-61 expanded the universe to, is **500 comparisons per assertion** - it was 125
+# over five. The number follows `len(cfg.universe)` at the call site rather than being
+# pinned here, which is why the flip needed no change to any assertion in this file.
 SWEEP_TIMESTAMPS = 25
 
 
@@ -165,10 +170,12 @@ def sweep(
 def test_every_symbol_at_every_timestamp_is_byte_identical_at_the_floor(
     universe, trained_windows, sweep_stamps, cfg: Config
 ) -> None:
-    """The standing assertion. 125 comparisons, exact equality, no exceptions.
+    """The standing assertion. 500 comparisons, exact equality, no exceptions.
 
-    A single-point version of this test certified a floor that held in 32 of 125 pairs.
-    This is that mistake made structurally impossible.
+    A single-point version of this test certified a floor that held in 32 of 125 pairs -
+    GB-27's measurement, over the five symbols the universe held then. The sweep is 500
+    today because its size follows `cfg.universe`; the historical count does not move with
+    it. This is that mistake made structurally impossible.
     """
     identical, total, failures = sweep(
         universe, trained_windows, sweep_stamps, cfg, min_history_bars(cfg)
@@ -201,13 +208,14 @@ def test_below_the_declared_floor_the_builder_refuses_rather_than_differing(
 
     Until the emit warm-up was unified with the parity warm-up, a 352- or 414-bar tail
     **assembled a window and returned slightly wrong numbers** — silently, in 93 and 5 of
-    125 cells respectively. Now the warm-up trim takes 325 rows, so a 352-bar tail leaves
-    27 rows against an input length of 120 and the builder **refuses**.
+    125 cells respectively, measured at the five symbols of the time. Now the warm-up
+    trim takes 325 rows, so a 352-bar tail leaves 27 rows against an input length of 120
+    and the builder **refuses**.
 
     That is a real trade: the 414-vs-445 divergence can no longer be observed through the
-    public path, so the measurement that justified the 1e-10 margin (120 of 125 at 414)
-    stands as a recorded result in DECISIONS rather than as a live assertion. In exchange,
-    the failure mode it measured is now impossible to reach silently — which is the better
+    public path, so the measurement that justified the 1e-10 margin (120 of 125 at 414,
+    at five symbols) stands as a recorded result in DECISIONS rather than as a live
+    assertion. In exchange, the failure mode it measured is now impossible to reach silently — which is the better
     end of the trade, because a refusal cannot be mistaken for a valid window.
     """
     assert tail < min_history_bars(cfg)

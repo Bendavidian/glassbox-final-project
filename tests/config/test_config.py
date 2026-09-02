@@ -90,7 +90,28 @@ def test_default_config_values_match_the_spec() -> None:
     cfg = load_config()
 
     assert cfg.meta.seed == 1337
-    assert cfg.universe == ("AAPL", "MSFT", "NVDA", "AMZN", "GOOGL")
+    assert cfg.universe == (
+        "AAPL",
+        "MSFT",
+        "NVDA",
+        "AMZN",
+        "GOOGL",
+        "META",
+        "TSLA",
+        "LLY",
+        "JPM",
+        "JNJ",
+        "V",
+        "XOM",
+        "UNH",
+        "MA",
+        "MRK",
+        "PG",
+        "HD",
+        "COST",
+        "WMT",
+        "ABBV",
+    )
     assert cfg.window.input_len == 120
     assert cfg.window.horizon == 4
     assert cfg.fits.cutoff_period_days == 5
@@ -313,6 +334,22 @@ def test_not_a_mapping_raises(tmp_path: Path) -> None:
 # ── Hashing ──────────────────────────────────────────────────────────────────
 
 
+def a_ticker_absent_from(universe: list[str]) -> str:
+    """An uppercase ticker guaranteed not already in ``universe``.
+
+    **Derived rather than named, and that is the whole of the fix.** The universe mutation
+    below used to append the literal ``"TSLA"``, which made the test's validity rest on a
+    fact about `settings.yaml` that the test did not control: GB-61 put TSLA in the
+    universe, the append became a duplicate, `_build_universe` refuses duplicates by
+    design, and the case **errored** instead of asserting anything about hashing. Any other
+    hardcoded ticker carries the same defect one universe change later.
+    """
+    candidate = "A"
+    while candidate in universe:
+        candidate += "A"
+    return candidate
+
+
 def test_hash_is_stable_across_loads() -> None:
     assert config_hash(load_config()) == config_hash(load_config())
 
@@ -337,7 +374,10 @@ def test_hash_ignores_key_order(tmp_path: Path, raw_settings: dict[str, Any]) ->
         (lambda raw: raw["window"].__setitem__("horizon", 5), "horizon"),
         (lambda raw: raw["channels"].__setitem__("active", "C2_hybrid"), "channels"),
         (lambda raw: raw["risk"].__setitem__("stop_loss_pct", 0.04), "stop_loss"),
-        (lambda raw: raw["universe"].append("TSLA"), "universe"),
+        (
+            lambda raw: raw["universe"].append(a_ticker_absent_from(raw["universe"])),
+            "universe",
+        ),
         (lambda raw: raw["live"].__setitem__("mode", "auto"), "live_mode"),
     ],
     ids=lambda value: value if isinstance(value, str) else "",

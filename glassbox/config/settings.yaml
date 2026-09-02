@@ -2,7 +2,7 @@ meta:
   version: 3
   seed: 1337
 
-universe: [AAPL, MSFT, NVDA, AMZN, GOOGL]
+universe: [AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, LLY, JPM, JNJ, V, XOM, UNH, MA, MRK, PG, HD, COST, WMT, ABBV]
 
 data:
   start: "2016-01-01"
