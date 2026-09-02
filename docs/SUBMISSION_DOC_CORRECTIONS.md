@@ -116,3 +116,79 @@ At twenty symbols the three rates are **0.5529, 0.5479, 0.5565**, all slightly l
 broader and less concentrated basket carries less upward drift.
 
 **Found because this pass recomputed the number instead of copying it.**
+
+---
+
+## 3. Any claim that the arms are flat "at all three anchors under both null controls"
+
+**Status: structurally unavailable, not merely unmeasured.** The distinction matters,
+because "we did not measure it" invites someone to go and measure it, and "the design
+cannot express it" does not.
+
+Row counts by control and anchor, from the 2 Sep 2026 twenty-symbol `results.csv`
+(`skipped=False`), verbatim:
+
+```
+control x anchor row counts
+anchor      0    21   42
+noise     208     0    0
+real      544   112  112
+shuffled  112     0    0
+```
+
+**There are no `noise` or `shuffled` rows at anchors 21 or 42.** The sensitivity design is
+a **star, not a cross product** (`study.conditions`): each axis departs once from a common
+centre, and the control axis therefore has its spokes at anchor 0 only. A null-control
+comparison exists at the centre and nowhere else.
+
+**The consequence for the chapter.** Grid sensitivity and the null control are this
+project's two independent robustness checks — §"Suspicious stability" records that the
+`r = −0.47` correlation died to a grid shift and would have passed a null control, while
+the FITS phase advance died to a null control after passing grid sensitivity at 48 of 48
+cells. **The two cannot currently be crossed.** No statement of the form "the arms score
+better on noise at every anchor" can be supported, and any document making one is wrong by
+design rather than by omission. Closing it means adding `noise` and `shuffled` conditions
+at anchors 21 and 42 — a cross rather than a star on those two axes — which is a scope
+decision, not a bug fix.
+
+---
+
+## 4. Buy-and-hold's degradation under the noise control is significant after correction
+
+**Addition rather than correction**, and it strengthens §1's central argument.
+
+GB-57 §1 argues that buy-and-hold is the only arm that degrades under the white-noise
+control, and that a control moving for exactly one arm — the one whose mechanism says it
+must — separates *"we found nothing"* from *"we measured that there was nothing to find."*
+That argument is currently made on the size of the gap alone. It now has a p-value.
+
+Paired by fold within the reference condition (anchor 0, lr 1e-3, cutoff 5,
+`target_in_loop=True`, `C0_base`; buy-and-hold matched on the rest, since it carries no
+`channels` value), across the `control` axis, twenty-symbol `results.csv`:
+
+| arm | n | mean(noise − real) | sd | W | p | p_holm |
+|---|---|---|---|---|---|---|
+| **buy_and_hold** | 16 | **−0.0517** | 0.0593 | 14.0 | **0.0034** | **0.0134** |
+| dlinear | 16 | +0.0184 | 0.0301 | 22.0 | 0.0174 | 0.0521 |
+| fits | 16 | +0.0087 | 0.0346 | 49.0 | 0.3484 | 0.6968 |
+| wits | 16 | +0.0035 | 0.0386 | 65.0 | 0.8999 | 0.8999 |
+
+**Buy-and-hold's degradation survives correction at p_holm = 0.0134. No model arm's gap
+does.** The instrument detects a control effect where the mechanism predicts one and
+detects nothing on the arms that never had a forecast, and both halves of that are now
+measured rather than asserted.
+
+**THE AGGREGATION CAVEAT, AND IT MUST TRAVEL WITH THE NUMBER.** This test **crosses the
+`control` column**, and `control` is one of the columns that identifies a condition
+(`Condition.columns`). The report's family of 117 pairs by fold **within** a condition and
+therefore contains no test of this shape. **These four tests are not among the 117**, and
+the Holm correction above is over **these four arms only** — stated here rather than
+implied, because quoting `p_holm = 0.0134` beside the report's corrected values would
+invite a reader to assume one family where there are two.
+
+**DLinear's gap is reported as unresolved, not as a finding.** At +0.0184 it is the
+largest of the three model gaps and the only one with a consistent fold pattern (positive
+in 13 of 16, against WITS's 7 of 16, which is a coin flip), and it clears the uncorrected
+threshold at p = 0.0174 — but **it fails Holm at 0.0521**. The chapter's claim stays
+*"destroying the signal costs these models nothing"*; the stronger reading, *"the models
+do better on destroyed signal"*, is not supported at sixteen folds and must not be written.
