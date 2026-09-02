@@ -63,6 +63,9 @@ from glassbox.dashboard.tokens import (
     GAIN,
     GROUND,
     HEBREW_SANS,
+    LEADING_FIGURE,
+    LEADING_PROSE,
+    LEADING_UI,
     LOSS,
     MONO,
     RULE,
@@ -70,6 +73,12 @@ from glassbox.dashboard.tokens import (
     STAR_A,
     STAR_B,
     TEXT,
+    TRACK_FIGURE,
+    TRACK_LABEL,
+    TYPE_BODY,
+    TYPE_FIGURE,
+    TYPE_LABEL,
+    TYPE_PROSE,
 )
 from glassbox.engine.reconcile import Book
 from glassbox.engine.signal import ENTER_LONG, EXIT, HOLD, Thresholds
@@ -574,30 +583,70 @@ def position_rows(
 
 # ── SVG: the shared furniture ────────────────────────────────────────────────
 
+#: The viewBox width of the charts that take the whole content column. **Chosen against
+#: the type floor, not by eye.** :func:`_svg` never draws a chart narrower than its
+#: viewBox, so this is also the narrowest content column at which the page does not
+#: scroll: 1200 clears a 1512px laptop with Streamlit's own gutters, where the previous
+#: 1400 did not and would have put every one of these charts behind a scrollbar.
+WIDE_CHART = 1200
+
+#: The drop from a radar axis label to the value beneath it. One line of
+#: :data:`~glassbox.dashboard.tokens.TYPE_LABEL` at the console's leading, rounded up: the
+#: previous 11 was less than the type is now tall, so the two lines overlapped.
+RADAR_AXIS_LEADING = 15
+
 
 def _svg(width: int, height: int, body: str, label: str) -> str:
-    """One chart, sized by its container.
+    """One chart, sized by its container but never smaller than its own viewBox.
 
     **No ``height`` attribute.** With both ``width="100%"`` and a fixed ``height`` beside a
     ``viewBox``, the default ``preserveAspectRatio`` scales the drawing to fit *both* and
     centres it - which is why the charts sat letterboxed in the middle of the page with a
     third of the viewport empty. Given only a width, the ``viewBox`` supplies the ratio and
     the chart uses the full content column.
+
+    **``min-width`` is what makes the type floor true inside a chart.** SVG text is sized in
+    user units, so a label's rendered size is its authored size times the ratio of drawn
+    width to viewBox width - which means a scaling chart has no size floor at all, and the
+    9-unit labels this console shipped with rendered at 7px in a narrow column. Pinning the
+    drawn width at or above the viewBox width makes that ratio at least 1, so
+    :data:`~glassbox.dashboard.tokens.TYPE_LABEL` user units is at least ``TYPE_LABEL`` px
+    everywhere. Past that the container scrolls, which is the trade taken deliberately: a
+    reader can scroll a chart and cannot enlarge a caption.
     """
     return (
         f'<svg viewBox="0 0 {width} {height}" width="100%" '
-        f'style="display:block;height:auto" '
+        f'style="display:block;height:auto;min-width:{width}px" '
         f'role="img" aria-label="{label}" xmlns="http://www.w3.org/2000/svg">'
         f'<rect width="{width}" height="{height}" fill="{PANEL}"/>{body}</svg>'
     )
 
 
 def _text(
-    x: float, y: float, value: str, fill: str, size: int = 9, anchor: str = "start"
+    x: float,
+    y: float,
+    value: str,
+    fill: str,
+    size: int = TYPE_LABEL,
+    anchor: str = "start",
 ) -> str:
+    """One chart label, on the type scale and in the page's own family.
+
+    **The family was the second place the font stack was defined.** This wrote
+    ``ui-monospace,Menlo,Consolas,monospace`` - a stack IBM Plex Mono is not in - so every
+    label in every chart set in the system monospace while the surrounding page set in
+    Plex, on a page whose stylesheet asserts one family. Nothing failed: the two are both
+    monospace and the disagreement reads as a rendering quirk rather than as a defect.
+
+    **Tracking is proportional, and was not.** A constant 1.2 user units is 17% of the em
+    at 7 units and 11% at 11, so the smallest labels - the ones already hardest to read -
+    received half again the tracking of the largest. It is now
+    :data:`~glassbox.dashboard.tokens.TRACK_LABEL` of the size, which is the same value the
+    stylesheet gives uppercase chrome.
+    """
     return (
         f'<text x="{x:.1f}" y="{y:.1f}" fill="{fill}" font-size="{size}" '
-        f'font-family="ui-monospace,Menlo,Consolas,monospace" letter-spacing="1.2" '
+        f'font-family="{MONO}" letter-spacing="{size * TRACK_LABEL:.2f}" '
         f'text-anchor="{anchor}">{value}</text>'
     )
 
@@ -761,7 +810,7 @@ def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
     points = [(left + index * step, y(value)) for index, value in enumerate(values)]
 
     body = [
-        _text(12, top + 4, "EQUITY", DIM, size=9),
+        _text(12, top + 4, "EQUITY", DIM),
         _rule(left, y(opening), right, y(opening), RULE, dash="2 3"),
         _text(left - 6, y(opening) + 3, f"{opening:,.0f}", DIM, anchor="end"),
     ]
@@ -777,13 +826,11 @@ def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
             top + 4,
             f"{status_glyph(change)} {change:+,.2f}",
             status_colour(change),
-            size=11,
+            size=TYPE_BODY,
             anchor="end",
         )
     )
-    body.append(
-        _text(12, bottom + 16, f"{len(values)} READINGS THIS SESSION", DIM, size=9)
-    )
+    body.append(_text(12, bottom + 16, f"{len(values)} READINGS THIS SESSION", DIM))
     return _svg(width, height, "".join(body), "session equity curve")
 
 
@@ -852,7 +899,7 @@ def sparkline_svg(
 
 
 def countdown_svg(
-    remaining: float, total: float, width: int = 460, height: int = 34
+    remaining: float, total: float, width: int = 460, height: int = 44
 ) -> str:
     """Seconds to the next cycle, as a 1px accent rule that depletes.
 
@@ -870,10 +917,12 @@ def countdown_svg(
         height,
         "".join(
             [
-                _text(12, 13, "NEXT CYCLE", DIM, size=9),
-                _rule(track_from, 25, track_to, 25, RULE),
-                _rule(track_from, 25, track_from + filled, 25, ACCENT),
-                _text(width - 12, 28, f"{left:.0f}s", TEXT, size=11, anchor="end"),
+                _text(12, 14, "NEXT CYCLE", DIM),
+                _rule(track_from, 28, track_to, 28, RULE),
+                _rule(track_from, 28, track_from + filled, 28, ACCENT),
+                _text(
+                    width - 12, 32, f"{left:.0f}s", TEXT, size=TYPE_BODY, anchor="end"
+                ),
             ]
         ),
         "seconds until the next cycle",
@@ -1013,8 +1062,10 @@ def radar_svg(
             if abs(math.sin(angle)) < 0.3
             else ("start" if math.sin(angle) > 0 else "end")
         )
-        body.append(_text(lx, ly, label, MUTED, size=8, anchor=anchor_at))
-        body.append(_text(lx, ly + 11, printed, PAPER, size=8, anchor=anchor_at))
+        body.append(_text(lx, ly, label, MUTED, anchor=anchor_at))
+        body.append(
+            _text(lx, ly + RADAR_AXIS_LEADING, printed, PAPER, anchor=anchor_at)
+        )
     body.append(
         f'<polygon points="{" ".join(shape)}" fill="{GAIN_FILL}" '
         f'stroke="{GAIN}" stroke-width="1.5"/>'
@@ -1065,15 +1116,15 @@ def cumulative_equity_svg(
     body = [
         f'<polygon points="{area}" fill="{fill}" stroke="none"/>',
         _rule(left, y(1.0), right, y(1.0), HAIRLINE, dash="2 3"),
-        _text(left - 6, y(1.0) + 3, "1.00", MUTED, size=8, anchor="end"),
+        _text(left - 6, y(1.0) + 3, "1.00", MUTED, anchor="end"),
         f'<polyline points="{" ".join(points)}" fill="none" stroke="{colour}" stroke-width="1.6"/>',
-        _text(left, bottom + 18, f"{len(series)} TRADING DAYS", MUTED, size=8),
+        _text(left, bottom + 18, f"{len(series)} TRADING DAYS", MUTED),
         _text(
             right,
             top + 4,
             f"{status_glyph(change)} {change * 100:+.2f}%",
             colour,
-            size=11,
+            size=TYPE_BODY,
             anchor="end",
         ),
     ]
@@ -1102,7 +1153,7 @@ def fold_bars_svg(
     slot = (right - left) / len(values)
     body = [
         _rule(left, zero, right, zero, HAIRLINE),
-        _text(left - 6, zero + 3, "0%", MUTED, size=8, anchor="end"),
+        _text(left - 6, zero + 3, "0%", MUTED, anchor="end"),
     ]
     flat = sum(1 for _, value in values if value == 0)
     for index, (fold, value) in enumerate(values):
@@ -1123,9 +1174,7 @@ def fold_bars_svg(
         )
         if index % 3 == 0:
             body.append(
-                _text(
-                    x + w / 2, bottom + 14, f"f{fold}", MUTED, size=7, anchor="middle"
-                )
+                _text(x + w / 2, bottom + 14, f"f{fold}", MUTED, anchor="middle")
             )
     best, worst = max(values, key=lambda v: v[1]), min(values, key=lambda v: v[1])
     # Coloured by what they are rather than by which end they sit at: the best of sixteen
@@ -1136,7 +1185,6 @@ def fold_bars_svg(
             top - 6,
             f"BEST f{best[0]} {best[1] * 100:+.2f}%",
             status_colour(best[1]),
-            size=8,
         )
     )
     body.append(
@@ -1145,7 +1193,6 @@ def fold_bars_svg(
             top - 6,
             f"WORST f{worst[0]} {worst[1] * 100:+.2f}%",
             status_colour(worst[1]),
-            size=8,
             anchor="end",
         )
     )
@@ -1156,7 +1203,6 @@ def fold_bars_svg(
                 bottom + 28,
                 f"{flat} OF {len(values)} FOLDS FLAT - STOOD ASIDE",
                 MUTED,
-                size=8,
                 anchor="middle",
             )
         )
@@ -1168,14 +1214,21 @@ def fold_bars_svg(
 CALENDAR_SCALES = ((13, 3), (9, 2), (6, 2), (4, 1), (3, 1), (2, 1), (2, 0))
 
 #: What the weekday ruler occupies on the left, and the margin kept on the right.
-CALENDAR_LEFT, CALENDAR_RIGHT = 40, 12
+CALENDAR_LEFT, CALENDAR_RIGHT = 76, 12
 
-#: Where the tiles start, and the room the footer line needs beneath them.
-CALENDAR_TOP, CALENDAR_FOOT = 26, 24
+#: Where the tiles start, and the room the footer needs beneath them. **Two lines, not
+#: one.** At 9px the day count and the up/down/flat tally sat on one baseline at opposite
+#: ends of a 700-unit chart and cleared each other by 200 units; at the type floor the
+#: longer count - "16 OF 190 TRADING DAYS - 174 EARLIER WEEKS NOT SHOWN" - runs past the
+#: middle and they collide. Stacking them is the fix that does not shorten a sentence to
+#: fit a chart.
+CALENDAR_TOP, CALENDAR_FOOT = 26, 46
 
 #: Below this row pitch the three weekday labels collide, and the axis they name is too
 #: dense to read a day off anyway, so the band is labelled once instead of three times.
-CALENDAR_RULER_PITCH = 12
+#: It tracks the type: three labels one row apart need a pitch above the height of the
+#: type they are set in, which is why raising the floor raised this with it.
+CALENDAR_RULER_PITCH = 16
 
 
 def calendar_scale(weeks: int, width: int) -> tuple[int, int, int]:
@@ -1250,7 +1303,6 @@ def calendar_svg(daily: pd.DataFrame, model: str, width: int = 700) -> str:
                         CALENDAR_TOP + index * pitch + tile - 3,
                         label,
                         MUTED,
-                        size=7,
                         anchor="end",
                     )
                 )
@@ -1261,7 +1313,6 @@ def calendar_svg(daily: pd.DataFrame, model: str, width: int = 700) -> str:
                 CALENDAR_TOP + 2 * pitch + tile / 2 + 3,
                 "MON-FRI",
                 MUTED,
-                size=7,
                 anchor="end",
             )
         )
@@ -1276,15 +1327,13 @@ def calendar_svg(daily: pd.DataFrame, model: str, width: int = 700) -> str:
         else f"{len(drawn)} OF {len(days)} TRADING DAYS - "
         f"{dropped} EARLIER WEEKS NOT SHOWN"
     )
-    body.append(_text(CALENDAR_LEFT, height - 8, counted, MUTED, size=8))
+    body.append(_text(CALENDAR_LEFT, height - 30, counted, MUTED))
     body.append(
         _text(
-            width - CALENDAR_RIGHT,
-            height - 8,
+            CALENDAR_LEFT,
+            height - 10,
             f"{up} UP / {down} DOWN / {len(drawn) - up - down} FLAT",
             MUTED,
-            size=8,
-            anchor="end",
         )
     )
     return _svg(width, height, "".join(body), f"{model} daily results calendar")
@@ -1359,8 +1408,8 @@ def forecast_svg(
     path: pd.Series,
     thresholds: Thresholds,
     symbol: str,
-    width: int = 1400,
-    height: int = 250,
+    width: int = WIDE_CHART,
+    height: int = 260,
 ) -> str:
     """Recent closes with the predicted H-day path continuing past the last bar.
 
@@ -1380,8 +1429,8 @@ def forecast_svg(
     would make a session that cannot trade look like one that simply had not yet, which is
     the difference between abstaining and waiting.
     """
-    left, right, top = 58, 14, 26
-    strip = 30
+    left, right, top = 84, 14, 26
+    strip = 34
     plot_h = height - top - strip
     plot_w = width - left - right
 
@@ -1442,7 +1491,15 @@ def forecast_svg(
     note_y = baseline + 24
     # NOW sits under the rule it names rather than at the edge of the strip: a marker whose
     # label is a screen away from it is a label for something else.
-    body.append(_text(x_at(offset), note_y, "NOW", ORANGE_DIM, anchor="middle"))
+    #
+    # **It is ORANGE and not ORANGE_DIM, and that was not a preference.** `ORANGE_DIM` is
+    # `RULE`, which the palette classifies as structure rather than text and excludes from
+    # the contrast assertion for that reason - so this label was the one piece of text on
+    # the page at 1.27:1, effectively invisible, and invisible in a way no test could see
+    # because the colour was being checked as the rule it is named for. The dashed rule
+    # above still takes `ORANGE_DIM`; a label is not a rule, and matching the two was the
+    # mistake. The sibling annotation on this same baseline has always been `ORANGE`.
+    body.append(_text(x_at(offset), note_y, "NOW", ORANGE, anchor="middle"))
 
     if thresholds.fires:
         entry = float(history.iloc[-1]) * math.exp(thresholds.lower)
@@ -1477,7 +1534,7 @@ def price_path(last_close: float, forecast_path) -> pd.Series:
 
 
 def contributions_svg(
-    attribution: Attribution, width: int = 1400, row_height: int = 24
+    attribution: Attribution, width: int = WIDE_CHART, row_height: int = 24
 ) -> str:
     """Per-channel contributions as a diverging bar chart around a zero rule.
 
@@ -1487,8 +1544,8 @@ def contributions_svg(
     channel rather than which sign, per the module docstring.
     """
     ranked = sorted(shares(attribution).items(), key=lambda kv: (-abs(kv[1]), kv[0]))
-    height = 34 + row_height * len(ranked) + 26
-    left, right = 132, 76
+    height = 34 + row_height * len(ranked) + 30
+    left, right = 150, 100
     plot_w = width - left - right
     middle = left + plot_w / 2
     widest = max((abs(value) for _, value in ranked), default=0.0) or 1.0
@@ -1597,7 +1654,7 @@ def frequency_shares(attribution: Attribution) -> dict[float, float]:
 
 
 def spectral_svg(
-    attribution: Attribution, width: int = 1400, row_height: int = 22
+    attribution: Attribution, width: int = WIDE_CHART, row_height: int = 22
 ) -> str:
     """Per-frequency contributions, keyed by period in **days** rather than by bin index.
 
@@ -1609,8 +1666,8 @@ def spectral_svg(
     ranked = sorted(
         frequency_shares(attribution).items(), key=lambda kv: (-abs(kv[1]), kv[0])
     )
-    height = 34 + row_height * len(ranked) + 40
-    left, right = 150, 92
+    height = 34 + row_height * len(ranked) + 50
+    left, right = 230, 100
     plot_w = width - left - right
     middle = left + plot_w / 2
     widest = max((abs(value) for _, value in ranked), default=0.0) or 1.0
@@ -1619,7 +1676,7 @@ def spectral_svg(
     body = [
         _text(12, 16, "PER-FREQUENCY CONTRIBUTION", ORANGE),
         _text(width - 12, 16, "SHARE OF GROSS VIEW", MUTED, anchor="end"),
-        _rule(middle, 26, middle, height - 36, ORANGE_DIM),
+        _rule(middle, 26, middle, height - 46, ORANGE_DIM),
     ]
 
     for index, (period, share) in enumerate(ranked):
@@ -1655,11 +1712,11 @@ def spectral_svg(
             f"NO SINGLE CYCLE CARRIES THIS FORECAST — STRONGEST IS "
             f"{strongest * 100:.1f}% OF {len(ranked)} CONTRIBUTORS"
         )
-        body.append(_text(12, height - 20, note, ORANGE))
+        body.append(_text(12, height - 30, note, ORANGE))
     body.append(
         _text(
             12,
-            height - 6,
+            height - 10,
             "BIN 0 MULTIPLIES ZERO — RIN REMOVES THE WINDOW MEAN BEFORE THE TRANSFORM",
             MUTED,
         )
@@ -1668,7 +1725,10 @@ def spectral_svg(
 
 
 def gain_phase_svg(
-    attribution: Attribution, top: int = 6, width: int = 1400, row_height: int = 22
+    attribution: Attribution,
+    top: int = 6,
+    width: int = WIDE_CHART,
+    row_height: int = 22,
 ) -> str:
     """Gain and phase shift for the strongest contributors, **phase in days**.
 
@@ -1694,9 +1754,9 @@ def gain_phase_svg(
     for index, period in enumerate(ranked):
         gain, shift = pairs[period]
         y = 34 + index * row_height
-        length = abs(gain) / widest * (width - 150 - 200)
+        length = abs(gain) / widest * (width - 230 - 300)
         body.append(
-            f'<rect x="150" y="{y:.1f}" width="{max(length, 0.6):.1f}" '
+            f'<rect x="230" y="{y:.1f}" width="{max(length, 0.6):.1f}" '
             f'height="{row_height - 10}" fill="{period_colour(period, list(pairs))}" '
             'stroke="none"/>'
         )
@@ -1719,8 +1779,8 @@ def gain_phase_svg(
 def response_svg(
     periods: Sequence[float],
     gains: Sequence[float],
-    width: int = 1400,
-    height: int = 260,
+    width: int = WIDE_CHART,
+    height: int = 288,
 ) -> str:
     """The learned frequency response, **with what it was measured to be**.
 
@@ -1731,7 +1791,7 @@ def response_svg(
     would be the black-box behaviour this project opposes, committed by the explanation
     layer - the worst place for it to happen.
     """
-    left, right, top, floor = 60, 24, 34, height - 46
+    left, right, top, floor = 60, 24, 34, height - 68
     plot_w = width - left - right
     if len(periods) < 2:
         return _svg(
@@ -1772,12 +1832,12 @@ def response_svg(
         del gain
     for period in (periods[0], periods[len(periods) // 2], periods[-1]):
         x = left + (math.log(period) - lo) / span * plot_w
-        body.append(_text(x, floor + 14, f"{period:.0f}D", MUTED, anchor="middle"))
+        body.append(_text(x, floor + 18, f"{period:.0f}D", MUTED, anchor="middle"))
 
     body.append(
         _text(
             12,
-            height - 20,
+            height - 28,
             f"DOMINATED BY INTERPOLATION COST, NOT BY MARKET STRUCTURE — "
             f"{SPECTRAL_GEOMETRY_SHARE * 100:.0f}% OF THIS CURVE IS REPRODUCED BY A MODEL "
             f"TRAINED ON WHITE NOISE",
@@ -1787,7 +1847,7 @@ def response_svg(
     body.append(
         _text(
             12,
-            height - 6,
+            height - 10,
             f"MEASURED GB-48: GAIN CURVES CORRELATE r = +{SPECTRAL_NOISE_CORRELATION:.4f} "
             "ACROSS 48 MODELS AT THREE FOLD-GRID ANCHORS",
             MUTED,
@@ -1796,7 +1856,9 @@ def response_svg(
     return _svg(width, height, "".join(body), "learned frequency response")
 
 
-def spectral_panel(attribution: Attribution, response=None, width: int = 1400) -> str:
+def spectral_panel(
+    attribution: Attribution, response=None, width: int = WIDE_CHART
+) -> str:
     """The whole panel, or **empty when the model does not decompose by frequency**.
 
     Absent rather than blank: `Attribution.per_frequency` is None for DLinear and
@@ -2150,6 +2212,23 @@ def stylesheet() -> str:
     **Tabular figures are a requirement, not a preference.** In a dense monospace table a
     reader compares magnitudes by scanning a column, and proportional digits break that at
     the one place the design is asking them to do it.
+
+    **Every size, leading and tracking here is a token, and that is load-bearing rather
+    than tidy.** This stylesheet set type at five sizes and eight tracking values, and the
+    charts set four more at their own call sites - eight distinct sizes in all, no two of
+    which were ever compared, because nothing in the codebase held them in one place. Five
+    of the eight were under 12px on a near-black ground. They are now the four steps of
+    :data:`~glassbox.dashboard.tokens.TYPE_STEPS`, one tracking value for uppercase chrome
+    and one for the single large figure, and
+    ``test_every_size_in_the_stylesheet_is_a_step_of_the_scale`` reads them back out of the
+    rendered CSS - out of what the browser receives, not out of this file, because a guard
+    that counts what a source file contains is broken by the next person who explains a
+    rule in a comment.
+
+    **The base states a line-height.** It did not, so the leading of every table row, label
+    and caption on the page was whatever Streamlit's theme supplied - a typographic
+    decision taken by a dependency, correct only by luck, and silently revisable by a
+    version bump.
     """
     return f"""
 <style>
@@ -2159,11 +2238,17 @@ def stylesheet() -> str:
   html, body, [class*="css"], .stMarkdown, p, div, span, td, th {{
       font-family: {MONO};
       color: {TEXT};
+      font-size: {TYPE_BODY}px;
+      line-height: {LEADING_UI};
       font-variant-numeric: tabular-nums;
       -webkit-font-smoothing: antialiased;
   }}
   .block-container {{ padding-top: 1.4rem; padding-bottom: 4rem; max-width: 1800px; }}
   #MainMenu, footer, header {{ visibility: hidden; }}
+  /* A chart is never scaled below its own viewBox, because that is the only way a label
+     inside one has a size floor at all - see `_svg`. Past that width the container
+     scrolls; the type does not shrink. */
+  [data-testid="stMarkdownContainer"] {{ overflow-x: auto; }}
 
   /* ── the starfield ───────────────────────────────────────────────────── */
   .gb-stars {{
@@ -2194,32 +2279,40 @@ def stylesheet() -> str:
       gap: .8rem; padding: .5rem 0 .7rem;
   }}
   .gb-label {{
-      font-size: 9px; letter-spacing: .16em; text-transform: uppercase; color: {DIM};
+      font-size: {TYPE_LABEL}px; letter-spacing: {TRACK_LABEL}em;
+      text-transform: uppercase; color: {DIM};
   }}
   .gb-sub-rule {{ border-top: 1px solid {RULE}; margin: .9rem 0; }}
+  /* A region note is a sentence, not a label: no tracking, and prose leading. It was
+     set at 9px with .1em of it, which is a caption styled like a chip. */
   .gb-note {{
-      font-size: 9px; letter-spacing: .1em; color: {DIM}; padding-top: .6rem;
+      font-size: {TYPE_LABEL}px; line-height: {LEADING_UI}; color: {DIM};
+      padding-top: .6rem;
   }}
 
   /* ── type scale ──────────────────────────────────────────────────────── */
-  .gb-body, .gb-meta {{ font-size: 11.5px; color: {TEXT}; }}
+  .gb-body, .gb-meta {{ font-size: {TYPE_BODY}px; color: {TEXT}; }}
   .gb-meta {{ color: {DIM}; }}
-  .gb-emph {{ font-size: 13px; }}
+  .gb-emph {{ font-size: {TYPE_PROSE}px; }}
   .gb-figure {{
-      font-size: 26px; font-weight: 500; letter-spacing: -.01em; line-height: 1.1;
+      font-size: {TYPE_FIGURE}px; font-weight: 500;
+      letter-spacing: {TRACK_FIGURE}em; line-height: {LEADING_FIGURE};
   }}
 
   /* ── the source pill ─────────────────────────────────────────────────── */
   .gb-pill {{
-      border: 1px solid; padding: .05rem .45rem; font-size: 9px; letter-spacing: .14em;
-      white-space: nowrap; border-radius: 0;
+      border: 1px solid; padding: .1rem .45rem; font-size: {TYPE_LABEL}px;
+      letter-spacing: {TRACK_LABEL}em; white-space: nowrap; border-radius: 0;
   }}
-  .gb-pill-detail {{ color: {DIM}; letter-spacing: .08em; margin-left: .4rem; }}
+  /* Inherits the pill's tracking rather than restating it: the detail is the same run of
+     text at the same size, and a second value here could only ever drift from the first. */
+  .gb-pill-detail {{ color: {DIM}; margin-left: .4rem; }}
 
   /* ── tables and the row language ─────────────────────────────────────── */
-  .gb-table {{ width: 100%; border-collapse: collapse; font-size: 11.5px; }}
+  .gb-table {{ width: 100%; border-collapse: collapse; font-size: {TYPE_BODY}px; }}
   .gb-table th {{
-      text-align: left; font-size: 9px; letter-spacing: .20em; text-transform: uppercase;
+      text-align: left; font-size: {TYPE_LABEL}px; letter-spacing: {TRACK_LABEL}em;
+      text-transform: uppercase;
       color: {DIM}; font-weight: 400; padding: .3rem .6rem .5rem;
       border-bottom: 1px solid {RULE};
   }}
@@ -2244,23 +2337,30 @@ def stylesheet() -> str:
   .gb-row-accent td:first-child {{ border-left: 2px solid {ACCENT}; }}
 
   /* ── staleness ───────────────────────────────────────────────────────── */
-  .gb-stale {{ color: {DIM}; font-size: 9px; letter-spacing: .12em; }}
-  .gb-not-responding {{ color: {LOSS}; font-size: 9px; letter-spacing: .12em; }}
+  .gb-stale {{
+      color: {DIM}; font-size: {TYPE_LABEL}px; letter-spacing: {TRACK_LABEL}em;
+  }}
+  .gb-not-responding {{
+      color: {LOSS}; font-size: {TYPE_LABEL}px; letter-spacing: {TRACK_LABEL}em;
+  }}
+  /* A sentence about what a region does not have. Prose leading, no tracking. */
   .gb-empty {{
-      color: {DIM}; font-size: 11.5px; padding: 1.6rem 0; letter-spacing: .06em;
+      color: {DIM}; font-size: {TYPE_BODY}px; line-height: {LEADING_UI};
+      padding: 1.6rem 0;
   }}
 
   /* ── the status strip ────────────────────────────────────────────────── */
   .gb-strip {{ display: flex; flex-wrap: wrap; gap: 20px; align-items: baseline; }}
   .gb-stat-key {{
-      font-size: 9px; letter-spacing: .16em; text-transform: uppercase; color: {DIM};
-      margin-right: .4rem;
+      font-size: {TYPE_LABEL}px; letter-spacing: {TRACK_LABEL}em;
+      text-transform: uppercase; color: {DIM}; margin-right: .4rem;
   }}
-  .gb-stat-value {{ font-size: 11.5px; color: {TEXT}; }}
+  .gb-stat-value {{ font-size: {TYPE_BODY}px; color: {TEXT}; }}
 
   /* ── the narrative keeps its own stack and its RTL rule ──────────────── */
   .gb-narrative {{
-      font-family: {HEBREW_SANS}; font-size: 12.5px; line-height: 1.6; color: {TEXT};
+      font-family: {HEBREW_SANS}; font-size: {TYPE_PROSE}px;
+      line-height: {LEADING_PROSE}; color: {TEXT};
       border-left: 2px solid {ACCENT}; padding: .2rem 0 .2rem .8rem;
   }}
   .gb-narrative[dir="rtl"] {{
@@ -2273,7 +2373,7 @@ def stylesheet() -> str:
       background: transparent; border: none; border-top: 1px solid {RULE_FAINT};
       border-radius: 0;
   }}
-  [data-testid="stExpander"] summary {{ color: {TEXT}; font-size: 11.5px; }}
+  [data-testid="stExpander"] summary {{ color: {TEXT}; font-size: {TYPE_BODY}px; }}
   [data-testid="stExpander"] summary:hover {{ color: {ACCENT}; }}
   [data-testid="stExpander"] summary svg {{ fill: {DIM}; }}
   [data-testid="stExpander"] details > div {{ background: transparent; border: none; }}
@@ -2281,7 +2381,8 @@ def stylesheet() -> str:
   /* ── buttons ─────────────────────────────────────────────────────────── */
   .stButton > button {{
       background: transparent; color: {TEXT}; border: 1px solid {RULE};
-      border-radius: 0; font-family: {MONO}; font-size: 11.5px; letter-spacing: .08em;
+      border-radius: 0; font-family: {MONO}; font-size: {TYPE_BODY}px;
+      letter-spacing: {TRACK_LABEL}em;
       width: 100%;
   }}
   .stButton > button:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}

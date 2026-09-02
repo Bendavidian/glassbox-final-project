@@ -18,6 +18,16 @@ from glassbox.dashboard import tokens
 #: WCAG AA for body text.
 AA = 4.5
 
+#: WCAG AAA for body text. `DIM` is held to this rather than to AA because it carries
+#: every label, column head and chart caption on the page - the text a reader scans
+#: rather than reads, and the text six report screenshots are full of.
+AAA = 7.0
+
+#: The floor `DIM` must keep *away* from `TEXT`. Contrast against the ground says each is
+#: legible; it does not say they are legible as two different things, and a palette that
+#: fixed legibility by collapsing its own hierarchy would pass every other test here.
+SECONDARY_SEPARATION = 2.0
+
 #: The starfield's requirement is the OPPOSITE of the text's. A test that only checked
 #: "bright enough" would happily pass a field bright enough to read beside a numeral.
 INVISIBLE = 2.0
@@ -91,3 +101,55 @@ def test_gain_and_loss_are_distinguishable_from_each_other() -> None:
     """They sit side by side in a table and mean opposite things. Contrast against the
     ground says each is legible; it does not say they are legible *apart*."""
     assert tokens.contrast_ratio(tokens.GAIN, tokens.LOSS) > 1.5
+
+
+def test_the_secondary_text_colour_clears_aaa_against_the_ground() -> None:
+    """**Raised in the GB-63d typography pass, and this is the assertion that holds it.**
+
+    `DIM` was `#7D8794` at 5.19:1 - AA, and set at 9px on a near-black ground for every
+    label on the page. AA is measured on colour alone and knows nothing about size, so the
+    palette test above passed while the thing it was protecting was unreadable in print.
+    The size floor is enforced elsewhere; this is the colour half of the same repair.
+    """
+    ratio = tokens.contrast_ratio(tokens.DIM, tokens.GROUND)
+
+    assert ratio >= AAA, f"DIM is {ratio:.2f}:1 against the ground, below AAA"
+
+
+def test_the_secondary_text_colour_stays_apart_from_the_primary() -> None:
+    """The other direction, and it is not implied by the first.
+
+    Raising `DIM` far enough would clear any contrast floor by making it `TEXT`, at which
+    point the console has one text colour and no hierarchy - and every ratio in this module
+    would still be green. Both bounds are asserted because only the pair says what was
+    actually wanted.
+    """
+    ratio = tokens.contrast_ratio(tokens.DIM, tokens.TEXT)
+
+    assert ratio >= SECONDARY_SEPARATION, (
+        f"DIM and TEXT are {ratio:.2f}:1 apart - secondary text has stopped reading as "
+        "a different thing from primary"
+    )
+
+
+@pytest.mark.parametrize("step", tokens.TYPE_STEPS)
+def test_no_step_of_the_type_scale_is_below_the_floor(step: int) -> None:
+    """The floor is the point of the scale, so it is asserted on the scale itself rather
+    than on the stylesheet that spends it. A step added below 12 fails here, before any
+    rule uses it."""
+    assert (
+        step >= tokens.TYPE_FLOOR
+    ), f"{step}px is below the {tokens.TYPE_FLOOR}px floor"
+
+
+def test_the_type_scale_has_no_more_steps_than_a_reader_can_hold() -> None:
+    """**Five is the brief's number and four is what the console needed.**
+
+    The guard is on the count rather than on the values: a scale grows one convenient
+    exception at a time, and the next size is always the one nobody decided to add.
+    """
+    assert len(tokens.TYPE_STEPS) <= 5
+    assert len(set(tokens.TYPE_STEPS)) == len(
+        tokens.TYPE_STEPS
+    ), "two steps of the scale are the same size, which makes one of them a duplicate name"
+    assert list(tokens.TYPE_STEPS) == sorted(tokens.TYPE_STEPS), "the scale is ordered"

@@ -20,13 +20,20 @@ token        hex        ratio
 ===========  =========  ========
 ``TEXT``     ``#F0F3F7``  16.99
 ``GAIN``     ``#22C55E``   8.30
-``DIM``      ``#7D8794``   5.19
+``DIM``      ``#9AA2AC``   7.33
 ``ACCENT``   ``#E8542A``   5.16
 ``LOSS``     ``#EF4444``   5.03
 ``STAR_B``   ``#3A4551``   1.94
 ``STAR_A``   ``#2E3742``   1.57
 ``RULE``     ``#202832``   1.27
 ===========  =========  ========
+
+``DIM`` clears **AAA for body text (7:1)** rather than AA, because every label it
+carries is chrome and chrome is what a reader scans rather than reads. Raising it costs
+separation from ``TEXT``: the two sit at **2.32:1** against each other, which is a visible
+step down and is asserted rather than eyeballed. Both directions are pinned, because
+raising it further would eventually make secondary text indistinguishable from primary and
+the palette would have solved legibility by deleting the hierarchy.
 
 **Vermillion is chrome and never a value.** Section rules, active states, the symbol
 column, selection. Gain and loss carry value. A number is never vermillion and a rule is
@@ -40,7 +47,12 @@ from __future__ import annotations
 GROUND = "#0E1116"
 
 TEXT = "#F0F3F7"
-DIM = "#7D8794"
+
+#: Raised from ``#7D8794`` (5.19:1) in the GB-63d legibility pass. It carries every
+#: label, column head and chart caption on the page, and at 5.19 those were AA-passing and
+#: still hard to read at the size they were set. See the module docstring for the
+#: separation this costs against :data:`TEXT`.
+DIM = "#9AA2AC"
 
 #: Chrome only. See the module docstring.
 ACCENT = "#E8542A"
@@ -68,6 +80,63 @@ STAR_TOKENS = (STAR_A, STAR_B)
 #: Rules are neither - they are structure, not information, and are excluded from both
 #: assertions deliberately rather than by omission.
 RULE_TOKENS = (RULE, RULE_FAINT)
+
+# ── the type scale ───────────────────────────────────────────────────────────
+#
+# **Four steps, and every size on the page is one of them.** Before this pass the console
+# had eight - 7, 8, 9, 11, 11.5, 12.5, 13 and 26, five of them under 12px - and four were
+# written as bare integers at SVG call sites, where nothing could see them together. Sizes
+# chosen one call at a time are the two-places family in its most diffuse form: no two
+# disagree, because no two are ever compared, and the scale exists only as an average of
+# forty independent decisions.
+#
+# The steps are px in CSS and **user units in SVG**, which are the same number only while a
+# chart is drawn at or above its own viewBox width. :func:`app._svg` holds that with a
+# `min-width`, so a narrow window scrolls rather than shrinking the type below the floor.
+
+#: Uppercase chrome: region labels, column heads, source pills, captions, staleness, and
+#: every label inside a chart.
+TYPE_LABEL = 12
+
+#: Values and running text: table cells, status-strip values, buttons, and the readouts a
+#: chart prints against its own curve.
+TYPE_BODY = 14
+
+#: Sentences. The Hebrew narrative and the Co-Pilot recommendation line.
+TYPE_PROSE = 16
+
+#: The one large number on the page - the decider's reliability gap.
+TYPE_FIGURE = 30
+
+#: Walked by ``test_no_step_of_the_type_scale_is_below_the_floor``.
+TYPE_STEPS = (TYPE_LABEL, TYPE_BODY, TYPE_PROSE, TYPE_FIGURE)
+
+#: **Nothing on the page renders below this.** 9px cleared AA against the ground on a
+#: contrast measurement that knows nothing about size, and six of these screenshots go
+#: into a printed report where AA at 9px is not a readable line.
+TYPE_FLOOR = 12
+
+#: Prose leading. Anything a reader reads as sentences takes at least :data:`LEADING_UI`;
+#: the narrative takes more because it is the only multi-line block of sentences on the page.
+LEADING_PROSE = 1.6
+
+#: The base, set here rather than inherited. Streamlit supplies a line-height to anything
+#: that does not state one, so leaving it unset made the leading of the entire console a
+#: property of a dependency's theme.
+LEADING_UI = 1.5
+
+#: A single large numeral needs no leading and gets less than one line of it.
+LEADING_FIGURE = 1.1
+
+#: Tracking for uppercase chrome, in em. Uppercase set tight is a solid block; this is the
+#: one value, replacing .06/.08/.10/.12/.14/.16/.20 chosen per rule. In SVG it is applied
+#: as ``size * TRACK_LABEL`` rather than as a constant, so a small label no longer receives
+#: proportionally more tracking than a large one - which is what a fixed 1.2 user units did.
+TRACK_LABEL = 0.14
+
+#: Large numerals close up on their own. Negative, and the only negative tracking here.
+TRACK_FIGURE = -0.01
+
 
 #: One family, terminal. IBM Plex Mono is loaded from Google Fonts by the stylesheet; the
 #: rest of the stack is what a font failure degrades to rather than breaks on.
@@ -106,6 +175,9 @@ __all__ = [
     "GAIN",
     "GROUND",
     "HEBREW_SANS",
+    "LEADING_FIGURE",
+    "LEADING_PROSE",
+    "LEADING_UI",
     "LOSS",
     "MONO",
     "RULE",
@@ -116,6 +188,14 @@ __all__ = [
     "STAR_TOKENS",
     "TEXT",
     "TEXT_TOKENS",
+    "TRACK_FIGURE",
+    "TRACK_LABEL",
+    "TYPE_BODY",
+    "TYPE_FIGURE",
+    "TYPE_FLOOR",
+    "TYPE_LABEL",
+    "TYPE_PROSE",
+    "TYPE_STEPS",
     "contrast_ratio",
     "relative_luminance",
 ]

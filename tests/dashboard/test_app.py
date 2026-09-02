@@ -10,10 +10,12 @@ and that orange never leaks into a data mark.
 from __future__ import annotations
 
 import csv
+import html
 import inspect
 import json
 import math
 import re
+import tokenize
 from pathlib import Path
 
 import numpy as np
@@ -26,7 +28,7 @@ from glassbox.contracts.schemas import (
     Forecast,
     Signal,
 )
-from glassbox.dashboard import app
+from glassbox.dashboard import app, tokens
 from glassbox.engine.reconcile import Book, Holding
 from glassbox.engine.signal import ENTER_LONG, HOLD, Thresholds
 from glassbox.explain.channel import cancellation, shares
@@ -827,23 +829,37 @@ def test_the_expander_title_carries_the_trend_and_the_flag() -> None:
 
 def test_the_band_note_sits_below_the_plot_area_not_over_it() -> None:
     """The note used to be drawn at the same height as the NOW marker and across the price
-    line. Chrome does not compete with data for pixels in this design."""
+    line. Chrome does not compete with data for pixels in this design.
+
+    **The boundary is read off the chart, not restated here.** This test carried
+    ``plot_bottom = 250 - 30`` - a copy of `forecast_svg`'s height and strip - and the
+    typography pass moved both to make room for 12px annotations. The test failed, and it
+    failed for a reason that had nothing to do with what it asserts: the chart was still
+    correct and the copy was stale. The separator the chart already draws between the plot
+    and the annotation strip *is* the boundary, so it is what the assertion uses.
+    """
     import re
 
     svg = app.forecast_svg(
         HISTORY, app.price_path(103.5, [0.004]), Thresholds.never(), "AAPL"
     )
-    plot_bottom = 250 - 30  # height less the strip
+    # The plot/strip separator is the only full-width dashed hairline this chart
+    # draws, so it is findable without knowing where the strip begins.
+    separator = re.search(
+        '<line x1="0.0" y1="([0-9.]+)"[^>]*stroke-dasharray="2 4"', svg
+    )
+    assert separator is not None, "the chart drew no plot/strip separator"
+    boundary = float(separator.group(1))
 
     note = re.search(r'<text x="[\d.]+" y="([\d.]+)"[^>]*>NO CALIBRATED BAND', svg)
     assert note is not None
-    assert float(note.group(1)) > plot_bottom
+    assert float(note.group(1)) > boundary
 
     polylines = re.findall(r'points="([^"]+)"', svg)
     drawn = [
         float(point.split(",")[1]) for line in polylines for point in line.split(" ")
     ]
-    assert max(drawn) <= plot_bottom
+    assert max(drawn) <= boundary
 
 
 def test_the_chart_scales_to_its_container_rather_than_being_letterboxed() -> None:
@@ -1902,3 +1918,236 @@ def test_the_forecast_is_dashed_in_the_direction_it_predicts() -> None:
     assert app.GAIN in rising and app.LOSS not in rising
     assert app.LOSS in falling and app.GAIN not in falling
     assert app.DIM in rising, "the price history is context, not a value"
+
+
+# ── GB-63d: the type scale ───────────────────────────────────────────────────
+#
+# **The whole point of a scale is that it can be checked in one place.** Before this pass
+# the console set type at eight sizes - 7, 8, 9, 11, 11.5, 12.5, 13 and 26 - four of them
+# written as bare integers at SVG call sites, where no reviewer and no test ever saw two
+# of them together. That is the two-places family at its most diffuse: no two of the eight
+# disagreed, because no two were ever compared, and the scale existed only as an average
+# of forty independent decisions.
+#
+# **These guards measure the rendered output, not the files that produce it.** The sizes
+# above can be written down here, and `size=9` can be written in a comment in `app.py`,
+# without moving a single assertion - which is the property the three previous versions of
+# this mistake did not have.
+
+#: Advance width of one monospace character, as a fraction of the em. IBM Plex Mono is
+#: 0.6; every fallback in the stack is at or below it, so a label that fits at 0.6 fits in
+#: whatever the browser actually loaded.
+MONO_ADVANCE = 0.60
+
+#: How far the type extends above the baseline and below it, as fractions of the em.
+#: Generous on both sides - the assertion should fail before a glyph is clipped.
+ASCENT, DESCENT = 0.80, 0.25
+
+_TEXT = re.compile(
+    '<text x="([-0-9.]+)" y="([-0-9.]+)" fill="[^"]*" font-size="([0-9]+)"'
+    ' font-family="[^"]*" letter-spacing="[-0-9.]+" text-anchor="([a-z]+)">(.*?)</text>'
+)
+
+
+def _labels(svg: str):
+    """``(size, text, x0, x1, top, bottom)`` for every label, in viewBox units."""
+    for match in _TEXT.finditer(svg):
+        x, y = float(match.group(1)), float(match.group(2))
+        size, anchor = int(match.group(3)), match.group(4)
+        text = html.unescape(match.group(5))
+        width = len(text) * size * (MONO_ADVANCE + app.TRACK_LABEL)
+        if anchor == "start":
+            x0 = x
+        elif anchor == "end":
+            x0 = x - width
+        else:
+            x0 = x - width / 2
+        yield size, text, x0, x0 + width, y - size * ASCENT, y + size * DESCENT
+
+
+def _every_chart() -> dict[str, str]:
+    """One rendering of every chart the console draws, including the shapes that appear
+    only when something is wrong - a truncated calendar, a band that cannot fire, a
+    response with too few points to plot. Those carry the longest strings on the page and
+    are exactly the ones nobody looks at before taking a screenshot."""
+    reference = app.reference_rows(app.load_results())
+    daily = app.load_daily_equity()
+    row = app.PositionRow(
+        "AAPL", 1.0, 100.0, 97.0, True, stop_loss=94.0, take_profit=112.0
+    )
+    spectral = a_spectral_attribution()
+    return {
+        "equity_svg": _equity([100.0, 101.0, 99.0]),
+        "equity_svg flat": _equity([100.0, 100.0, 100.0]),
+        "countdown_svg full": app.countdown_svg(60, 60),
+        "countdown_svg spent": app.countdown_svg(0, 60),
+        "sparkline_svg": app.sparkline_svg(HISTORY, row),
+        "radar_svg": app.radar_svg(reference, "dlinear"),
+        "cumulative_equity_svg": app.cumulative_equity_svg(daily, "dlinear"),
+        "fold_bars_svg": app.fold_bars_svg(reference, "dlinear"),
+        "calendar_svg": app.calendar_svg(a_daily_frame(folds=3), "dlinear"),
+        "calendar_svg truncated": app.calendar_svg(a_daily_frame(folds=40), "dlinear"),
+        "forecast_svg": app.forecast_svg(
+            HISTORY, app.price_path(103.5, [0.01]), Thresholds(lower=0.004), "AAPL"
+        ),
+        "forecast_svg no band": app.forecast_svg(
+            HISTORY, app.price_path(103.5, [0.004]), Thresholds.never(), "AAPL"
+        ),
+        "contributions_svg": app.contributions_svg(
+            an_attribution(close_logret=0.08, rsi14=-0.06, ma_dist20=0.03)
+        ),
+        "spectral_svg": app.spectral_svg(spectral),
+        "gain_phase_svg": app.gain_phase_svg(spectral),
+        "response_svg": app.response_svg(
+            [8.0, 12.0, 24.0, 120.0], [0.22, 0.41, 0.83, 0.0]
+        ),
+        "response_svg thin": app.response_svg([12.0], [0.4]),
+    }
+
+
+def test_every_size_in_the_stylesheet_is_a_step_of_the_scale() -> None:
+    """Read off the **rendered** CSS, not the source. A guard on the source counts what a
+    file contains, and this project has shipped three of those - a 200-character slice and
+    two occurrence counts, all broken by somebody explaining the code underneath them.
+    What the browser receives is the thing being claimed."""
+    css = app.stylesheet()
+
+    sizes = {float(v) for v in re.findall("font-size:[ ]*([0-9.]+)px", css)}
+    leadings = {float(v) for v in re.findall("line-height:[ ]*([0-9.]+)", css)}
+    tracking = {float(v) for v in re.findall("letter-spacing:[ ]*(-?[0-9.]+)em", css)}
+
+    assert sizes <= set(tokens.TYPE_STEPS), f"off-scale sizes: {sorted(sizes)}"
+    assert leadings <= {
+        tokens.LEADING_UI,
+        tokens.LEADING_PROSE,
+        tokens.LEADING_FIGURE,
+    }, f"off-scale leading: {sorted(leadings)}"
+    assert tracking <= {
+        tokens.TRACK_LABEL,
+        tokens.TRACK_FIGURE,
+    }, f"off-scale tracking: {sorted(tracking)}"
+
+
+def test_the_page_states_its_own_leading_rather_than_inheriting_it() -> None:
+    """Every size on this page was set and no leading was, so the line spacing of the whole
+    console was whatever Streamlit's theme supplied - a typographic decision taken by a
+    dependency, and invisible until the dependency changes it."""
+    css = app.stylesheet()
+
+    base = css.split(".block-container")[0]
+
+    assert f"line-height: {tokens.LEADING_UI}" in base, "the base sets no leading"
+    assert tokens.LEADING_UI >= 1.5, "prose leading is the floor, not an aspiration"
+    assert tokens.LEADING_PROSE >= tokens.LEADING_UI
+
+
+def test_no_chart_writes_a_size_at_its_call_site() -> None:
+    """A bare `size=9` in a chart builder is a size nothing can see beside the other seven.
+
+    Asserted as a property of the code rather than as a count of anything: a literal is
+    forbidden outright, so a new chart cannot introduce one and no number here needs
+    updating when a chart is added.
+
+    **Comments and docstrings are stripped first, and that is the whole point.** Scanning
+    raw source would mean the sentence *explaining* why `size=9` was removed reintroduces
+    it - documentation becomes a hazard, and the cheapest way to go green is to delete the
+    explanation. This project has shipped that defect three times in three costumes: a
+    fixed character offset, an occurrence count, and a count inflated by the comment
+    introducing the thing it counted. `tokenize` is the boundary that separates what the
+    interpreter runs from what a person wrote about it.
+    """
+    code = []
+    with tokenize.open(app.__file__) as handle:
+        for token in tokenize.generate_tokens(handle.readline):
+            if token.type not in (tokenize.COMMENT, tokenize.STRING):
+                code.append(token.string)
+    literals = re.findall("size=[0-9]", "".join(code).replace(" ", ""))
+
+    assert not literals, f"{len(literals)} literal type sizes at call sites"
+
+
+def test_no_chart_label_falls_below_the_type_floor() -> None:
+    """**The floor has to hold inside a chart too, and that is where it did not.**
+
+    SVG text is sized in user units, so a label's size on screen is its authored size times
+    the ratio of drawn width to viewBox width - which means a chart that scales freely has
+    no floor at all. `_svg` pins the drawn width at or above the viewBox width, so a user
+    unit is at least a pixel; this asserts the other half, that no chart authors a label
+    below the floor to begin with.
+    """
+    for name, svg in _every_chart().items():
+        assert svg, f"{name} rendered nothing, so this test asserted nothing about it"
+        for size, text, *_ in _labels(svg):
+            assert size >= tokens.TYPE_FLOOR, (
+                f"{name} sets {text[:40]!r} at {size} units, below the "
+                f"{tokens.TYPE_FLOOR}px floor"
+            )
+
+
+def test_no_chart_label_is_drawn_outside_its_own_chart() -> None:
+    """**Raising the type is what makes this necessary, so it arrives with it.**
+
+    Every size on this page went up by three to five units, and a label that fitted at 8
+    does not necessarily fit at 12: the radar's axis values, the calendar's weekday ruler
+    and the spectral panel's dead-bin labels all had to be given room. A chart whose text
+    runs off its own canvas is clipped in silence - it renders, it looks deliberate, and
+    the missing half of a caption is visible only to somebody who knew what it said.
+    """
+    escaped = []
+    for name, svg in _every_chart().items():
+        box = re.search('viewBox="0 0 ([0-9]+) ([0-9]+)"', svg)
+        assert box is not None, f"{name} drew no viewBox"
+        edge_x, edge_y = int(box.group(1)), int(box.group(2))
+        for _, text, x0, x1, top, bottom in _labels(svg):
+            if x0 < 0 or x1 > edge_x or top < 0 or bottom > edge_y:
+                escaped.append(
+                    f"{name}: {text[:44]!r} spans x {x0:.0f}..{x1:.0f} of {edge_x}, "
+                    f"y {top:.0f}..{bottom:.0f} of {edge_y}"
+                )
+
+    assert not escaped, "labels drawn outside their chart: " + " | ".join(escaped)
+
+
+def test_a_chart_never_scales_below_the_viewbox_its_type_is_measured_in() -> None:
+    """The mechanism behind the floor, asserted rather than described.
+
+    Without it the floor is a statement about authored user units and says nothing about
+    what a reader sees: at 1400 units in a 1000px column a 12-unit label is 8.6px. Deleting
+    the `min-width` would leave every other test in this file green.
+    """
+    svg = app.countdown_svg(30, 60)
+
+    opening = svg[: svg.index(">") + 1]
+
+    assert "min-width:460px" in opening, "the chart can scale below its own viewBox"
+    assert 'width="100%"' in opening, "and it must still grow to fill a wide column"
+
+
+def test_the_charts_and_the_page_set_type_in_one_family() -> None:
+    """`_text` wrote its own font stack and IBM Plex Mono was not in it. Every chart label
+    set in the system monospace while the page around it set in Plex - on a console whose
+    stylesheet asserts one family, in the charts that fill six report screenshots."""
+    svg = app.countdown_svg(30, 60)
+
+    assert f'font-family="{tokens.MONO}"' in svg
+    assert tokens.MONO in app.stylesheet()
+
+
+def test_chart_tracking_is_a_fraction_of_the_size_not_a_constant() -> None:
+    """A fixed 1.2 user units is 17% of the em at size 7 and 11% at size 11, so the
+    smallest labels - already the hardest to read - were tracked half again as loosely as
+    the largest. The relationship is now the stylesheet's, in both directions."""
+    svg = _equity([100.0, 101.0])
+
+    pairs = {
+        (int(size), float(track))
+        for size, track in re.findall(
+            'font-size="([0-9]+)" font-family="[^"]*" letter-spacing="([-0-9.]+)"', svg
+        )
+    }
+
+    assert (
+        len(pairs) > 1
+    ), "this chart draws one size, so it cannot show the relationship"
+    for size, track in pairs:
+        assert track == pytest.approx(size * tokens.TRACK_LABEL, abs=0.01)
