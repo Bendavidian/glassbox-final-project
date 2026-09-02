@@ -141,6 +141,35 @@ so the rule can be audited rather than trusted.
 > The honest version of the claim is *"no arm beats always-long on twenty large US
 > survivors"*, and the always-long bar is itself inflated by the same selection.
 
+> **The five criteria are an admissibility filter, not a selection procedure, and the
+> difference is where the hindsight actually sits.** Every one of the twenty passes all
+> five; the twenty do not *follow* from them. The criteria admit several hundred US large
+> caps with complete history from 2016, and returning exactly twenty of those needs a step
+> this rule does not contain. **Criterion 4 is where that shows.** "Large capitalisation at
+> the selection date" states no threshold, no ranking, no source and no date, so it cannot
+> be executed against a candidate list and cannot produce a set — it can only justify one
+> already drawn. The exclusion table below is a record of near-misses from a shortlist
+> rather than an audit of the admissible pool: **`AVGO`, `ORCL`, `KO` and `PEP` satisfy all
+> five criteria and appear nowhere in this section**, neither admitted nor excluded, and
+> they are four of many. The step from *admissible* to *these twenty* was judgment, and it
+> is a limitation of this universe rather than a property of the rule. **No threshold is
+> invented here to close the gap**, deliberately: a rule written to fit names already
+> chosen is hindsight with better grammar, and it would read as a derivation while being a
+> rationalisation.
+>
+> **Criterion 3 encodes survivorship bias by construction**, and says so outright rather
+> than implying it — "no suspension, no delisting" admits only securities that were
+> continuously tradable through to the cache's last bar, which is knowable only in 2026;
+> criterion 2 does the same for listing date. **The consequence has a direction, and it
+> belongs beside every number this universe produces:** the `buy_and_hold` arm is biased
+> **upward**, because a basket of twenty companies selected for having survived and stayed
+> large cannot contain the ones that did not, and the always-long direction bar is inflated
+> the same way. **Model arms are reported as deltas against those references**, so the bias
+> sits inside the reference each arm is measured against rather than being quietly removed
+> — an arm beating a survivor-inflated buy-and-hold is a stronger claim than the same arm
+> beating an unbiased one, and §7 must not let twenty symbols read as more general than
+> five.
+
 **The rule applied, 24 August 2026.** Twenty admitted, in the order they were considered:
 
 | # | Symbol | | # | Symbol | | # | Symbol | | # | Symbol |

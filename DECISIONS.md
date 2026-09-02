@@ -5208,6 +5208,53 @@ unattended**; it is a claim that two short ones cost two cycles. GB-57 says whic
 
 ---
 
+## 2026-09-02 — §2.4 states what its rule does not do, and one clause in it is not a mechanism
+
+**Decision.** GB-61's universe flip lands with §2.4 amended to say, in the document rather
+than in a review comment, that the five criteria are an **admissibility filter and not a
+selection procedure**. Every one of the twenty passes all five; the twenty do not follow
+from them. The criteria admit several hundred US large caps with complete history from
+2016, and criterion 4 — "large capitalisation at the selection date" — states no
+threshold, no ranking, no source and no date, so it cannot be executed against a candidate
+list at all. `AVGO`, `ORCL`, `KO` and `PEP` satisfy all five and appear nowhere in the
+section, neither admitted nor excluded; they are four of many. The step from *admissible*
+to *these twenty* was judgment, and §2.4 now names it as a limitation of this universe.
+
+**No threshold was invented to close the gap, and the refusal is written into the
+document** so the next reader who notices the gap knows it was left open deliberately. A
+rule written to fit names already chosen is hindsight with better grammar: it would read as
+a derivation while being a rationalisation, and it would be *harder* to audit than the
+honest admission, because the numbers would look derived.
+
+**Criterion 3 is survivorship bias by construction and now says so.** "No suspension, no
+delisting" admits only securities continuously tradable through to the cache's last bar,
+which is knowable only in 2026. The consequence has a direction and it is stated: the
+`buy_and_hold` arm is biased **upward**, the always-long direction bar with it, and model
+arms are reported as deltas against those references — so the bias sits inside the
+reference each arm is measured against rather than being quietly removed.
+
+**One clause in that paragraph is a description and not a mechanism, and GB-57 inherits it
+as such.** The sentence *"§7 must not let twenty symbols read as more general than five"*
+is an instruction to a future writer, sitting inside a document, enforced by nobody. By
+this project's own central rule it is a record of an intention: nothing fails if §7 is
+written without it. It is kept because the intent is right and losing it costs more than
+the honesty of labelling it, but **it must be inherited as a known unenforced intent rather
+than as a guarantee** — if GB-57's chapter reads as though twenty symbols generalise, no
+test will say so, and the only thing standing between the report and that error is somebody
+remembering this line. Recorded here so that "somebody remembering" is at least written
+down where the writer of §7 will look.
+
+**What *is* a mechanism, added the same day.** Three written copies of the twenty names now
+sit in two files — `settings.yaml`, the spec's §5 settings block, and §2.4's rule-applied
+table — plus §2's count claim, and until today nothing held any of them equal. §2 line 75
+read "20 symbols" while the §5 block still listed five, and that contradiction survived
+unseen because no check has ever parsed the spec.
+`test_every_universe_written_in_the_spec_matches_the_configuration` now parses it and
+compares every copy against `load_config()`, unskippable and with the copy count asserted
+so a parser that matches nothing cannot pass for having checked nothing.
+
+---
+
 ## 2026-09-02 — The invocation the honesty rule names could not run, and is now CI's
 
 **The finding.** `pytest`, bare, from the repository root, exited **2** with
