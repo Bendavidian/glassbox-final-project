@@ -609,3 +609,81 @@ def test_every_config_section_is_classified_as_shaping_or_not() -> None:
         "not shaping a trained weight. Classify it: if a weight can depend on it, it "
         "belongs in the model hash and every checkpoint must be retrained"
     )
+
+
+# ── the spec's copies of the universe ────────────────────────────────────────
+
+#: The spec, read as text. **No missing-file guard, deliberately**: if this file is gone
+#: the copies cannot be checked, and a test that skips when it cannot check is the defect
+#: this one exists to close.
+SPEC = Path(__file__).resolve().parents[2] / "docs" / "GLASSBOX_PROJECT_SPEC.md"
+
+#: `universe: [A, B, C]` - the mirrored §5 settings block.
+SETTINGS_BLOCK = re.compile(r"^universe: \[([^\]]+)\]$", re.MULTILINE)
+
+#: One `| 3 | `NVDA` |` cell of §2.4's four-column table. The exclusion table below it
+#: writes the ticker first and the criterion second, so this shape does not match it.
+NUMBERED_CELL = re.compile(r"\|\s*(\d+)\s*\|\s*`([A-Z][A-Z.]*)`\s*\|")
+
+#: §2's count claim. It said 20 while the settings block still said 5, unseen, until
+#: GB-61 stage 2 - which is the divergence this whole test exists because of.
+COUNT_CLAIM = re.compile(r"Fixed universe: \*\*(\d+) symbols\*\*")
+
+#: What the parser must find. **Asserted explicitly**, because a parser that silently
+#: matches nothing gives a test that passes by having checked nothing.
+SPEC_COPIES = ("settings block 1", "rule-applied table")
+
+
+def universes_in(text: str) -> dict[str, tuple[str, ...]]:
+    """Every written list of the universe in the spec, keyed by where it is written.
+
+    The rule-applied table is bounded to its own section rather than scanned for
+    globally: `str.index` raises if either marker moves, which is the correct outcome -
+    a parser that quietly finds nothing is worse than one that fails loudly.
+    """
+    copies = {
+        f"settings block {index}": tuple(
+            symbol.strip() for symbol in match.group(1).split(",")
+        )
+        for index, match in enumerate(SETTINGS_BLOCK.finditer(text), start=1)
+    }
+    start = text.index("**The rule applied")
+    end = text.index("**Excluded candidates", start)
+    numbered = {int(n): ticker for n, ticker in NUMBERED_CELL.findall(text[start:end])}
+    copies["rule-applied table"] = tuple(numbered[index] for index in sorted(numbered))
+    return copies
+
+
+def test_every_universe_written_in_the_spec_matches_the_configuration() -> None:
+    """**Three copies of the universe live in two files and nothing held them equal.**
+
+    On 2 Sep 2026 §2 line 75 read "20 symbols" while the §5 settings block still listed
+    five, and §2.4's table listed twenty. The spec contradicted itself and had done since
+    before anyone noticed, because no check has ever parsed this document. `settings.yaml`
+    is the only copy the suite could see, through a tuple pinned by hand in
+    `test_default_config_values_match_the_spec`.
+
+    This reads the spec and compares every copy against `load_config()`. It is deliberately
+    unskippable: a missing spec file raises rather than skipping, and the copy count is
+    asserted so a parser that matched nothing cannot pass for having checked nothing.
+    """
+    cfg = load_config()
+    text = SPEC.read_text(encoding="utf-8")
+
+    copies = universes_in(text)
+
+    assert tuple(sorted(copies)) == tuple(
+        sorted(SPEC_COPIES)
+    ), f"expected {SPEC_COPIES}, parsed {tuple(sorted(copies))}"
+    for where, symbols in copies.items():
+        assert symbols == cfg.universe, (
+            f"{where} disagrees with settings.yaml: "
+            f"spec has {symbols}, config has {cfg.universe}"
+        )
+
+    claimed = COUNT_CLAIM.search(text)
+    assert claimed, "§2's universe count claim is no longer parseable"
+    assert int(claimed.group(1)) == len(cfg.universe), (
+        f"§2 claims {claimed.group(1)} symbols, the configuration holds "
+        f"{len(cfg.universe)}"
+    )
