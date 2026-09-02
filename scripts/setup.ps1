@@ -115,5 +115,5 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "  every heavyweight dependency  OK"
 
 Write-Host ""
-Write-Host "Setup complete. Next: $VenvPath\Scripts\python.exe -m pytest" -ForegroundColor Green
+Write-Host "Setup complete. Next: $VenvPath\Scripts\pytest.exe" -ForegroundColor Green
 exit 0

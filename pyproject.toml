@@ -65,7 +65,12 @@ testpaths = ["tests"]
 norecursedirs = ["reference", "data_cache", "checkpoints", ".git"]
 # tests/causality.py is shared test infrastructure (GB-10), imported by GB-48 and GB-25.
 # It lives in tests/ rather than the package so the live path cannot import it.
-pythonpath = ["tests"]
+#
+# `.` is the rootdir, and it is here because bare `pytest` does not put it on `sys.path`
+# the way `python -m pytest` does - CLAUDE.md's "a subset is never the suite" rule names
+# bare `pytest`, with no path and no `-k`, as the only invocation that licenses the word
+# "green", so bare `pytest` has to be the one that works.
+pythonpath = [".", "tests"]
 
 # Rooted at the glassbox package, so reference/ is outside the contract by construction.
 [tool.importlinter]

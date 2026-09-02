@@ -45,5 +45,10 @@ jobs:
       - name: Format check
         run: python -m black --check .
 
+      # Bare `pytest`, deliberately: the same string CLAUDE.md's "a subset is never
+      # the suite" rule names as the only one that licenses calling the suite green.
+      # Until 2 Sep 2026 this read `python -m pytest`, which puts the rootdir on
+      # `sys.path` while the console script does not - so CI was green on an invocation
+      # nobody was told to run, and the documented one exited 2 without executing a test.
       - name: Tests
-        run: python -m pytest
+        run: pytest

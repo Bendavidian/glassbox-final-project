@@ -5208,6 +5208,52 @@ unattended**; it is a claim that two short ones cost two cycles. GB-57 says whic
 
 ---
 
+## 2026-09-02 — The invocation the honesty rule names could not run, and is now CI's
+
+**The finding.** `pytest`, bare, from the repository root, exited **2** with
+`ModuleNotFoundError: No module named 'tests'` and ran **nothing** — collection was
+interrupted at 1,314 of 1,341 items. `python -m pytest`, same directory, same tree, same
+interpreter, collected 1,341 and passed all of them. The delta is one `sys.path` entry:
+`python -m pytest` puts the rootdir at `sys.path[0]` and a console-script entry point does
+not. `tests/` has no `__init__.py`, and `pythonpath = ["tests"]` put *tests/* on the path
+but not the root, so `tests/model/test_predict.py` and
+`tests/model/test_fits_integration.py` could not resolve
+`from tests.model.test_train import ...` and failed at import. The 27-test gap is exactly
+those two modules, 16 and 11.
+
+**Why this is a decision and not a bug fix.** CLAUDE.md's *"a subset is never the suite"*
+rule is written mechanically, and deliberately so: *no report may say a suite is green,
+passing, or clean unless the command that produced it was `pytest` with no path argument,
+no `-k`, and no marker.* That rule named a command which **could not produce a result on
+this repository**, while CI ran a different string — `python -m pytest` — and was green.
+A rule naming an unrunnable command is a description of an intention, which is the family
+the central rule of CLAUDE.md is about. And it was invisible in the way that family is
+always invisible: both sides were internally consistent. CI passed every push. The rule
+was followed by nobody, because following it produced exit 2 and no tests.
+
+**The direction of the fix is the half worth recording.** The cheap repair is to change the
+rule to name `python -m pytest`, and it was rejected. The rule is the honesty mechanism and
+the invocation is an implementation detail, so the implementation moves to meet the rule
+rather than the other way round. `pythonpath = [".", "tests"]` puts the rootdir on the path
+under every invocation; `.github/workflows/ci.yml` and `scripts/setup.ps1` now hand out the
+same string the rule names. **Both forms are verified, because the goal is removing a trap
+and not swapping it for its mirror image** — a repo where only bare `pytest` worked would
+be the same defect with the names exchanged.
+
+**What was mis-stated while this was live, stated plainly.** Every "N passed" in this
+project's recent commit messages and reports — "1329 passed", "1341 passed" — was produced
+by `python -m pytest`. The numbers were true of the tests. They were not produced by the
+command the rule requires, and no report said so. The measurement was right and its
+provenance was wrong, which is the shape of a source pill naming a file it did not read.
+
+**Consequence.** `pyproject.toml` gains `.` on `pythonpath` with the reason beside it;
+CI's test step is `pytest`; `setup.ps1` points at `.venv\Scripts\pytest.exe`. `README.md`
+needed no change — it had documented bare `pytest` since GB-12, and was the only place in
+the repository that named the command the rule names. It was right about the string and
+had no way to know the string did not work.
+
+---
+
 ## 2026-09-01 — The starfield is deterministic in position AND in phase
 
 **Decision.** The starfield's 48 points take both their coordinates *and* a **negative
