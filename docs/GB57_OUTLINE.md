@@ -384,6 +384,47 @@ Every one is stronger stated by the author than discovered by the reader.
    period, so it is look-ahead the causality harness structurally cannot catch, and it
    breaks bit-identical reproducibility. One page, in this chapter, not in future work.
 
+8. **The third feature arm, declined 4 September 2026.** `C3_extended` — a third feature
+   configuration adding ATR, Bollinger position, a volume-flow measure and a
+   longer-horizon momentum — was specified as GB-62 and is **not in this study. The clause
+   permitting it was live and its condition was met.** `GLASSBOX_PHASE2_EXPANSION.md`
+   deferred C3 rather than rejecting it: *"If GB-66 lands before 8 September, C3 returns as
+   a spoke."* GB-66 landed on 3 September. The arm was therefore available and was
+   declined, on 4 September, for the reasons below.
+
+   **This is a cost decision under a deadline, not a judgement that C3 is worthless.** The
+   measured incremental compute is small — 128 rows at ~7.0 s/row, about 15 minutes,
+   derived from `results.csv`'s own `seconds` column, where DLinear runs 4.80 s/row at five
+   channels and 6.47 at eight. The costs that decide it are elsewhere. Every new indicator
+   must be pure, trailing-only, pass the GB-10 causality harness in both perturbation modes
+   at three splits, and carry a hand-computed fixture test with literal expected values.
+   **OBV has no causal trailing-window definition** — it is a cumulative sum from the series
+   start — so it is a design question before it is an indicator. And `min_history_bars` is a
+   **max over per-channel warm-ups**: ATR at period 14 shares `rsi14`'s Wilder recursion and
+   lands on the same 325-bar warm-up, but **ATR at period 20 needs ~449**, which would raise
+   the parity floor from 445 to 569, change the window geometry, change the config hash, and
+   cause every existing checkpoint to be refused — **re-running the entire grid, not the C3
+   rows**. The governing boundary is not the 3 October code freeze but the expansion's own
+   **15 September**, after which *"Phase 2 closes in whatever state it is in"* — eleven days,
+   against five unwritten chapters.
+
+   **The stronger reason is that GB-66 already answered the question C3 was a proxy for, and
+   answered it harder.** C3 asks *"is the null result just bad features?"* — a question about
+   our choices, answerable only by making a third set of our own choices. GB-66 replaced the
+   model's transform rather than its inputs, and its acceptance criterion turned out to be
+   **structurally unmeasurable**: WITS has no per-bin frequency response to correlate against
+   FITS's, because a basis whose per-band maps are square has no counterpart to a global
+   basis remapped onto a shifted grid. That is a stronger statement than a third feature arm
+   could produce, and it is a statement about the method rather than about a feature list.
+   The null already survives four model arms, two feature arms, three fold-grid anchors, four
+   cutoffs, two null controls, and a universe change from five symbols to twenty.
+
+   **What a reader is owed, and it is the honest form of the limitation:** the expansion
+   itself predicted the outcome — *"the likely outcome is that they do not, and that is the
+   point"* — and a prediction is not a measurement. **This study tested two feature
+   configurations, both chosen by its author, and cannot exclude that a third would have
+   behaved differently.** The claim made here is bounded accordingly.
+
 ---
 
 ## 57.10 — The methodological contribution
