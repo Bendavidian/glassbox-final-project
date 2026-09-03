@@ -682,6 +682,47 @@ EQUITY_WINDOW_SECONDS = 7 * 3600
 
 EQUITY_FILE = "equity_snapshots.jsonl"
 
+#: The session curve's plot area is the card minus a header band and a footer band.
+#: **The title used to be drawn inside the plot**, at ``top + 4``, while the
+#: opening-balance label is positioned at ``y(opening)`` - which lands on the plot's
+#: ceiling whenever the opening is the session high, that is, whenever a session only ever
+#: loses. On 3 Sep 2026 the two overprinted and the chart read ``EQ100,000ITY``: the title
+#: spanned x 12.0-65.3 and the balance x 21.8-84.0, both on y 17-31. The fix is a band and
+#: not a shorter string - two labels cannot share a line if neither may enter the other's
+#: band - and both ends are reserved because the mirror case is real: a session that only
+#: gains puts the same label on the plot floor, which cleared the reading count by 0.4
+#: units. The type is 12 units on a 0.74-em advance, so a band has to hold about 13 units
+#: of glyph plus the 3-unit drop the balance label takes below its rule.
+EQUITY_HEADER, EQUITY_FOOTER = 32, 32
+
+#: Baselines inside those bands: the title row, and the reading count as an inset from the
+#: bottom edge. The count hangs from the card rather than from the plot floor, because the
+#: balance label hangs *into* the top of the footer band and the two would meet again.
+EQUITY_TITLE_Y, EQUITY_COUNT_INSET = 16, 10
+
+#: The smallest vertical span an equity curve is drawn at, as a fraction of the level it
+#: sits at. **Taken from the risk policy rather than by eye.** The worst outcome one
+#: position is permitted is ``risk.max_position_pct`` of equity stopped out at
+#: ``risk.stop_loss_pct`` - 10% x 3% = 30 basis points - so a move that fills this chart
+#: from top to bottom is a move the size of the largest single loss the system can take,
+#: and anything smaller is drawn smaller. On 3 Sep 2026 a live session that moved $13.35
+#: on $100,000 filled the plot with 1.3 basis points; against this floor it moves 5 units
+#: of 116, which is what 1.3 basis points looks like.
+#:
+#: **This is one fact in two places** - here and in the risk section of the config - so
+#: `test_the_curve_floor_is_the_risk_policys_worst_single_position` is what makes them
+#: equal. Deriving it would mean reading config inside a pure chart function, and these
+#: builders take a frame and return a string.
+#:
+#: **The config file is named by that test and not by this comment, and that is not a
+#: style choice.** `test_no_module_reads_settings_or_environ_directly` scans the raw source
+#: of every module outside `glassbox/config/` for the filename, so a sentence *mentioning*
+#: it fails the suite exactly as an `open()` of it would - the guard measures the file
+#: rather than the code, and cannot tell reading config from writing about it. This comment
+#: broke it on the first draft. Fourth costume of the same defect, after the fixed
+#: character offset, the occurrence count, and the count inflated by its own explanation.
+EQUITY_MIN_SPAN = 0.10 * 0.03
+
 
 def append_equity(root: str | Path, when: pd.Timestamp, equity: float) -> None:
     """Append one equity reading, if it is a number.
@@ -730,44 +771,59 @@ def load_equity(root: str | Path, now: pd.Timestamp) -> pd.Series:
 def _segments(
     points: list[tuple[float, float]], values: list[float], opening: float
 ) -> list[tuple[str, list[tuple[float, float]]]]:
-    """Split a polyline where it crosses the opening level, one run per side.
+    """Split a polyline at the opening level, one run per side - and flat is a side.
 
     **Colouring the whole line by its final sign was the wrong reading of the data.** A
     session that spends most of itself under water and closes a cent up is not a green
     session, and one line in one colour cannot say that. Splitting at the crossing lets
     the chart state where the equity *was*, not only where it ended.
 
-    The crossing point is interpolated rather than snapped to the nearer sample, so the
-    colour changes exactly at the opening level and the two runs meet on the rule instead
-    of overlapping it.
+    **Three sides, not two, and by :func:`status_colour` rather than by a rule of its
+    own.** The first attempt seeded the side from ``values[0] >= opening``, which is always
+    true, so every session opened with a green stub. The correction seeded it from the
+    first value that *differed* from the opening - which reads ahead through the whole
+    series and applies the answer backwards. On 3 Sep 2026 a live session sat at its
+    opening balance for 64 of 69 readings and then lost $13, and all 64 unchanged readings
+    were painted loss red by a move that had not happened yet. A reading that has not
+    moved is not a loss. The calendar has said so since it gained its third tile,
+    :func:`fold_bars_svg` says so with its aside rule, and :func:`cumulative_equity_svg`
+    says so for the arm that stands aside in all sixteen folds; this was the one place on
+    the page where flat had no state, and it now calls the function they call.
+
+    A crossing between the two signed sides is interpolated, so the colour changes exactly
+    at the opening level and the runs meet on the rule instead of overlapping it. A change
+    into or out of flat needs no interpolation: one of the two samples *is* the opening.
     """
     runs: list[tuple[str, list[tuple[float, float]]]] = []
-    current: list[tuple[float, float]] = []
-    # **Seeded from the first value that actually differs from the opening.** The first
-    # point IS the opening, so `values[0] >= opening` is always true and every session
-    # would begin with a green stub - including one that falls from the first tick. The
-    # opening is not on a side; the first move is.
-    first_move = next((value for value in values if value != opening), opening)
-    side = GAIN if first_move >= opening else LOSS
-    for index, point in enumerate(points):
-        if index and (values[index] >= opening) != (values[index - 1] >= opening):
-            previous, now = values[index - 1], values[index]
-            fraction = (opening - previous) / (now - previous)
-            (x0, y0), (x1, y1) = points[index - 1], point
-            crossing = (x0 + (x1 - x0) * fraction, y0 + (y1 - y0) * fraction)
-            current.append(crossing)
+    side = status_colour(values[0] - opening)
+    current: list[tuple[float, float]] = [points[0]]
+    for index in range(1, len(points)):
+        nxt = status_colour(values[index] - opening)
+        if nxt != side:
+            if MUTED in (side, nxt):
+                # One of the two samples sits exactly on the opening, so the join is that
+                # sample: there is nothing between them to interpolate, and the run that
+                # is leaving or entering flat already ends on the rule.
+                join = points[index - 1] if side == MUTED else points[index]
+            else:
+                previous, now = values[index - 1], values[index]
+                fraction = (opening - previous) / (now - previous)
+                (x0, y0), (x1, y1) = points[index - 1], points[index]
+                join = (x0 + (x1 - x0) * fraction, y0 + (y1 - y0) * fraction)
+            if join != current[-1]:
+                current.append(join)
             runs.append((side, current))
-            side = GAIN if now >= opening else LOSS
-            current = [crossing]
-        current.append(point)
+            side, current = nxt, [join]
+        if points[index] != current[-1]:
+            current.append(points[index])
     runs.append((side, current))
     return [(colour, run) for colour, run in runs if len(run) > 1]
 
 
 def _vertical(
-    values: Sequence[float], top: float, bottom: float
+    values: Sequence[float], top: float, bottom: float, min_span_fraction: float
 ) -> tuple[Callable[[float], float], bool]:
-    """A y-mapper for a series, with the flat case centred rather than floored.
+    """A y-mapper for a series, floored so a negligible move is drawn as negligible.
 
     **One definition, because the flat case is the common one and it had been written
     twice.** `equity_svg` got the fix in region 3 and `cumulative_equity_svg` did not: an
@@ -776,41 +832,69 @@ def _vertical(
     region under a column of empty space. Two copies of a scaling rule, one corrected, and
     nothing to make them equal.
 
+    **Exactly flat was the case that got fixed; near-flat is the one that hurts.** A curve
+    pinned to its own min and max fills the plot whatever the move was worth. On 3 Sep 2026
+    a live session that moved $13.35 on $100,000 - 1.3 basis points - spent every unit of
+    plot height on it, welding 64 unchanged readings to the ceiling and dropping the last
+    three to the floor. Nothing left the box: the chart drew a cliff out of nothing
+    happening, which is a lie about magnitude and the worse of the two failures because it
+    looks like data. ``min_span_fraction`` is the smallest span the plot may represent, as
+    a fraction of the level the series sits at; a narrower series is centred inside it.
+    :data:`EQUITY_MIN_SPAN` is the value and says where it comes from.
+
+    **The mapper clamps, and the clamp is not redundant with the arithmetic.** Mapping min
+    to `bottom` and max to `top` contains the path only while the extremes come from the
+    same values being drawn - which stops being true the moment a floor widens the range,
+    and was never true of a value that is not finite. Containment is now a property of the
+    mapper rather than an argument about its caller.
+
     Returns the mapper and whether the series is flat, because a caller that fills under
     its curve has to know which of the two it drew.
     """
     low, high = min(values), max(values)
     flat = (high - low) <= abs(high) * 1e-9
+    centre = (top + bottom) / 2
+    floor = abs((high + low) / 2) * min_span_fraction
+    if (high - low) < floor:
+        middle = (high + low) / 2
+        low, high = middle - floor / 2, middle + floor / 2
 
     def y(value: float) -> float:
-        if flat:
-            return (top + bottom) / 2
-        return bottom - (value - low) / (high - low) * (bottom - top)
+        if flat or high <= low or math.isnan(value):
+            return centre
+        scaled = bottom - (value - low) / (high - low) * (bottom - top)
+        return min(max(scaled, top), bottom)
 
     return y, flat
 
 
 def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
-    """The session equity curve: gain above the opening balance, loss below.
+    """The session equity curve: gain above the opening balance, loss below, flat on it.
 
     **A flat session is the common case here, not an edge case.** The loop stands aside on
     most bars, so equity does not move, and scaling by ``max(high - low, 1e-9)`` once drove
     every point to the floor of the region under a column of empty space. A span negligible
-    against the level is drawn as a centred flat line, which is what it is.
+    against the level is drawn as a centred flat line, which is what it is - see
+    :data:`EQUITY_MIN_SPAN` for how small "negligible" is and why that number.
+
+    The plot is the card minus :data:`EQUITY_HEADER` and :data:`EQUITY_FOOTER`, because the
+    opening-balance label rides on ``y(opening)`` and the title and the reading count do
+    not move: reserving the two bands is what keeps them off each other.
     """
     if series.empty:
         return ""
-    left, right, top, bottom = 90, width - 20, 24, height - 26
+    left, right = 90, width - 20
+    top, bottom = EQUITY_HEADER, height - EQUITY_FOOTER
     values = [float(value) for value in series.to_numpy(dtype="float64")]
     opening, latest = values[0], values[-1]
     change = latest - opening
-    y, _ = _vertical(values, top, bottom)
+    y, _ = _vertical(values, top, bottom, EQUITY_MIN_SPAN)
 
     step = (right - left) / max(len(values) - 1, 1)
     points = [(left + index * step, y(value)) for index, value in enumerate(values)]
 
     body = [
-        _text(12, top + 4, "EQUITY", DIM),
+        _text(12, EQUITY_TITLE_Y, "EQUITY", DIM),
         _rule(left, y(opening), right, y(opening), RULE, dash="2 3"),
         _text(left - 6, y(opening) + 3, f"{opening:,.0f}", DIM, anchor="end"),
     ]
@@ -823,14 +907,21 @@ def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
     body.append(
         _text(
             right,
-            top + 4,
+            EQUITY_TITLE_Y,
             f"{status_glyph(change)} {change:+,.2f}",
             status_colour(change),
             size=TYPE_BODY,
             anchor="end",
         )
     )
-    body.append(_text(12, bottom + 16, f"{len(values)} READINGS THIS SESSION", DIM))
+    body.append(
+        _text(
+            12,
+            height - EQUITY_COUNT_INSET,
+            f"{len(values)} READINGS THIS SESSION",
+            DIM,
+        )
+    )
     return _svg(width, height, "".join(body), "session equity curve")
 
 
@@ -1104,7 +1195,7 @@ def cumulative_equity_svg(
     # A flat chained curve sits at exactly 1.00, so the baseline rule and the curve are the
     # same line and both land in the middle - which is where a curve that never moved
     # belongs. See :func:`_vertical` for why this is not `max(high - low, 1e-9)`.
-    y, _ = _vertical(series, top, bottom)
+    y, _ = _vertical(series, top, bottom, EQUITY_MIN_SPAN)
 
     step = (right - left) / max(len(series) - 1, 1)
     points = [f"{left + i * step:.1f},{y(v):.1f}" for i, v in enumerate(series)]
@@ -1530,6 +1621,51 @@ def price_path(last_close: float, forecast_path) -> pd.Series:
     return pd.Series(prices, dtype="float64")
 
 
+def forecast_source(as_of: pd.Timestamp) -> Source:
+    """The forecast card's pill. **It states the SOURCE, and it cannot state freshness.**
+
+    `LIVE` is one of three provenances and always has been - the type exists to stop
+    backtest numbers wearing a live face, and no test has ever asked it about recency. But
+    a green pill beside a bare date is read as *as of*, and on 3 Sep 2026 that misreading
+    cost a reader who knows the system: the loop had correctly dropped the in-progress bar,
+    the panel said `LIVE 2026-09-02` while the clock said the 3rd, and a working
+    look-ahead guard was indistinguishable from a dead feed. So the detail now names the
+    axis - *live feed* - and *bar* qualifies the date as a bar rather than a timestamp.
+
+    **The signature is the mechanism.** This takes the bar and nothing else: no clock, no
+    session state. A pill that cannot see the time cannot make a claim about it, which is
+    a stronger guarantee than a convention that it should not. Freshness is stated twice
+    already, by :func:`staleness_html` and by `LAST CYCLE` in :func:`session_strip`; a
+    third copy here would be a second place for one fact to live and diverge from.
+    """
+    return Source(LIVE, f"live feed · {as_of:%Y-%m-%d} bar")
+
+
+def bar_note(as_of: pd.Timestamp, now: pd.Timestamp, session_open: bool) -> str:
+    """The forecast card's caption: which bar is drawn, and why today is not it.
+
+    The mandated string comes first and unchanged - `GLASSBOX_PHASE2_EXPANSION.md` requires
+    the chart to carry `Last completed bar <date> · advances once per trading day`, so the
+    reason is appended to it and never replaces it.
+
+    **What the appended clause buys.** The panel stated the fact and withheld the reason: a
+    reader saw yesterday's date during an open market and had no way to tell a working
+    look-ahead guard from staleness. The data was right and the page was unreadable, which
+    is the harder defect of the two because nothing is wrong to find. Outside market hours
+    the old wording is complete and nothing is added - the explanation is only owed while
+    the absence needs explaining.
+
+    Plain text, never markup: :func:`region` escapes what it renders, and a value object
+    that returns markup only works while every caller agrees not to treat it as data.
+    """
+    note = f"Last completed bar {as_of:%Y-%m-%d} · advances once per trading day"
+    if session_open and as_of.date() < now.date():
+        note += (
+            f" · today's session is open, so {now:%Y-%m-%d} has no completed bar yet"
+        )
+    return note
+
+
 # ── GB-36: the contribution bars ─────────────────────────────────────────────
 
 
@@ -1907,6 +2043,31 @@ def provenance_label(provenance: str) -> str:
     the absence means something. Both are labelled, so neither can be read by default.
     """
     return "LIVE" if provenance == records.LIVE else provenance.upper()
+
+
+def decision_detail(record: DecisionRecord) -> str:
+    """The DETAIL cell for one decision row: what it carried, then where it came from.
+
+    **Provenance alone was the least informative thing available, and it made an order and
+    no order render the same cell.** On 3 September 2026 seven EXIT decisions were written
+    against an empty book; each rendered as a red ``gb-row-loss`` reading ``EXIT`` beside
+    ``LIVE``, indistinguishable from a row where a position was actually closed. The record
+    holds ``order``, :func:`decision_table` has shown it as ``YES``/em dash since GB-34, and
+    the table the console actually renders was throwing it away.
+
+    **It says whether the decision carried an order. It does not say whether a position was
+    closed, and it must not be read that way.** ``order`` is populated from ``sized``, which
+    ``rank_signals`` fills with ``enter_long`` candidates only, so an EXIT record carries
+    ``None`` *whether or not* the symbol was held - the closing order is built later, by
+    ``live_loop._send_exits``, and never enters the record. Distinguishing a real close from
+    one that closed nothing needs the book as it stood at decision time, which
+    :class:`DecisionRecord` does not carry and cannot be given here: it is frozen in §4 of
+    the spec. So this cell states the fact the record actually holds and stops short of the
+    one it does not, which is why it reads ``ORDER -`` rather than anything like "closed
+    nothing".
+    """
+    carried = "YES" if record.order else EM_DASH
+    return f"ORDER {carried} · {provenance_label(record.provenance)}"
 
 
 def is_fragile(attribution: Attribution) -> bool:
@@ -2624,7 +2785,7 @@ def activity_table(
                 f"{record.as_of:%Y-%m-%d}",
                 record.symbol,
                 escape(action.upper()),
-                escape(provenance_label(record.provenance)),
+                escape(decision_detail(record)),
                 status_html(strength, f"{strength:+.4f}"),
             )
         )
@@ -2875,7 +3036,7 @@ def main(
                 st.markdown(
                     region(
                         f"{symbol} close and forecast",
-                        Source(LIVE, f"{latest[symbol].as_of:%Y-%m-%d} bar"),
+                        forecast_source(latest[symbol].as_of),
                         forecast_svg(
                             history,
                             price_path(
@@ -2884,8 +3045,7 @@ def main(
                             thresholds,
                             symbol,
                         ),
-                        f"Last completed bar {latest[symbol].as_of:%Y-%m-%d} · "
-                        "advances once per trading day",
+                        bar_note(latest[symbol].as_of, now, hours),
                     ),
                     unsafe_allow_html=True,
                 )
@@ -3086,12 +3246,15 @@ __all__ = [
     "PositionRow",
     "Reliability",
     "band_context",
+    "bar_note",
     "channel_colour",
     "contributions_svg",
+    "decision_detail",
     "decision_rows",
     "decision_table",
     "escape",
     "expander_title",
+    "forecast_source",
     "forecast_svg",
     "frequency_shares",
     "gain_phase_svg",

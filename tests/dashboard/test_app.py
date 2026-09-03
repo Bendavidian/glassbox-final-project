@@ -9,6 +9,7 @@ and that orange never leaks into a data mark.
 
 from __future__ import annotations
 
+import ast
 import csv
 import html
 import inspect
@@ -16,12 +17,14 @@ import json
 import math
 import re
 import tokenize
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from glassbox.config.loader import load_config
 from glassbox.contracts.schemas import (
     Attribution,
     DecisionRecord,
@@ -527,6 +530,52 @@ def test_only_module_built_html_reaches_a_raw_column() -> None:
     assert source.count("raw=(") == 2, "a new caller is opting out of escaping"
     assert "raw=(5,)" in source, "position_table's UNREALISED column"
     assert "raw=(4,)" in source, "activity_table's VALUE column"
+
+
+def _detail_cells(html: str) -> list[str]:
+    """The DETAIL column of every rendered activity row, tags stripped."""
+    return [
+        re.sub(r"<[^>]+>", "", row.split("<td")[4].split(">", 1)[1]).strip()
+        for row in html.split("<tr")[1:]
+        if row.count("<td") > 4
+    ]
+
+
+def test_a_decision_that_carried_an_order_cannot_render_as_one_that_did_not() -> None:
+    """**Order and no order rendered the same cell, and one of them was an exit.**
+
+    On 3 September 2026 seven EXIT decisions were written against an empty book. Each drew
+    a red `gb-row-loss` row reading EXIT beside `LIVE` - identical to a row where a
+    position was closed - because DETAIL restated provenance, the one thing every live row
+    shares. `decision_table` has carried the order as YES/em dash since GB-34; the table
+    the console actually renders was dropping it.
+    """
+    without = _detail_cells(app.activity_table([a_record()], []))
+    carried = _detail_cells(
+        app.activity_table([a_record(order={"symbol": "AAPL", "shares": 1.0})], [])
+    )
+
+    assert without and carried, "the rows under test did not render"
+    assert without != carried, (
+        f"a decision with order=None renders the same DETAIL as one with an order: "
+        f"{without} == {carried}"
+    )
+
+
+def test_the_detail_cell_says_where_the_row_came_from_as_well() -> None:
+    """Order presence is added to provenance, not swapped for it - a replayed row must
+    still say so on its own face, which is `provenance_label`'s whole reason."""
+    replayed = app.decision_detail(
+        DecisionRecord(
+            **{
+                **a_record().__dict__,
+                "provenance": "replay:fold-13",
+            }
+        )
+    )
+
+    assert "REPLAY:FOLD-13" in replayed
+    assert "ORDER" in replayed
 
 
 def test_a_raw_column_still_escapes_every_other_cell() -> None:
@@ -1364,6 +1413,110 @@ def test_a_flat_session_still_renders_and_is_centred() -> None:
     assert "<polyline" in flat
 
 
+def _runs(svg: str) -> list[tuple[str, int]]:
+    """``(stroke, point count)`` for each run of the session curve, in drawing order."""
+    return [
+        (stroke, len(points.split()))
+        for points, stroke in re.findall(
+            r'<polyline points="([^"]+)" fill="none" stroke="([^"]+)"', svg
+        )
+    ]
+
+
+def test_a_run_at_the_opening_is_neither_a_gain_nor_a_loss() -> None:
+    """**The live session that found this had made no move at all for 64 of 69 readings.**
+
+    The side used to be seeded from the first value that *differed* from the opening, which
+    reads forward through the whole series and applies the answer backwards. One rule, two
+    symptoms, and the session passed through both in one afternoon: while the book was
+    empty the fallback made `first_move` the opening itself, so `GAIN if opening >= opening`
+    painted a motionless session **green at +0.00**; the moment WMT filled at 19:40:40Z and
+    the account went $13 down, the same line reached forward to that drop and repainted all
+    64 unchanged readings **loss red**. The calendar, the fold bars and the cumulative area
+    have all had a third state since they were written; this was the one chart without one.
+
+    **The series here is written out, and that is the mechanism rather than the fixture
+    style.** The premise of this test - *a run of readings sits exactly on the opening* -
+    was a property of the live account until 19:41:40Z on 3 Sep 2026 and has not been true
+    since: the curve now holds 14 distinct values and falls correctly in red. A guard that
+    had read `checkpoints/live` would have gone on passing while asserting nothing, and
+    anyone verifying by eye today would watch a correct chart and conclude the defect was
+    fixed. **This is the premise-in-a-config-default defect wearing production data**: the
+    default that moved was not a config key but the state of the market, which no commit
+    records and no review can pin. Every equity fixture in this file is a literal list for
+    that reason, and none of them reads the loop's state directory.
+    """
+    svg = _equity([100.0] * 5 + [99.0, 98.0])
+
+    runs = _runs(svg)
+
+    assert [stroke for stroke, _ in runs] == [app.MUTED, app.LOSS]
+    assert runs[0][1] == 5, "the unchanged readings are one flat run, not a red one"
+    assert app.GAIN not in svg
+
+
+def test_a_session_that_only_ever_loses_is_flat_then_red_and_not_red_throughout() -> (
+    None
+):
+    """The live shape, end to end: the reading that moved is the only one coloured."""
+    svg = _equity([100_000.18] * 64 + [99_994.20, 99_986.83])
+
+    assert [stroke for stroke, _ in _runs(svg)] == [app.MUTED, app.LOSS]
+
+
+def test_the_curve_floor_is_the_risk_policys_worst_single_position() -> None:
+    """**One fact in two places, and this is what makes them equal.**
+
+    `EQUITY_MIN_SPAN` is the largest loss the risk policy permits from a single position -
+    `max_position_pct` of equity stopped out at `stop_loss_pct` - so a move that fills the
+    chart is a move the size of the worst thing one position can do. Deriving it would mean
+    a pure chart builder reading `settings.yaml`; pinning it is the alternative this
+    project's rules allow, and without the pin the two numbers drift the first time the
+    policy changes and nothing anywhere notices.
+    """
+    risk = load_config().risk
+
+    assert app.EQUITY_MIN_SPAN == pytest.approx(
+        risk.max_position_pct * risk.stop_loss_pct
+    )
+
+
+def test_a_near_flat_session_is_not_drawn_as_a_cliff() -> None:
+    """**Nothing left the box; the chart drew a cliff out of nothing happening.**
+
+    A curve pinned to its own min and max always fills the plot, whatever the move was
+    worth. The live session moved $13.35 on $100,000 - 1.3 basis points - and spent every
+    unit of plot height on it: 64 unchanged readings welded to the ceiling and the last
+    three on the floor. That is a lie about magnitude, and it is the more dangerous of the
+    two failures because it looks like data rather than like a defect.
+    """
+    values = [100_000.18] * 64 + [99_986.83]
+    top, bottom = app.EQUITY_HEADER, 180 - app.EQUITY_FOOTER
+
+    y, _ = app._vertical(values, top, bottom, app.EQUITY_MIN_SPAN)
+    travel = abs(y(min(values)) - y(max(values)))
+
+    assert travel < (bottom - top) * 0.1, "13 basis points filled a tenth of the plot"
+    # And the floor is a floor, not a ceiling: a move worth the whole policy still fills it.
+    whole = [100_000.0, 100_000.0 * (1 - app.EQUITY_MIN_SPAN)]
+    wide, _ = app._vertical(whole, top, bottom, app.EQUITY_MIN_SPAN)
+
+    assert abs(wide(whole[1]) - wide(whole[0])) == pytest.approx(bottom - top, abs=0.5)
+
+
+def test_the_curve_is_clamped_to_its_plot_rather_than_trusted_to_land_in_it() -> None:
+    """Mapping min to the floor and max to the ceiling contains the path only while the
+    extremes come from the same values being drawn - which stops being true the moment the
+    floor widens the range, and was never true of a value that is not a number."""
+    top, bottom = 32.0, 148.0
+
+    y, _ = app._vertical([100.0, 101.0], top, bottom, app.EQUITY_MIN_SPAN)
+
+    assert y(1e9) == top and y(-1e9) == bottom
+    assert y(float("inf")) == top and y(float("-inf")) == bottom
+    assert top <= y(float("nan")) <= bottom
+
+
 def test_the_countdown_is_a_depleting_accent_rule() -> None:
     """One pixel, vermillion, and it moves because time passed - not because a timer on
     this page is running. The seconds come from the loop's own last write."""
@@ -1667,12 +1820,12 @@ def test_a_flat_cumulative_curve_is_centred_not_floored() -> None:
     curve, and `max(high - low, 1e-9)` drove every point of it to the floor."""
     top, bottom = 16.0, 270.0
 
-    y, flat = app._vertical([1.0, 1.0, 1.0], top, bottom)
+    y, flat = app._vertical([1.0, 1.0, 1.0], top, bottom, app.EQUITY_MIN_SPAN)
 
     assert flat
     assert y(1.0) == (top + bottom) / 2
 
-    moving, not_flat = app._vertical([1.0, 2.0], top, bottom)
+    moving, not_flat = app._vertical([1.0, 2.0], top, bottom, app.EQUITY_MIN_SPAN)
 
     assert not not_flat
     assert moving(2.0) == top and moving(1.0) == bottom
@@ -1979,6 +2132,13 @@ def _every_chart() -> dict[str, str]:
     return {
         "equity_svg": _equity([100.0, 101.0, 99.0]),
         "equity_svg flat": _equity([100.0, 100.0, 100.0]),
+        # **The two shapes the enumeration never held, and the collision lived in the
+        # gap.** The balance label rides on `y(opening)`, so it meets the header only when
+        # the opening is the session high and the footer only when it is the session low -
+        # that is, only in a session that purely loses or purely gains. `[100, 101, 99]`
+        # is neither, and it was the only session this list rendered.
+        "equity_svg losing": _equity([100_000.18] * 64 + [99_994.20, 99_986.83]),
+        "equity_svg gaining": _equity([100.0, 101.0, 102.0]),
         "countdown_svg full": app.countdown_svg(60, 60),
         "countdown_svg spent": app.countdown_svg(0, 60),
         "sparkline_svg": app.sparkline_svg(HISTORY, row),
@@ -2108,6 +2268,176 @@ def test_no_chart_label_is_drawn_outside_its_own_chart() -> None:
     assert not escaped, "labels drawn outside their chart: " + " | ".join(escaped)
 
 
+def test_no_chart_label_is_drawn_over_another_label() -> None:
+    """**Containment was half the property, and the other half is what shipped.**
+
+    `test_no_chart_label_is_drawn_outside_its_own_chart` measures every label against the
+    viewBox, so a caption running off the canvas fails. Two labels at the same coordinates
+    are both comfortably inside it and it says nothing: on 3 Sep 2026 the session curve
+    rendered `EQ100,000ITY` - the title at x 12.0-65.3 and the opening balance at x
+    21.8-84.0, both on y 17-31 - and every geometry guard in this file passed. The type
+    pass that raised these labels from 9 units to 12 is what widened the balance from 41.6
+    units to 62.2 and pushed it under the title, so the pass that fixed three overlaps by
+    eye introduced a fourth and could not see it.
+
+    The overlaps that pass found were found in screenshots. This is the mechanism.
+    """
+    collisions = []
+    for name, svg in _every_chart().items():
+        labels = list(_labels(svg))
+        for first in range(len(labels)):
+            for second in range(first + 1, len(labels)):
+                _, text_a, ax0, ax1, atop, abottom = labels[first]
+                _, text_b, bx0, bx1, btop, bbottom = labels[second]
+                if ax0 < bx1 and bx0 < ax1 and atop < bbottom and btop < abottom:
+                    collisions.append(f"{name}: {text_a[:28]!r} over {text_b[:28]!r}")
+
+    assert not collisions, "labels drawn over each other: " + " | ".join(collisions)
+
+
+# ── GB-63e: the marks, not only the labels ───────────────────────────────────
+#
+# **A guard built for half a class reads as a guard for the class.** Every geometry
+# assertion this file had ran over `<text>`: `_labels` is a regex on text elements, and
+# both containment tests above walk it. Every polyline, polygon, rect and circle the
+# console draws - which is to say all of the data - was unchecked, and the only assertion
+# on any path anywhere is one line inside the forecast test, comparing that chart's
+# maximum y against its own annotation strip. One chart, one edge, one direction.
+
+
+def _attribute(element, name: str) -> float:
+    return float(element.get(name, 0.0))
+
+
+def _marks(svg: str):
+    """``(tag, x0, y0, x1, y1)`` for every drawn mark, in viewBox units.
+
+    Polyline, polygon, rect, circle and line. `<text>` is deliberately absent: labels have
+    their own guards above, which measure a glyph box this cannot. **The list of tags is
+    not written down twice** - it was, as a `MARKS` constant beside a dispatch that names
+    each tag again, which is a second copy of a fact with nothing to keep the two equal.
+    Each branch computes a different box, so one tuple could never have driven them.
+
+    Parsed as XML rather than scanned for: a mark's extent is a property of its attributes
+    and not of the order somebody wrote them in, and this file has shipped three guards
+    whose value was a property of the source text rather than of the code.
+    """
+    for element in ET.fromstring(svg).iter():
+        tag = element.tag.split("}")[-1]
+        if tag in ("polyline", "polygon"):
+            for point in element.get("points", "").split():
+                x, y = (float(value) for value in point.split(","))
+                yield tag, x, y, x, y
+        elif tag == "circle":
+            cx, cy = _attribute(element, "cx"), _attribute(element, "cy")
+            radius = _attribute(element, "r")
+            yield tag, cx - radius, cy - radius, cx + radius, cy + radius
+        elif tag == "rect":
+            x, y = _attribute(element, "x"), _attribute(element, "y")
+            width = _attribute(element, "width")
+            height = _attribute(element, "height")
+            yield tag, x, y, x + width, y + height
+        elif tag == "line":
+            x1, y1 = _attribute(element, "x1"), _attribute(element, "y1")
+            x2, y2 = _attribute(element, "x2"), _attribute(element, "y2")
+            yield tag, min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
+
+
+def _escapes(svg: str) -> list[str]:
+    """Every drawn mark that leaves the chart's own viewBox.
+
+    The test is written as ``not (inside)`` rather than as ``outside`` so that a coordinate
+    which is not a number is reported: every comparison against `nan` is false, and a
+    vertex with no position is not a vertex that is contained.
+    """
+    box = re.search('viewBox="0 0 ([0-9]+) ([0-9]+)"', svg)
+    assert box is not None, "the chart drew no viewBox"
+    edge_x, edge_y = int(box.group(1)), int(box.group(2))
+    return [
+        f"<{tag}> spans x {x0:.0f}..{x1:.0f} of {edge_x}, y {y0:.0f}..{y1:.0f} of {edge_y}"
+        for tag, x0, y0, x1, y1 in _marks(svg)
+        if not (x0 >= 0 and y0 >= 0 and x1 <= edge_x and y1 <= edge_y)
+    ]
+
+
+def test_no_chart_draws_a_mark_outside_its_own_chart() -> None:
+    """The data half of the containment property, over the same enumeration as the labels.
+
+    A path outside the viewBox is clipped in silence exactly as a label is, and it takes
+    the reading with it: a line that leaves the bottom of its box is a number the reader
+    cannot see and does not know is missing.
+    """
+    escaped = []
+    for name, svg in _every_chart().items():
+        assert svg, f"{name} rendered nothing, so this test asserted nothing about it"
+        escaped += [f"{name}: {line}" for line in _escapes(svg)]
+
+    assert not escaped, "marks drawn outside their chart: " + " | ".join(escaped)
+
+
+def test_the_containment_guard_can_see_a_mark_in_every_chart() -> None:
+    """**The guard above is green, and green means nothing until this passes.**
+
+    A containment test over an enumeration is vacuous for any chart whose marks it cannot
+    parse - a builder that emitted a `<path d="...">` would sail through it silently, and
+    so would one whose output `ET` could not read. This puts a mark outside each chart in
+    turn and asserts the checker reports it, so coverage is a property of the enumeration
+    rather than of the fixture list somebody happened to write.
+    """
+    blind = []
+    for name, svg in _every_chart().items():
+        edge_y = int(re.search('viewBox="0 0 [0-9]+ ([0-9]+)"', svg).group(1))
+        below = svg.replace(
+            "</svg>",
+            f'<polyline points="10.0,{edge_y + 40}.0 20.0,{edge_y + 40}.0"/></svg>',
+        )
+        if not _escapes(below):
+            blind.append(name)
+
+    assert not blind, "the guard cannot see a mark in: " + ", ".join(blind)
+
+
+@pytest.mark.xfail(strict=True, reason="GB-63e found these; closing them is not GB-63e")
+@pytest.mark.parametrize(
+    "name",
+    ["sparkline stop off scale", "response negative gain", "forecast non-finite close"],
+)
+def test_a_chart_holds_its_marks_on_a_series_that_runs_off_the_scale(name: str) -> None:
+    """**Three escapes the widened guard found, recorded as failures rather than as prose.**
+
+    Each is a scale computed from a subset of what is then drawn against it, which is the
+    same defect three times:
+
+    - `sparkline_svg` takes ``low = min(prices.min(), stop_loss)`` but never takes the max
+      with it, so a long whose price has gapped below its own stop - the stop is then above
+      every visible bar - draws that rule at y = -12,998,648 of 64. Reachable today: it
+      needs only a quarantined target, which the builder already branches on.
+    - `response_svg` normalises by ``max(gains)``, so a negative gain larger in magnitude
+      than the largest positive one puts a vertex at y = 1340 of 288.
+    - `forecast_svg` takes low and high over the *finite* values and then maps every value,
+      so one non-finite close emits ``y=-inf``.
+
+    `xfail(strict=True)` rather than a comment, because a gap that is written down is a
+    note: this turns red the day one of them is fixed and the entry is removed with it.
+    """
+    row = app.PositionRow(
+        "AAPL", 1.0, 100.0, 97.0, True, stop_loss=1e6, take_profit=float("nan")
+    )
+    gapped = HISTORY.copy()
+    gapped.iloc[2] = float("inf")
+    svg = {
+        "sparkline stop off scale": lambda: app.sparkline_svg(HISTORY, row),
+        "response negative gain": lambda: app.response_svg(
+            [8.0, 12.0, 24.0, 120.0], [0.22, 0.41, 0.83, -5.0]
+        ),
+        "forecast non-finite close": lambda: app.forecast_svg(
+            gapped, app.price_path(103.5, [0.01]), Thresholds(lower=0.004), "AAPL"
+        ),
+    }[name]()
+
+    assert not _escapes(svg), f"{name}: " + " | ".join(_escapes(svg))
+
+
 def test_a_chart_never_scales_below_the_viewbox_its_type_is_measured_in() -> None:
     """The mechanism behind the floor, asserted rather than described.
 
@@ -2151,3 +2481,177 @@ def test_chart_tracking_is_a_fraction_of_the_size_not_a_constant() -> None:
     ), "this chart draws one size, so it cannot show the relationship"
     for size, track in pairs:
         assert track == pytest.approx(size * tokens.TRACK_LABEL, abs=0.01)
+
+
+# ── 3 Sep 2026: a working look-ahead guard that read as a dead feed ──────────
+#
+# The panel said `LIVE 2026-09-02 bar` while the clock said the 3rd and the market was
+# open. Nothing was wrong: the loop drops the in-progress bar because the session has not
+# closed. But the panel stated the fact and withheld the reason, so a correct guard and a
+# stale feed rendered identically - and the person who misread it wrote the loop. These
+# tests hold the reason in place, and hold the pill to the one claim it can support.
+
+_OPEN_CLOCK = pd.Timestamp("2026-09-03 19:13", tz="UTC")
+_LAST_BAR = pd.Timestamp("2026-09-02")
+_MANDATE = "Last completed bar 2026-09-02 · advances once per trading day"
+
+
+def _region_notes() -> list[tuple[ast.expr | None, ast.expr | None]]:
+    """Every ``region(...)`` call in the module as ``(source, note)`` AST nodes."""
+    tree = ast.parse(Path(app.__file__).read_text(encoding="utf-8"))
+    calls = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "region"
+        ):
+            continue
+        keywords = {kw.arg: kw.value for kw in node.keywords}
+        source = node.args[1] if len(node.args) > 1 else keywords.get("source")
+        note = node.args[3] if len(node.args) > 3 else keywords.get("note")
+        calls.append((source, note))
+    return calls
+
+
+def test_a_closed_market_captions_the_chart_exactly_as_it_did_before() -> None:
+    """The old wording is complete when the market is shut: there is no absence to
+    explain, and a panel that explains itself when nothing is missing teaches a reader to
+    stop reading the line."""
+    note = app.bar_note(_LAST_BAR, _OPEN_CLOCK, session_open=False)
+
+    assert note == _MANDATE
+
+
+def test_an_open_session_says_why_today_has_no_bar() -> None:
+    """The defect, stated as the behaviour that fixes it."""
+    note = app.bar_note(_LAST_BAR, _OPEN_CLOCK, session_open=True)
+
+    assert note == (
+        f"{_MANDATE} · today's session is open, so 2026-09-03 has no completed bar yet"
+    )
+
+
+def test_the_mandated_string_stays_first_and_whole_in_both_branches() -> None:
+    """``GLASSBOX_PHASE2_EXPANSION.md`` requires the chart to carry
+    ``LAST COMPLETED BAR <date> · ADVANCES ONCE PER TRADING DAY``. The reason is appended
+    to that sentence and may never replace it, so this session cannot drift the panel out
+    of the document that governs its scope."""
+    for session_open in (True, False):
+        note = app.bar_note(_LAST_BAR, _OPEN_CLOCK, session_open=session_open)
+        assert note.startswith(_MANDATE)
+
+
+def test_no_previous_bar_is_captioned_without_its_reason_while_open() -> None:
+    """**The guard the session was opened for.**
+
+    Not one date but every date the panel could hold during an open session: a bar from
+    yesterday, from a long weekend, from a fortnight of held positions. If any of them can
+    reach the caption without the explanation, the reader is back to telling a working
+    look-ahead guard from a dead feed by eye.
+    """
+    for days in range(1, 15):
+        as_of = _OPEN_CLOCK.tz_localize(None).normalize() - pd.Timedelta(days=days)
+        note = app.bar_note(as_of, _OPEN_CLOCK, session_open=True)
+
+        assert "today's session is open" in note, f"{as_of:%Y-%m-%d} explains nothing"
+        assert "has no completed bar yet" in note
+        assert f"{_OPEN_CLOCK:%Y-%m-%d}" in note, "the absent day is not named"
+
+
+def test_a_bar_from_the_current_day_is_not_explained_away() -> None:
+    """The clause is owed only when today is genuinely absent. A bar carrying today's date
+    during an open session is a different situation - and one the look-ahead guard says
+    should not arise - so the caption must not narrate an absence that is not there."""
+    note = app.bar_note(
+        _OPEN_CLOCK.tz_localize(None).normalize(), _OPEN_CLOCK, session_open=True
+    )
+
+    assert note == "Last completed bar 2026-09-03 · advances once per trading day"
+
+
+def test_the_forecast_card_takes_its_caption_from_the_real_session_state() -> None:
+    """**A test that exercises a function is not a test that the function is called.**
+
+    ``explain_spectral`` was defined, exported, unit-tested and had no caller, and the
+    panel it fed was empty for a week. The five tests above would pass identically if
+    ``main`` still built its caption inline, so this one reads the call site: the forecast
+    region's note comes from ``bar_note``, its pill from ``forecast_source``, and neither
+    argument to ``bar_note`` is a literal - a hardcoded ``True`` or a fixed date makes the
+    branch unreachable while every test above stays green.
+    """
+    wired = [
+        (source, note)
+        for source, note in _region_notes()
+        if isinstance(note, ast.Call)
+        and isinstance(note.func, ast.Name)
+        and note.func.id == "bar_note"
+    ]
+
+    assert len(wired) == 1, "exactly one region captions itself by session state"
+    source, note = wired[0]
+    assert isinstance(source, ast.Call) and isinstance(source.func, ast.Name)
+    assert source.func.id == "forecast_source", "the card kept an inline Source()"
+    assert len(note.args) == 3, "bar_note is called with bar, clock and session state"
+    assert not [arg for arg in note.args if isinstance(arg, ast.Constant)], (
+        "a literal clock or session flag makes the open-session branch unreachable "
+        "without failing a single assertion above"
+    )
+
+
+def test_the_caption_is_written_in_exactly_one_place() -> None:
+    """The wiring guard above proves one call site reaches ``bar_note``; this proves no
+    other call site writes the caption itself. Docstrings are excluded because the
+    sentence explaining a rule must not be able to break it - the fixed-offset defect in
+    its fifth costume."""
+    tree = ast.parse(Path(app.__file__).read_text(encoding="utf-8"))
+    authors = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        docstring = ast.get_docstring(node, clean=False)
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and child.value != docstring
+                and "Last completed bar" in child.value
+            ):
+                authors.add(node.name)
+
+    assert authors == {"bar_note"}, f"the caption is also built in {sorted(authors)}"
+
+
+def test_the_pill_names_its_source_and_has_no_way_to_name_freshness() -> None:
+    """**The pill states the SOURCE. A reader took it for FRESHNESS, which it never
+    measured.**
+
+    ``LIVE`` is one of three provenances and the type exists to stop backtest numbers
+    wearing a live face; no test has ever asked it about recency. Freshness is already
+    stated twice - ``staleness_html`` and ``LAST CYCLE`` in ``session_strip`` - and a
+    third copy here is a second place for one fact to diverge from.
+
+    The signature is the mechanism rather than the docstring: the constructor takes the
+    bar and nothing else, so a pill that cannot see the clock cannot claim anything
+    about it.
+    """
+    source = app.forecast_source(_LAST_BAR)
+
+    assert source.kind == app.LIVE
+    assert source.detail == "live feed · 2026-09-02 bar"
+    assert list(inspect.signature(app.forecast_source).parameters) == ["as_of"]
+
+
+def test_the_reason_reaches_the_page_as_written() -> None:
+    """``region`` escapes its note, and ``escape`` here covers ``&<>`` but not the
+    apostrophe in *today's*. That is load-bearing and undeclared, so it is asserted
+    against the renderer rather than against a reading of it: swapping in ``html.escape``
+    would print ``today&#x27;s`` on the face of the panel and fail here."""
+    note = app.bar_note(_LAST_BAR, _OPEN_CLOCK, session_open=True)
+
+    rendered = app.region(
+        "AAPL close and forecast", app.forecast_source(_LAST_BAR), "<svg></svg>", note
+    )
+
+    assert note in rendered, "the caption was altered on its way to the page"
+    assert "live feed · 2026-09-02 bar" in rendered
