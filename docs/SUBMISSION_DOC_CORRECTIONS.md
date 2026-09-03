@@ -282,3 +282,76 @@ about the market* — the test that killed the FITS phase advance at CV 1.04%. *
 is the finding, not the alarm.** The claim under test is precisely that this curve is
 deterministic operator geometry rather than market structure, so a 1% CV corroborates it.
 Applied mechanically, the heuristic would reject the one result it confirms.
+
+---
+
+## 7. The narrowed claim — "geometry in the envelope, not in the structure" — no longer holds as stated
+
+**Document:** `scripts/operator_null_control.py`, `verdict()`, which is where the
+narrowing is currently written; it has not yet reached a chapter, and
+`GB57_RESULTS_AND_DISCUSSION.md` §3 still carries the unnarrowed +0.9485 line marked
+`[UNSOURCED]`.
+
+**Claim as written:**
+
+> FITS's operator correlation is far below its response correlation. The two measure
+> different things — a signed (H, L) matrix against a curve of gain magnitudes — so the
+> 86% figure is a claim about the gain curve specifically and **must not be quoted as a
+> claim about the whole learned operator**.
+
+**The basis for that narrowing was a five-symbol measurement in which FITS's signed
+operator was indistinguishable from zero:** −0.0127, sd 0.1141 over 16 folds,
+**t vs 0 = −0.44**. On that evidence the envelope was grid-determined and the structure
+within it was not, and the narrowing was correct.
+
+**At twenty symbols it is +0.1946, sd 0.1076, t vs 0 = +7.24.** It is no longer
+indistinguishable from zero — it is seven standard errors from it.
+
+**Restatement.** More of FITS is grid-determined than the narrowed claim allowed. The
+data-independence is present **in the gain envelope and in part of the signed operator
+too** — r² = 0.038 of the operator, small in absolute terms but no longer nothing, and
+established rather than merely unrefuted. The narrowing must be rewritten as a statement
+about *degree*: the envelope is overwhelmingly geometry (r² 0.957), the signed operator
+is partly geometry (r² 0.038 and firmly non-zero), and the two must not be quoted with
+the same number — which was the correct half of the original claim and survives.
+
+**WITS, stated honestly, because the temptation is to state it otherwise.** WITS's signed
+operator is **+0.0838, t = +2.56** — also non-zero. **WITS does not escape the pathology;
+it escapes it less** (paired difference −0.1108, Wilcoxon p = 0.0042, lower in 13 of 16
+folds). That is still GB-66's finding and it is *stronger* for being stated this way: a
+local basis reduces grid-determination rather than removing it, which is what a real
+mechanism looks like. A claim that WITS escaped it entirely would be contradicted by its
+own t-statistic.
+
+---
+
+## 8. Phase 1's negative verdicts at five symbols were power failures, twice over
+
+**For GB-57 §57.8.** Two independent negative results, produced by different instruments
+on different quantities, both reversed at twenty symbols — and in both cases the reversal
+came from precision rather than from a larger effect.
+
+| | GB-61: the Wilcoxon family | GB-66: the operator comparison |
+|---|---|---|
+| verdict at five | 17 of 117 survive Holm, **none** on `direction`, `sharpe` or `total_return` | prediction **did not hold**: p = 0.5282, 9 of 16 folds |
+| verdict at twenty | **29** survive, spanning `direction`, `mae`, `total_return` | prediction **HELD**: p = 0.0042, 13 of 16 folds |
+| effect size | **same or smaller in 26 of 29 cells**; `total_return` shrank to 57% | FITS −0.0127 → +0.1946, WITS +0.0331 → +0.0838 |
+| n | **16 folds, unchanged** | **16 folds, unchanged** |
+| what actually moved | paired-difference sd fell by **2.5–3×** | neither correlation differed from zero at five (t = −0.44, +0.75); both do at twenty (t = +7.24, +2.56) |
+
+**Two instances is a claim about the design, not a coincidence.** A five-symbol,
+sixteen-fold walk-forward could not resolve effects that were present the whole time.
+Each fold's statistic was an average over five symbols; at twenty the same statistic is
+four times better sampled, the per-fold noise collapses, and the same underlying effects
+clear the threshold. Nothing about the models changed.
+
+**The consequence for how Phase 1's negatives should be read.** A negative result from
+that design is evidence of *absence of a large effect*, not evidence of absence. Where
+Phase 1 reported "no result survives", the correct reading is "no result survives **at
+this resolution**" — and in both cases examined here, results did survive once the
+resolution improved. **This does not weaken the study's headline**, which is that the
+models do not beat their references: every one of the 29 surviving Holm results has the
+model *losing*, and the twenty-symbol operator comparison confirms the geometry critique
+rather than overturning it. It weakens only the *negatives about the negatives* — the
+places where Phase 1 said an effect could not be detected and treated that as evidence
+the effect was not there.
