@@ -343,27 +343,56 @@ def _hold_sentence(
 
     upper = thresholds.upper
     if upper is not None and signal.trend_strength > upper:
-        bound = _atom(f"{_percent(upper):+.2f}%", language)
+        apart = _apart(_percent(signal.trend_strength), _percent(upper))
+        if apart is None:
+            over = _atom(f"{BAND_FLOOR:.{BAND_PLACES[-1]}f}", language)
+            bound = _atom(f"{_percent(upper):+.2f}%", language)
+            if language == HE:
+                return (
+                    f"פעולה: המתנה. התחזית עברה את הגבול העליון של הרצועה ({bound}) "
+                    f"בפחות מ-{over} נקודות אחוז, ומעליו תחזית נחשבת בלתי סבירה ולא "
+                    "אטרקטיבית."
+                )
+            return (
+                f"Action: hold. The forecast passed the band's upper bound of {bound} "
+                f"by less than {over} of a percentage point, and beyond that bound a "
+                "forecast is treated as implausible rather than attractive."
+            )
+        reached, bound = _atom(apart[0], language), _atom(apart[1], language)
         if language == HE:
             return (
-                f"פעולה: המתנה. התחזית הגיעה ל-{strength}, מעל הגבול העליון של הרצועה "
+                f"פעולה: המתנה. התחזית הגיעה ל-{reached}, מעל הגבול העליון של הרצועה "
                 f"({bound}), שמעליו תחזית נחשבת בלתי סבירה ולא אטרקטיבית."
             )
         return (
-            f"Action: hold. The forecast reached {strength}, above the band's upper "
+            f"Action: hold. The forecast reached {reached}, above the band's upper "
             f"bound of {bound}, beyond which a forecast is treated as implausible "
             "rather than attractive."
         )
 
-    entry = _atom(f"{_percent(thresholds.lower):+.2f}%", language)
+    apart = _apart(_percent(thresholds.lower), _percent(signal.trend_strength))
+    if apart is None:
+        entry = _atom(f"{_percent(thresholds.lower):+.2f}%", language)
+        short = _atom(f"{BAND_FLOOR:.{BAND_PLACES[-1]}f}", language)
+        if language == HE:
+            return (
+                f"פעולה: המתנה. סף הכניסה המכויל לחלון זה מתחיל ב-{entry} והתחזית "
+                f"נפלה ממנו בפחות מ-{short} נקודות אחוז, כך שהסף לא נחצה."
+            )
+        return (
+            f"Action: hold. The calibrated entry band for this fold starts at {entry} "
+            f"and the forecast fell short of it by less than {short} of a percentage "
+            "point, so the threshold was not met."
+        )
+    entry, reached = _atom(apart[0], language), _atom(apart[1], language)
     if language == HE:
         return (
             f"פעולה: המתנה. סף הכניסה המכויל לחלון זה מתחיל ב-{entry} והתחזית הגיעה "
-            f"ל-{strength}, כך שהסף לא נחצה."
+            f"ל-{reached}, כך שהסף לא נחצה."
         )
     return (
         f"Action: hold. The calibrated entry band for this fold starts at {entry} and "
-        f"the forecast reached {strength}, so the threshold was not met."
+        f"the forecast reached {reached}, so the threshold was not met."
     )
 
 
@@ -381,6 +410,43 @@ def _atom(text: str, language: str) -> str:
 def _percent(log_return: float) -> float:
     """A log return as a simple percentage. The one conversion, used everywhere."""
     return math.expm1(log_return) * 100.0
+
+
+#: How far a band sentence widens its two numbers before it stops trying to show them
+#: apart, and the bound it states instead. Two decimals is the house format; below
+#: ``BAND_FLOOR`` percentage points the difference is smaller than anything a reader could
+#: act on, so the sentence names that bound rather than printing a distinction nobody can
+#: see. The floor is the last entry read back as a width, so the two cannot drift.
+BAND_PLACES = (2, 3, 4, 5, 6)
+BAND_FLOOR = 10.0 ** -BAND_PLACES[-1]
+
+
+def _apart(value: float, bound: float) -> tuple[str, str] | None:
+    """``value`` and ``bound`` as percentages, widened until they read as different.
+
+    **A sentence asserting a strict inequality may not print its two sides as the same
+    number.** On 3 September 2026 COST forecast 0.6724% against a band starting at
+    0.6738%; both round to ``+0.67%`` and the narration read *"starts at +0.67% and the
+    forecast reached +0.67%, so the threshold was not met"* - a decision that was right,
+    rendered as a contradiction. `signal.decide` compares the unrounded values and was
+    never wrong; only what the reader was shown was. The band's ``lower`` is 0.0067, so a
+    forecast landing within a rounding step of it is the case a calibrated threshold
+    produces *most* often, not a corner.
+
+    This is :func:`_share`'s rule one function further on - a value must not appear to be
+    something it is not because the format rounded the difference away. `_share` fixes an
+    unsigned zero; this widens a pair until it separates.
+
+    Returns ``None`` when six decimals still cannot part them, which the caller states as
+    a bound instead of papering over. That case is reachable rather than defensive:
+    :func:`_percent` is ``expm1``, so two distinct log returns can land on one percentage
+    double, and no precision would ever separate those.
+    """
+    for places in BAND_PLACES:
+        shown, against = f"{value:+.{places}f}%", f"{bound:+.{places}f}%"
+        if shown != against:
+            return shown, against
+    return None
 
 
 def _share(fraction: float) -> str:

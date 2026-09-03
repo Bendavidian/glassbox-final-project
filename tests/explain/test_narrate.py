@@ -21,6 +21,7 @@ from glassbox.engine import risk
 from glassbox.engine.signal import ENTER_LONG, EXIT, HOLD, Thresholds
 from glassbox.explain.channel import cancellation, shares
 from glassbox.explain.narrate import (
+    BAND_PLACES,
     EN,
     HE,
     LANGUAGES,
@@ -181,6 +182,79 @@ def test_hold_explains_the_band_it_did_not_reach(cfg: Config, language: str) -> 
 
     assert "+0.42%" in text  # the calibrated entry level
     assert "+0.18%" in text  # what the forecast reached
+
+
+#: A signed percentage carrying at least two decimals - the form a band level prints in.
+#: Channel shares are `.1f` and the forecast magnitude is unsigned, so neither can be
+#: mistaken here for one of the two numbers whose difference the sentence asserts.
+BAND_NUMBER = re.compile(r"[+-]\d+\.\d{2,}%")
+
+#: COST's own margin on 3 September 2026: a forecast of 0.006701134 against a band opening
+#: at 0.006715304. Both round to +0.67%, and the sentence claiming one is below the other
+#: printed them as the same number.
+COST_LOWER = 0.006715303868986666
+COST_MARGIN = 1.4169549103826e-5
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize(
+    "margin",
+    # Straddles the widening deliberately: 1e-3 separates at the house two decimals,
+    # COST's own margin needs three, 1e-7 needs six, and 1e-9 cannot be separated at all
+    # so the sentence must state the bound instead. Every one of those paths runs here.
+    [1e-3, COST_MARGIN, 1e-6, 1e-7, 1e-9, 1e-15],
+)
+def test_a_hold_never_prints_its_two_levels_as_the_same_number(
+    cfg: Config, language: str, margin: float
+) -> None:
+    """**A sentence asserting a strict inequality may not print its two sides alike.**
+
+    The decision is correct at every margin here - `signal.decide` compares the unrounded
+    values - so what this pins is the rendering. Before `_apart`, COST's margin produced
+    *"starts at +0.67% and the forecast reached +0.67%, so the threshold was not met"*,
+    which a reader can only read as wrong. The explanation layer is the product; an
+    explanation that refutes itself is a defect in it however right the decision was.
+    """
+    strength = COST_LOWER - margin
+    narrative = narrate(
+        a_forecast(strength),
+        an_attribution(close_logret=0.004, rsi14=-0.0008),
+        a_signal(HOLD, strength, passed_threshold=False),
+        Thresholds(lower=COST_LOWER),
+        cfg,
+        language=language,
+    )
+    text = bare(narrative.text)
+    claim = "threshold was not met" if language == EN else "הסף לא נחצה"
+    printed = BAND_NUMBER.findall(text)
+
+    assert claim in text, "the sentence under test must be the one making the claim"
+    assert printed, "a hold that names no level is not an explanation"
+    assert len(printed) == len(set(printed)), (
+        f"at a margin of {margin:g} the sentence claims one level is below another "
+        f"while printing them identically: {printed} in {text!r}"
+    )
+
+
+def test_the_stated_floor_is_the_last_width_the_sentence_tried(cfg: Config) -> None:
+    """The bound in the prose and the widening that gave up are one number, not two.
+
+    A literal ``0.000001`` in the sentence would be the second copy, and it would go on
+    reading correctly for exactly as long as nobody changed `BAND_PLACES`.
+    """
+    strength = COST_LOWER - 1e-15
+    text = bare(
+        narrate(
+            a_forecast(strength),
+            an_attribution(close_logret=0.004, rsi14=-0.0008),
+            a_signal(HOLD, strength, passed_threshold=False),
+            Thresholds(lower=COST_LOWER),
+            cfg,
+            language=EN,
+        ).text
+    )
+
+    assert f"{10.0 ** -BAND_PLACES[-1]:.{BAND_PLACES[-1]}f}" in text
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
