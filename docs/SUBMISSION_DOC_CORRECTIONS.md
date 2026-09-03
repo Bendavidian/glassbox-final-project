@@ -192,3 +192,93 @@ in 13 of 16, against WITS's 7 of 16, which is a coin flip), and it clears the un
 threshold at p = 0.0174 — but **it fails Holm at 0.0521**. The chapter's claim stays
 *"destroying the signal costs these models nothing"*; the stronger reading, *"the models
 do better on destroyed signal"*, is not supported at sixteen folds and must not be written.
+
+---
+
+## 5. GB-66's stated acceptance criterion cannot be met, and the criterion is the error
+
+**Document:** `GLASSBOX_PHASE2_EXPANSION.md`, §GB-66 "Done when".
+
+**Claim as written:**
+
+> **The null control is run and the correlation between the learned response on real data
+> and on white noise is reported against FITS's +0.9485.** This is the acceptance
+> criterion that matters; performance is not.
+
+**Status: structurally unmeasurable.** Not unmeasured — *unmeasurable*, and no amount of
+running closes it.
+
+`response` is the magnitude of the learned gain **per retained rFFT bin**: **23 values**
+at `input_len` 120 under the 5-day cutoff. WITS is configured `retained_bands: 2`
+(cA3 + cD3), so the counterpart curve holds **two** values, and a Pearson correlation over
+two points is ±1 by construction and carries no information. Taking all four DWT bands
+gives n = 4 against 23, and a per-band aggregate over an octave is a different object from
+a per-bin gain at one frequency. **A correlation over 2 or 4 values must never be printed
+beside +0.9485 as though it were the same measurement.**
+
+`scripts/operator_null_control.py` already refuses it, twice, and said so before anyone
+asked: `measure()` gates the row behind `if model == "fits"` — *"it exists only where
+there are bins to have it"* — and `_correlate` returns NaN for fewer than three values.
+
+**This is a result, not a gap.** The expansion set a criterion that could not be met, and
+finding that out required building WITS. It says the geometry critique is **Fourier-
+specific by construction**: the thing being criticised — a global basis remapped onto a
+shifted grid, forcing the learned layer to interpolate — has no counterpart in a basis
+whose per-band maps are square. **GB-66 is complete.**
+
+**The verdict rests on the quantity that does transfer**, and that comparison is
+legitimate where the response comparison is not: the flattened `(H, L)` forecast matrix,
+**n = 480 for both architectures**, computed by the same function on the same folds with
+the same seed and budget, differing only in what the close channel holds.
+
+| | five symbols (27 Aug) | twenty symbols (3 Sep) |
+|---|---|---|
+| FITS operator | −0.0127 (t vs 0 = −0.44) | **+0.1946** (t = +7.24) |
+| WITS operator | +0.0331 (t = +0.75) | **+0.0838** (t = +2.56) |
+| paired WITS − FITS | +0.0458 | **−0.1108** |
+| Wilcoxon p | 0.5282 | **0.0042** |
+| WITS lower in | 9 of 16 folds | **13 of 16 folds** |
+| verdict | **did not hold** | **HELD** |
+
+**The five-symbol study would have recorded "prediction did not hold" from a comparison
+with no power** — neither correlation was distinguishable from zero. This is GB-61's
+Wilcoxon finding in a second, independent place.
+
+---
+
+## 6. FITS's +0.9485 and the 86% are five-symbol figures, and the 86% is not reproducible
+
+**Document:** `docs/GLASSBOX_PROJECT_SPEC.md` §2.4, `docs/GB57_RESULTS_AND_DISCUSSION.md`
+§3, `IDEAS_PARKED.md`, `glassbox/model/wits.py`, `glassbox/dashboard/app.py`
+(`SPECTRAL_NOISE_CORRELATION = 0.9485`).
+
+**Three numbers that must be kept apart**, because they are currently used
+interchangeably:
+
+| figure | what it is |
+|---|---|
+| **+0.9485** | GB-46's published headline, from its own frequency-response work |
+| **+0.8967** | `operator_null_control.py` over 16 folds at **five** symbols, 27 Aug |
+| **+0.9780 ± 0.0105** | the same script at **twenty** symbols, 3 Sep |
+
+**The critique got stronger, not weaker.** r² rises **0.804 → 0.957**, and the
+real-versus-noise curves moved *closer*: mean absolute difference **0.0390 → 0.0256**.
+Whatever else changed at twenty symbols, the data-independence the geometry critique rests
+on is larger.
+
+**The 86% cannot be recomputed from the artefact that is supposed to hold its evidence.**
+Spec §2.4 derives it as `1 − 0.0319 / 0.2335` — mean absolute difference over **curve
+range** — and `report/null_control.csv` records the difference but **not the range**. The
+number therefore has no reproducible path from the file, which is the same defect as the
+16.00%/peak-51% reconstruction, in a claim the chapter leans on harder. Restated in the
+quantity that *is* reproducible: **r² = 95.7% at twenty against 80.4% at five.** The
+substance holds and the published 86% understates it.
+
+**A note that must travel with this number, or the project's own heuristic will reject
+it.** Across 16 independently trained folds the response correlation has **CV 1.08%**
+(0.0105 / 0.9780), against 3.09% at five. CLAUDE.md records that a CV near 1% across
+independently trained models is evidence the measurement is *about the machine rather than
+about the market* — the test that killed the FITS phase advance at CV 1.04%. **Here that
+is the finding, not the alarm.** The claim under test is precisely that this curve is
+deterministic operator geometry rather than market structure, so a 1% CV corroborates it.
+Applied mechanically, the heuristic would reject the one result it confirms.
