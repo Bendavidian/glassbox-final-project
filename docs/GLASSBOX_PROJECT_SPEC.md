@@ -303,7 +303,15 @@ glassbox/
 ├── experiments/
 │   ├── study.py               # ★ the comparative grid runner
 │   ├── stats.py               # paired Wilcoxon, three references, Holm (GB-51)
-│   └── report.py              # results.csv → tables + plots
+│   ├── report.py              # results.csv → tables + plots
+│   └── exposure.py            # does the gross cap bind, and in how many folds.
+│                              # Its own module because it OBSERVES the risk layer
+│                              # rather than belonging to it: it records all three
+│                              # terms of `room_for` at every sizing call and proves
+│                              # it changed nothing by running each fold twice. It
+│                              # exists at all because the "16.00% / peak 51%" figures
+│                              # in DECISIONS came from a reconstruction that is
+│                              # nowhere in this repo and cannot be rerun
 ├── faults.py                  # retry + backoff; the one policy for an unreachable
 │                              # broker or feed (GB-39). Below `data` and `engine`
 │                              # because both call it and neither can hold it

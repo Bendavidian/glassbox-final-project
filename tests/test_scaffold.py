@@ -59,6 +59,11 @@ SPEC_MODULES = (
     # must be able to derive it from `results.csv` alone.
     "experiments/stats.py",
     "experiments/report.py",
+    # Item 8: the gross-exposure measurement. Its own module because it OBSERVES the risk
+    # layer rather than belonging to it - putting it in `engine/risk.py` would make the
+    # thing being measured and the thing doing the measuring the same import, and the
+    # first question anyone asks of this number is whether the instrument moved it.
+    "experiments/exposure.py",
     # GB-39: the retry policy. Its own module because its callers sit at opposite ends of
     # the layer stack - `data/live.py` is L1 and `engine/executor.py` is L5 - so neither
     # can import it from the other without inverting the stack, and a backoff written

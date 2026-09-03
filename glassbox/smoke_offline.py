@@ -232,17 +232,7 @@ def run(
         raise SmokeError(f"--folds must be at least 1, got {n_folds}")
 
     started = time.perf_counter()
-    bars = load_cached_bars(cfg)
-    log(f"cache: {len(bars)} symbols, {min(len(f) for f in bars.values())}+ bars each")
-
-    frames = {symbol: build_feature_frame(frame, cfg) for symbol, frame in bars.items()}
-    folds = make_folds(_common_index(frames), cfg)[:n_folds]
-    if not folds:
-        raise SmokeError(
-            "no complete walk-forward fold fits the cached history; the cache is too "
-            "short for the configured train/val/test months"
-        )
-    log(f"folds: {len(folds)} of {n_folds} requested, first is fold {folds[0].number}")
+    bars, frames, folds = prepare_folds(cfg, n_folds, log)
 
     runs: list[ArmRun] = []
     for fold in folds:
@@ -261,6 +251,33 @@ def run(
     table = fold_table(runs)
     summary = aggregate(runs, seconds=time.perf_counter() - started)
     return table, summary
+
+
+def prepare_folds(
+    cfg: Config, n_folds: int, log=lambda message: None
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], list[Fold]]:
+    """Cache to ``(bars, frames, folds)`` - everything a fold-by-fold caller needs.
+
+    Factored out of :func:`run` rather than copied, so a caller that drives folds itself
+    (``experiments.exposure``) builds its features and its fold grid through the **same**
+    code the study does. Two routes to a fold grid is how two parts of one project start
+    measuring different windows while both pass their tests.
+
+    Raises:
+        SmokeError: the cache is incomplete, or no complete fold fits the history.
+    """
+    bars = load_cached_bars(cfg)
+    log(f"cache: {len(bars)} symbols, {min(len(f) for f in bars.values())}+ bars each")
+
+    frames = {symbol: build_feature_frame(frame, cfg) for symbol, frame in bars.items()}
+    folds = make_folds(_common_index(frames), cfg)[:n_folds]
+    if not folds:
+        raise SmokeError(
+            "no complete walk-forward fold fits the cached history; the cache is too "
+            "short for the configured train/val/test months"
+        )
+    log(f"folds: {len(folds)} of {n_folds} requested, first is fold {folds[0].number}")
+    return bars, frames, folds
 
 
 def load_cached_bars(cfg: Config) -> dict[str, pd.DataFrame]:
@@ -617,8 +634,25 @@ def run_arm(
     frames: dict[str, pd.DataFrame],
     bars: dict[str, pd.DataFrame],
     cfg: Config,
+    backtest_sizer=None,
 ) -> ArmRun:
-    """Train, calibrate, forecast and backtest one arm on one fold."""
+    """Train, calibrate, forecast and backtest one arm on one fold.
+
+    Args:
+        backtest_sizer: The sizer for the **test-period backtest only**, or ``None`` for
+            ``risk.position_sizer``. It exists so ``experiments.exposure`` can observe the
+            risk layer without altering it, and the scope is deliberate: threshold
+            calibration keeps the real sizer, because calibration runs a trial backtest per
+            candidate band and instrumenting it would bury the traded path's sizing calls
+            under thousands from paths nothing traded. The metrics this function returns
+            come from the test-period backtest, so that is the one worth measuring.
+
+            Passing a sizer that returns anything other than what ``position_sizer`` would
+            return for the same arguments changes the results. ``recording_sizer`` does
+            not, by construction, and ``experiments.exposure`` proves it by running both
+            ways and comparing.
+    """
+    sizer = risk.position_sizer if backtest_sizer is None else backtest_sizer
     started = time.perf_counter()
     arm_cfg = replace(cfg, model=replace(cfg.model, active=name))
 
@@ -643,7 +677,7 @@ def run_arm(
     result = run_backtest(
         _bars_between(bars, fold.test[0], fold.test[-1]),
         decide_all(forecasts, calibration.thresholds, arm_cfg),
-        risk.position_sizer,
+        sizer,
         arm_cfg,
     )
 

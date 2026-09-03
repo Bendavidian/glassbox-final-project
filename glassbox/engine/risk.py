@@ -225,6 +225,112 @@ def position_sizer(
     return room_for(equity, gross_exposure, cfg)
 
 
+#: Which of the three terms in :func:`room_for` was the binding minimum, and whether the
+#: result was zero. **Observation vocabulary only** - nothing in the sizing path branches
+#: on these, and adding one changes no number.
+#:
+#: ``REDUCED_BY_GROSS`` is the case that matters and the one a naive instrument misses.
+#: When the gross headroom is merely *smaller* than the per-position cap, the cap has
+#: bound - it shrank the entry - and the notional comes back **positive**. It looks like
+#: an ordinary trade. Counting only zero notionals would report "the cap rarely binds"
+#: and be wrong in the direction that flatters the risk layer.
+UNCONSTRAINED = "UNCONSTRAINED"
+REDUCED_BY_GROSS = "REDUCED_BY_GROSS"
+BLOCKED_BY_GROSS = "BLOCKED_BY_GROSS"
+BLOCKED_BY_OTHER = "BLOCKED_BY_OTHER"
+TIE = "TIE"
+NO_EQUITY = "NO_EQUITY"
+
+
+@dataclass(frozen=True)
+class RoomDetail:
+    """The three caps, the notional, and which term bound - for **measurement only**.
+
+    :func:`room_for` returns a bare float and therefore discards which of its three terms
+    was the minimum. That is a real defect and it is **not fixed here**: this type is an
+    observation channel beside the sizing path, not a change to it. ``room_for`` derives
+    its return value from :attr:`notional` so the arithmetic exists in one place - a second
+    copy of a ``min`` is how a measurement starts disagreeing with the thing it measures.
+
+    **Ties are recorded, not resolved.** With ``max_position_pct`` 0.10 and
+    ``max_gross_exposure`` 0.50, term A equals term B exactly when ``gross_exposure`` is
+    ``0.40 * equity`` - four full-size positions - so a tie is the arithmetic boundary at
+    which the gross cap begins to matter, not a floating-point coincidence. Every fifth
+    full-size entry lands on it. A tie-break chosen inside the instrument would decide the
+    headline count by itself, so :attr:`case` reports ``TIE`` and all three terms are kept
+    for a policy applied afterwards and stated in the output.
+    """
+
+    equity: float
+    gross_exposure: float
+    per_position: float  # A: equity * max_position_pct
+    gross_headroom: float  # B: equity * max_gross_exposure - gross_exposure
+    cash: float  # C: equity - gross_exposure
+    notional: float
+    case: str
+
+    @property
+    def gross_bound(self) -> bool:
+        """Did the **gross cap** bind, reduced or blocked? The headline predicate.
+
+        ``TIE`` is excluded: whether a tie counts is the policy the caller states, and
+        folding it in here would hide it.
+        """
+        return self.case in (REDUCED_BY_GROSS, BLOCKED_BY_GROSS)
+
+
+def room_detail(equity: float, gross_exposure: float, cfg: Config) -> RoomDetail:
+    """:func:`room_for`'s answer with its reasoning attached. Pure; no I/O, no state.
+
+    The returned :attr:`RoomDetail.notional` is the value ``room_for`` returns, computed
+    by the same expression rather than by a second one.
+    """
+    if not (equity > 0.0):
+        return RoomDetail(
+            equity=equity,
+            gross_exposure=gross_exposure,
+            per_position=math.nan,
+            gross_headroom=math.nan,
+            cash=math.nan,
+            notional=0.0,
+            case=NO_EQUITY,
+        )
+    per_position = equity * cfg.risk.max_position_pct
+    gross_headroom = equity * cfg.risk.max_gross_exposure - gross_exposure
+    cash = equity - gross_exposure
+    notional = max(0.0, min(per_position, gross_headroom, cash))
+
+    # `A == B` is the ONLY tie that can make the gross term ambiguous, and it is exact
+    # rather than approximate. B == C would need `equity * max_gross_exposure == equity`,
+    # i.e. a gross cap of 1.0 or a zero equity, and the zero is already returned above -
+    # so with `max_gross_exposure` at 0.50 it is unreachable. A == C needs
+    # `gross_exposure == 0.9 * equity`, at which B is negative and is the strict minimum
+    # anyway. So the single tie worth recording is A == B, at `gross_exposure == 0.40 *
+    # equity` under the configured 0.10 and 0.50, and when it holds the two are jointly
+    # the minimum (C is larger, or A == B could not have been reached).
+    if gross_headroom == per_position:
+        case = TIE
+    elif gross_headroom < per_position and gross_headroom < cash:
+        case = REDUCED_BY_GROSS if notional > 0.0 else BLOCKED_BY_GROSS
+    elif notional > 0.0:
+        # The gross term was not binding. `A` normally is - a full-size entry is the
+        # per-position cap - so this reads "unconstrained BY THE GROSS CAP", which is the
+        # only question this vocabulary exists to answer.
+        case = UNCONSTRAINED
+    else:
+        case = BLOCKED_BY_OTHER
+
+    return RoomDetail(
+        equity=equity,
+        gross_exposure=gross_exposure,
+        per_position=per_position,
+        gross_headroom=gross_headroom,
+        cash=cash,
+        notional=notional,
+        case=case,
+    )
+
+
 def room_for(equity: float, gross_exposure: float, cfg: Config) -> float:
     """Notional this account may commit to one more position. Never negative.
 
@@ -232,17 +338,41 @@ def room_for(equity: float, gross_exposure: float, cfg: Config) -> float:
     under the gross cap, and the cash on hand. Public because GB-22's executor must be able
     to ask the question before it sends an order, and a second implementation of this
     arithmetic is how a backtest and a live account start describing different systems.
+
+    Derived from :func:`room_detail` so the ``min`` is written once. The signature and the
+    returned float are unchanged, and :func:`room_detail` is not consulted by any caller on
+    the sizing path - which is why adding it moves no number.
     """
-    if not (equity > 0.0):
-        return 0.0
-    return max(
-        0.0,
-        min(
-            equity * cfg.risk.max_position_pct,
-            equity * cfg.risk.max_gross_exposure - gross_exposure,
-            equity - gross_exposure,
-        ),
-    )
+    return room_detail(equity, gross_exposure, cfg).notional
+
+
+def recording_sizer(records: list[RoomDetail]):
+    """A :class:`~glassbox.backtest.engine.PositionSizer` that appends what it decided.
+
+    **It observes; it does not decide differently.** The notional it returns comes from
+    :func:`room_detail`, the same value :func:`position_sizer` would return for the same
+    arguments, so a backtest run with this sizer produces the same trades, the same equity
+    curve and the same metrics as one run without it. That claim is not left to
+    inspection - ``experiments.exposure`` runs the reference condition both ways and
+    compares, and ``tests/engine/test_room_detail.py`` asserts the equality directly.
+
+    Args:
+        records: The list to append to. Supplied by the caller so this holds no state of
+            its own and two concurrent measurements cannot write into each other.
+    """
+
+    def sizer(
+        signal: Signal, equity: float, gross_exposure: float, cfg: Config
+    ) -> float:
+        del signal  # sizing is a function of the account, not of which symbol it is
+        _require_finite(equity, "equity")
+        _require_finite(gross_exposure, "gross_exposure")
+        detail = room_detail(equity, gross_exposure, cfg)
+        records.append(detail)
+        return detail.notional
+
+    sizer.__name__ = "recording_position_sizer"
+    return sizer
 
 
 def _require_finite(value: float, name: str) -> None:
@@ -256,10 +386,19 @@ def _require_price(price: float, symbol: str) -> None:
 
 
 __all__ = [
+    "BLOCKED_BY_GROSS",
+    "BLOCKED_BY_OTHER",
     "MIN_ORDER_NOTIONAL",
+    "NO_EQUITY",
     "QUANTITY_DECIMALS",
+    "REDUCED_BY_GROSS",
+    "TIE",
+    "UNCONSTRAINED",
     "Order",
+    "RoomDetail",
     "position_sizer",
+    "recording_sizer",
+    "room_detail",
     "room_for",
     "shares_for",
     "size_positions",
