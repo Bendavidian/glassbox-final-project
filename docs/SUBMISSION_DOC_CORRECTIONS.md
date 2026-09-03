@@ -355,3 +355,106 @@ model *losing*, and the twenty-symbol operator comparison confirms the geometry 
 rather than overturning it. It weakens only the *negatives about the negatives* — the
 places where Phase 1 said an effect could not be detected and treated that as evidence
 the effect was not there.
+
+---
+
+## 9. GB-57 §57.10 — the `sd` instance was right about the mechanism and wrong in its figures
+
+**Document:** the GB-57 §57.10 skeleton (v2, 3 Sep 2026), second principle, *"a green
+result answering a different question is the most comfortable kind of wrong"*.
+
+**Claim as written:**
+
+> **The report's `sd` column is the arm's spread, not the paired difference**, and for
+> total_return it moved the *wrong way* (0.0129 → 0.0162). Stopping there would have
+> reported the power mechanism backwards with correct numbers attached.
+
+**Status: the mechanism is confirmed; the parenthesis was wrong and is replaced.**
+
+The mechanism holds exactly as stated. `experiments/stats.py:232` computes
+`"sd": float(values.std(ddof=1))`, where `values` is the **arm's own per-fold metric**.
+The paired difference is formed on the line above and reaches only `mean_delta` and the
+signed-rank test itself. So the column a reader sees beside a p-value is not the quantity
+that produced it.
+
+**The two figures were not sd values.** `0.0162` is DLinear C2's **mean MAE** from the v1
+chapter's flatness ranking (`GB57_RESULTS_AND_DISCUSSION.md`, the
+`persistence 0.0153 / WITS 0.0156 / DLinear C0 0.0158 / FITS 0.0159 / DLinear C2 0.0162`
+line); it appears nowhere in `report/report.md` as an sd. `0.0129` **is** a real figure —
+DLinear, `C0_base`, `total_return`, five symbols — so the pair was one correct number and
+one substituted from a different metric, which is the harder kind to notice.
+
+**Recomputed, over the 39 `total_return` cells present at both universe sizes**, by
+running the committed `stats.wilcoxon` on `results.csv` at HEAD and on the five-symbol
+table at `da37401^`:
+
+| quantity | at 5 | at 20 | ratio | grew at twenty |
+|---|---|---|---|---|
+| **reported `sd`** (the arm's own spread) | 0.01605 | 0.02286 | **×1.424** | **25 of 39** |
+| **true paired-difference sd** (what the test consumes) | 0.13567 | 0.05154 | **×0.380** | **0 of 39** |
+
+Reference condition (anchor 0, lr 1e-3, real, `target_in_loop=True`, cutoff 5, `C0_base`):
+
+| arm | reported sd, 5 → 20 | paired-difference sd, 5 → 20 |
+|---|---|---|
+| persistence | 0.00000 → 0.00000 | 0.15467 → 0.05989 |
+| dlinear | **0.01295 → 0.02528** | 0.14703 → 0.03978 |
+| fits | 0.02994 → 0.03325 | 0.14131 → 0.05162 |
+| wits | 0.02190 → 0.03408 | 0.14583 → 0.04733 |
+
+**The claim is stronger than the draft made it, not weaker.** The two quantities move in
+**opposite directions**, and not marginally: the reported column rises in 25 of 39 cells
+while the quantity the test actually consumes falls in **39 of 39**. A reader auditing
+§57.8's power argument against the `sd` column printed beside it would have found the
+evidence pointing the wrong way and concluded the argument was backwards.
+
+**What produced the correction.** The evidence audit of 3 Sep 2026, which required every
+57.10 instance to carry a commit, `file:line` or test node ID before it could appear in
+the chapter. This instance carried a mechanism that verified and figures that did not.
+**It is itself an instance of the principle it describes**: the sentence was true, the
+numbers beside it were about a different quantity, and nothing about the pair looked
+wrong — the chapter's own drafting committing the error the chapter is about.
+
+---
+
+## 10. GB-57 §57.2 — the `C0_base` filter drops the arm the null-result argument rests on
+
+**Document:** the GB-57 §57.10 skeleton (v2, 3 Sep 2026), second principle, and the filter
+note under §57.2's five-beside-twenty direction table.
+
+**Claim as written:**
+
+> **A `channels == C0_base` filter silently drops buy-and-hold**, the one arm whose
+> degradation carries the entire null-result argument.
+
+**Status: confirmed, mechanically, and it needs no anecdote.** Counted directly on
+`results.csv` at HEAD:
+
+| | rows |
+|---|---|
+| `results.csv`, excluding the header | 1110 |
+| `model == buy_and_hold` | **224** |
+| of those, carrying a non-empty `channels` value | **0** |
+| kept by `channels == C0_base` | 608 |
+| — of which `buy_and_hold` | **0 of 224** |
+| kept by `channels == C0_base or model == buy_and_hold` | 832 |
+
+Every `buy_and_hold` row carries `channels` as NaN, because buy-and-hold has no feature
+configuration to name — it is a reference arm, not a model arm. So the equality is not
+merely unlikely to match, it **cannot** match: the filter that looks like "hold the
+feature configuration fixed" is the filter that removes the reference the comparison is
+against, and it removes 100% of it while leaving 608 rows behind that look like a complete
+table.
+
+**Why this is the second principle and not carelessness.** The filter is correct for every
+model arm, the resulting table is well-formed, every remaining number is right, and the
+missing row is the **−0.0517 degradation that separates "we found nothing" from "we
+measured that there was nothing to find"** (entry 4). A green table answering a different
+question, with no visible defect — and the arm it drops is the one §57.3 calls the whole
+argument.
+
+**What produced the correction.** Found while assembling §57.2's table during the 3 Sep
+drafting pass; the committed table at entry 4 above already carries the correct filter and
+states it in its caption. Recorded here because the chapter documents this failure class
+in other people's code and in its own tooling, and declining to record the two instances
+its own drafting produced would make the section worth less than it claims to be.
