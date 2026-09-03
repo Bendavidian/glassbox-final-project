@@ -709,18 +709,19 @@ EQUITY_TITLE_Y, EQUITY_COUNT_INSET = 16, 10
 #: on $100,000 filled the plot with 1.3 basis points; against this floor it moves 5 units
 #: of 116, which is what 1.3 basis points looks like.
 #:
-#: **This is one fact in two places** - here and in the risk section of the config - so
+#: **This is one fact in two places** - here and in `risk:` in
+#: `glassbox/config/settings.yaml` - so
 #: `test_the_curve_floor_is_the_risk_policys_worst_single_position` is what makes them
 #: equal. Deriving it would mean reading config inside a pure chart function, and these
 #: builders take a frame and return a string.
 #:
-#: **The config file is named by that test and not by this comment, and that is not a
-#: style choice.** `test_no_module_reads_settings_or_environ_directly` scans the raw source
-#: of every module outside `glassbox/config/` for the filename, so a sentence *mentioning*
-#: it fails the suite exactly as an `open()` of it would - the guard measures the file
-#: rather than the code, and cannot tell reading config from writing about it. This comment
-#: broke it on the first draft. Fourth costume of the same defect, after the fixed
-#: character offset, the occurrence count, and the count inflated by its own explanation.
+#: **This sentence could not be written until the guard that forbade it was fixed.**
+#: `test_no_module_reads_settings_or_environ_directly` scanned the raw source of every
+#: module outside `glassbox/config/` for the filename, so naming the file *in prose* failed
+#: exactly as an `open()` of it would, and the cheapest way to a green suite was to delete
+#: the explanation - on a rule whose whole point is that config is the single source of
+#: truth and that a module should say where its numbers come from. It now measures the
+#: code: comments and docstrings are blanked, every other string literal kept.
 EQUITY_MIN_SPAN = 0.10 * 0.03
 
 

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import copy
+import io
 import re
+import tokenize
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
@@ -478,16 +481,85 @@ def test_unset_endpoint_is_refused(endpoint: str | None) -> None:
 FORBIDDEN_OUTSIDE_CONFIG = ("os.environ", "os.getenv", "getenv(", "settings.yaml")
 
 
+def code_only(source: str) -> str:
+    """``source`` with comments and docstrings blanked, **every other string kept**.
+
+    **The guard below scanned raw text, and a guard whose value is a property of the file
+    rather than of the code punishes whoever explains the code.** A comment naming the
+    settings file failed it exactly as an ``open()`` of that file would, so the cheapest
+    way to go green was always to delete the sentence saying where a value came from - a
+    mechanism working against the thing it protects, on a project whose fifth rule is that
+    config is the single source of truth and whose modules are therefore expected to say
+    so. It cost a real sentence on 3 Sep 2026: the note on
+    :data:`~glassbox.dashboard.app.EQUITY_MIN_SPAN` explaining that the constant is pinned
+    to the risk policy had to be written around the filename before the suite would pass.
+
+    **Fourth costume of this family**, after the 200-character slice, the `from_daily`
+    occurrence count, and the count inflated by the comment introducing the thing it
+    counted. It is the worst of the four for a reason the others do not share: those three
+    broke *when* somebody explained the code, while this one made the explanation itself
+    the offence, so the incentive it created was to write less down.
+
+    **String literals other than docstrings are deliberately kept, and that is the whole
+    design.** An ``open()`` of the settings file *is* a string literal; stripping literals
+    would blind the guard to the only spelling of the defect it exists to catch. Comments
+    and docstrings are prose by definition and can never be a read; every other literal
+    can be.
+
+    Blanked rather than deleted, so line and column offsets stay valid while later spans
+    are applied to the same text.
+    """
+    lines = source.splitlines(keepends=True)
+    spans: list[tuple[int, int, int, int]] = []
+
+    holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, holders) or not node.body:
+            continue
+        first = node.body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            doc = first.value
+            spans.append(
+                (doc.lineno, doc.col_offset, doc.end_lineno, doc.end_col_offset)
+            )
+
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            spans.append((*token.start, *token.end))
+
+    for first_line, first_col, last_line, last_col in spans:
+        for number in range(first_line, last_line + 1):
+            line = lines[number - 1]
+            start = first_col if number == first_line else 0
+            end = last_col if number == last_line else len(line.rstrip("\n"))
+            lines[number - 1] = line[:start] + " " * (end - start) + line[end:]
+    return "".join(lines)
+
+
+def forbidden_in(source: str) -> list[str]:
+    """Every forbidden token this source *runs*, ignoring every one it merely mentions."""
+    code = code_only(source)
+    return [token for token in FORBIDDEN_OUTSIDE_CONFIG if token in code]
+
+
 def test_no_module_reads_settings_or_environ_directly(package_root: Path) -> None:
-    """Only the config layer may read settings.yaml or the environment (CLAUDE.md 5)."""
+    """Only the config layer may read the settings file or the environment (CLAUDE.md 5).
+
+    Measured on the code, not on the file: see :func:`code_only` for why, and for the
+    sentence this guard deleted before it was fixed.
+    """
     offenders: list[str] = []
     for path in package_root.rglob("*.py"):
         if path.parent.name == "config" or "__pycache__" in path.parts:
             continue
-        source = path.read_text(encoding="utf-8")
-        for token in FORBIDDEN_OUTSIDE_CONFIG:
-            if token in source:
-                offenders.append(f"{path.relative_to(package_root)}: {token}")
+        offenders += [
+            f"{path.relative_to(package_root)}: {token}"
+            for token in forbidden_in(path.read_text(encoding="utf-8"))
+        ]
     assert not offenders
 
 
@@ -495,11 +567,49 @@ def test_no_script_reads_the_environment_directly(repo_root: Path) -> None:
     """scripts/ sits outside the package, so extend the same rule to it explicitly."""
     offenders: list[str] = []
     for path in (repo_root / "scripts").rglob("*.py"):
-        source = path.read_text(encoding="utf-8")
-        for token in FORBIDDEN_OUTSIDE_CONFIG:
-            if token in source:
-                offenders.append(f"{path.relative_to(repo_root)}: {token}")
+        offenders += [
+            f"{path.relative_to(repo_root)}: {token}"
+            for token in forbidden_in(path.read_text(encoding="utf-8"))
+        ]
     assert not offenders
+
+
+def test_the_guard_catches_a_real_read_and_not_a_mention_of_one() -> None:
+    """**Both directions, because a guard loosened in one direction is deleted in the
+    other.**
+
+    Loosening this rule could never be verified by the suite going green: the suite was
+    green the moment the explanation was deleted, which is the outcome being fixed. So the
+    two halves are asserted against each other. Every spelling of an actual read must
+    still be caught - including the two that live inside string literals, which is exactly
+    what :func:`code_only` must not strip - and prose naming the same thing must not be.
+    """
+    reads = (
+        'CONFIG = open("settings.yaml")',
+        'PATH = Path(__file__).parent / "settings.yaml"',
+        'KEY = os.environ["ALPACA_KEY"]',
+        "KEY = os.getenv('ALPACA_KEY')",
+        "KEY = getenv('ALPACA_KEY')",
+    )
+    for source in reads:
+        assert forbidden_in(source), f"the guard stopped seeing a real read: {source}"
+
+    mentions = (
+        "# the floor is pinned to settings.yaml by a test\nX = 1\n",
+        '"""Pinned to settings.yaml; os.environ belongs to the config layer."""\nX = 1\n',
+        (
+            'def f():\n    """Never reads settings.yaml, and os.getenv is forbidden."""\n'
+            "    return 1\n"
+        ),
+        (
+            "class C:\n"
+            '    """Holds no settings.yaml path and calls no getenv(."""\n'
+            "    value = 1\n"
+        ),
+    )
+    for source in mentions:
+        found = forbidden_in(source)
+        assert not found, f"prose still counts as a read: {found} in {source!r}"
 
 
 # ── the model hash is narrower than the config hash (ruled 20 Aug 2026) ──────
