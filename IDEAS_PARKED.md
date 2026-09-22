@@ -114,3 +114,64 @@ whole-share sizing was nearly free for most of the study period and is expensive
 and the grid already carries the axis that matters. Cost if taken up: a sizing flag, a
 `risk.shares_for` branch, and a full grid re-run.
 
+## GB-62 — The C3 feature arm, declined 4 Sep 2026
+
+**Parked 22 Sep 2026, and the parking records a decline, not a deferral.** GB-62 would have
+added `C3_extended` — ATR, Bollinger position, a volume-flow measure and a longer-horizon
+momentum — as a third feature arm against DLinear. Its reinstatement clause in
+`GLASSBOX_PHASE2_EXPANSION.md` was live and its condition met on 3 Sep, and it was declined
+on 4 Sep. **The reasoning is recorded once, in `docs/GB57_OUTLINE.md` §57.9 item 8
+(`d69c167`), and is deliberately not copied here** — two copies of a reason diverge like two
+copies of anything else. In one line: a cost decision under the 15 September boundary, not
+a judgement that C3 is worthless, taken because the WITS operator comparison had already
+answered the question C3 was a proxy for, and answered it harder. The limitation stays
+bounded there: this study tested two feature configurations, both chosen by its author, and
+cannot exclude that a third would have behaved differently.
+
+**Cost if taken up:** see §57.9 item 8. In short, about 15 minutes of grid compute in the
+best case, and a full grid re-run in the worst — any indicator whose warm-up exceeds 325
+bars moves `min_history_bars` and refuses every checkpoint.
+
+## GB-64 — Sentiment as a Co-Pilot annotation
+
+**Parked 22 Sep 2026: out of scope for submission.** GB-64 would show recent headlines in
+the Co-Pilot panel after a decision, labelled as context that did not enter it. It touches
+the project's sentiment ruling directly — *"sentiment never enters the model and never
+enters a backtest"*, recorded in full in `GLASSBOX_PHASE2_EXPANSION.md` §5 and carried into
+the report as `docs/GB57_OUTLINE.md` §57.9 item 7 — because its whole design is to keep
+sentiment beside the decision and out of it, and the mechanism meant to guarantee that is
+not built. **Its first acceptance criterion is unmet:** `DECISIONS.md:267` records that the
+existing import contracts do not stop `glassbox.backtest` or `glassbox.experiments` from
+importing a provider under `glassbox.data`, so the promised enforcement is *"discipline in a
+contract's clothes"* until a new `forbidden` contract names the sentiment module. Distinct
+from *Sentiment / news channel* above, which is sentiment as a model input and is excluded
+by the ruling itself rather than by time.
+
+**Cost if taken up:** 3 SP as estimated — the `forbidden` import contract, a live-path-only
+provider, a panel label stating the annotation is not a model input, and a test that
+removing the provider changes no number in `results.csv`.
+
+## GB-65 — Demonstration, folded into GB-54 and GB-55
+
+**Parked 22 Sep 2026: its rehearsals are delivered through GB-54's demo script, and its
+report figures through GB-55, rather than as a separate task.** GB-65 specified four
+things. They are listed here with where each now
+stands, because folding one task into another is how scope disappears without anybody
+deciding to drop it:
+
+- **Two full rehearsals, fold 13 then fold 1** — inside GB-54's own definition in spec §9,
+  *"Both folds, in this order: 13 then 1."* Covered.
+- **The four architecture-report screenshots** — **assigned to GB-55**, ruled 22 Sep 2026.
+  The six frames now in `report/screenshots/` predate the twenty-symbol flip, so GB-55
+  inherits a retake, not a set of finished figures.
+- **The caption rule for the spectral-panel capture**, that FITS is not the deployed arm and
+  beats neither reference — **assigned to GB-55 with the screenshots**, ruled 22 Sep 2026.
+- **The vision video's shot 6 recording** — **cut**, ruled 22 Sep 2026. Dropped, not
+  deferred: no task carries it, and this line is the record that its absence was decided.
+
+GB-54 is not started as of 22 Sep 2026. GB-55's own row in spec §9 does not yet name the
+screenshots or the caption rule, so this entry is currently the only record of the
+assignment.
+
+**Cost if taken up separately:** none. The rehearsals are GB-54's, the screenshots and the
+caption rule are GB-55's, and shot 6 is cut.
