@@ -169,9 +169,9 @@ deciding to drop it:
 - **The vision video's shot 6 recording** — **cut**, ruled 22 Sep 2026. Dropped, not
   deferred: no task carries it, and this line is the record that its absence was decided.
 
-GB-54 is not started as of 22 Sep 2026. GB-55's own row in spec §9 does not yet name the
-screenshots or the caption rule, so this entry is currently the only record of the
-assignment.
+GB-54 is not started as of 22 Sep 2026. GB-55's row in spec §9 names the screenshots and
+the caption rule as of the same day, so the assignment is recorded where GB-55's owner
+will read it and not only here.
 
 **Cost if taken up separately:** none. The rehearsals are GB-54's, the screenshots and the
 caption rule are GB-55's, and shot 6 is cut.
