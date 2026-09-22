@@ -80,7 +80,7 @@ def test_status_distinguishes_closed_idle_and_running() -> None:
 def test_a_managed_position_reports_its_pnl() -> None:
     book = Book(managed={"AAPL": a_holding(entry=100.0)})
 
-    row = app.position_rows(book, {"AAPL": 2.0}, {"AAPL": 110.0})[0]
+    row = app.position_rows(book, {"AAPL": 2.0}, {"AAPL": 110.0}, {})[0]
 
     assert row.managed
     assert row.market_value == pytest.approx(220.0)
@@ -90,7 +90,7 @@ def test_a_managed_position_reports_its_pnl() -> None:
 
 def test_a_quarantined_position_is_shown_with_no_pnl() -> None:
     """The system did not open it and has no entry basis, so a number would be invented."""
-    row = app.position_rows(Book(), {"NVDA": 0.01}, {"NVDA": 200.0})[0]
+    row = app.position_rows(Book(), {"NVDA": 0.01}, {"NVDA": 200.0}, {})[0]
 
     assert not row.managed
     assert math.isnan(row.entry_price)
@@ -381,8 +381,19 @@ def test_the_data_chart_rule_can_fail(monkeypatch) -> None:
 
 
 def a_position(price: float, stop: float = 94.0, target: float = 112.0):
+    """A position whose stop is **working at the broker**, stated rather than inherited:
+    since 22 Sep 2026 the bands measure to the live order, not to the book's level."""
     return app.PositionRow(
-        "AAPL", 1.0, 100.0, price, True, stop_loss=stop, take_profit=target
+        "AAPL",
+        1.0,
+        100.0,
+        price,
+        True,
+        stop_loss=stop,
+        take_profit=target,
+        live_stop=stop,
+        stop_working=True,
+        orders_read=True,
     )
 
 
@@ -421,7 +432,7 @@ def test_only_the_innermost_band_says_what_happens_next() -> None:
 def test_a_quarantined_position_claims_no_stop_room() -> None:
     from glassbox.engine.reconcile import Book
 
-    row = app.position_rows(Book(), {"AAPL": 1.0}, {"AAPL": 310.0})[0]
+    row = app.position_rows(Book(), {"AAPL": 1.0}, {"AAPL": 310.0}, {})[0]
 
     assert math.isnan(row.stop_room)
     assert row.stop_proximity == app.ORDINARY, "an unknown stop is not an alarm"
@@ -528,7 +539,9 @@ def test_only_module_built_html_reaches_a_raw_column() -> None:
     # Two call sites, both named here. The count is the guard: a third would be a caller
     # opting out of escaping without anyone deciding it should.
     assert source.count("raw=(") == 2, "a new caller is opting out of escaping"
-    assert "raw=(5,)" in source, "position_table's UNREALISED column"
+    # STOP ROOM joined UNREALISED on 22 Sep 2026: `stop_cell` builds the dim INTENDED span
+    # from constants and formatted floats, and nothing in it came from a file or a broker.
+    assert "raw=(5, 6)" in source, "position_table's UNREALISED and STOP ROOM columns"
     assert "raw=(4,)" in source, "activity_table's VALUE column"
 
 
@@ -825,7 +838,7 @@ def test_a_quarantined_position_shows_em_dashes_rather_than_zeros() -> None:
     from glassbox.engine.reconcile import Book
 
     html = app.position_table(
-        app.position_rows(Book(), {"AAPL": 0.0919}, {"AAPL": 310.0})
+        app.position_rows(Book(), {"AAPL": 0.0919}, {"AAPL": 310.0}, {})
     )
 
     assert "QUARANTINED" in html
@@ -2397,6 +2410,24 @@ def test_the_containment_guard_can_see_a_mark_in_every_chart() -> None:
     assert not blind, "the guard cannot see a mark in: " + ", ".join(blind)
 
 
+#: D7's sparkline case: a long whose price has gapped below its own stop, so the stop is
+#: above every visible bar. Stop stated at the broker since D1 (22 Sep 2026): the
+#: sparkline draws a stop rule only from a live stop. The book's level is not the live
+#: one, so a sparkline reading the book cannot pass the premise test that follows.
+D7_GAPPED_BELOW_STOP = app.PositionRow(
+    "AAPL",
+    1.0,
+    100.0,
+    97.0,
+    True,
+    stop_loss=94.0,
+    take_profit=float("nan"),
+    live_stop=1e6,
+    stop_working=True,
+    orders_read=True,
+)
+
+
 @pytest.mark.xfail(strict=True, reason="GB-63e found these; closing them is not GB-63e")
 @pytest.mark.parametrize(
     "name",
@@ -2420,13 +2451,14 @@ def test_a_chart_holds_its_marks_on_a_series_that_runs_off_the_scale(name: str) 
     `xfail(strict=True)` rather than a comment, because a gap that is written down is a
     note: this turns red the day one of them is fixed and the entry is removed with it.
     """
-    row = app.PositionRow(
-        "AAPL", 1.0, 100.0, 97.0, True, stop_loss=1e6, take_profit=float("nan")
-    )
     gapped = HISTORY.copy()
     gapped.iloc[2] = float("inf")
     svg = {
-        "sparkline stop off scale": lambda: app.sparkline_svg(HISTORY, row),
+        # Stop stated at the broker since D1 (22 Sep 2026): the sparkline draws a stop
+        # rule only from a live stop.
+        "sparkline stop off scale": lambda: app.sparkline_svg(
+            HISTORY, D7_GAPPED_BELOW_STOP
+        ),
         "response negative gain": lambda: app.response_svg(
             [8.0, 12.0, 24.0, 120.0], [0.22, 0.41, 0.83, -5.0]
         ),
@@ -2436,6 +2468,30 @@ def test_a_chart_holds_its_marks_on_a_series_that_runs_off_the_scale(name: str) 
     }[name]()
 
     assert not _escapes(svg), f"{name}: " + " | ".join(_escapes(svg))
+
+
+def test_the_d7_sparkline_fixture_draws_its_live_stop_above_every_close() -> None:
+    """**The premise of the strict xfail above, held outside it.** An assertion inside an
+    xfail is swallowed by it, so without this the sparkline case could go on failing after
+    its rule had silently stopped drawing, and read as D7 when it was not.
+
+    One stop rule, drawn from the live 1e6 rather than the book's 94.00, and therefore
+    above every close - which is the scenario D7 is about. Stated as position relative to
+    the closes rather than as a coordinate, so it stays true once D7 fixes the scale.
+    """
+    svg = app.sparkline_svg(HISTORY, D7_GAPPED_BELOW_STOP)
+
+    rules = re.findall(
+        rf'<line x1="[^"]*" y1="([^"]*)" x2="[^"]*" y2="[^"]*" stroke="{app.ORANGE}"',
+        svg,
+    )
+    points = re.search(
+        rf'<polyline points="([^"]*)" fill="none" stroke="{app.PAPER}"', svg
+    )
+    closes = [float(point.split(",")[1]) for point in points.group(1).split()]
+
+    assert len(rules) == 1, "the fixture draws exactly one stop rule"
+    assert float(rules[0]) < min(closes), "the rule is above every close"
 
 
 def test_a_chart_never_scales_below_the_viewbox_its_type_is_measured_in() -> None:

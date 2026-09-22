@@ -80,6 +80,7 @@ from glassbox.dashboard.tokens import (
     TYPE_LABEL,
     TYPE_PROSE,
 )
+from glassbox.engine.executor import SELL
 from glassbox.engine.reconcile import Book
 from glassbox.engine.signal import ENTER_LONG, EXIT, HOLD, Thresholds
 from glassbox.explain.channel import cancellation, shares
@@ -506,25 +507,44 @@ class PositionRow:
     #: quarantined position, which the system did not open and cannot describe.
     stop_loss: float = math.nan
     take_profit: float = math.nan
+    #: The stop price of the protective order working at the broker, NaN when there is
+    #: none or the broker reports no level. **The only stop the table and the sparkline
+    #: measure against.** ``stop_loss`` is what the loop intended: WMT's DAY stop expired
+    #: on 3 Sep 2026, nothing re-armed it, and the table went on reading the book's 105.39
+    #: as protection.
+    live_stop: float = math.nan
+    #: True when a protective order is working at the broker, whether or not it reports a
+    #: level - a trailing stop protects while its level is unreported.
+    stop_working: bool = False
+    #: False when the open-orders read failed. "No stop at the broker" and "could not ask
+    #: the broker" are different claims, and only the first may say UNPROTECTED.
+    orders_read: bool = False
 
     @property
     def market_value(self) -> float:
         return self.quantity * self.price
 
     @property
-    def stop_room(self) -> float:
-        """Fraction of the original entry-to-stop distance still unspent.
+    def protection_unconfirmed(self) -> bool:
+        """A position the system opened with no working stop the dashboard could see."""
+        return self.managed and not self.stop_working
 
-        1.0 at the entry price, 0.0 at the stop, negative below it. Expressed against the
-        *original* distance rather than as a percentage of price, because that is the
-        quantity a reader is actually asking about: how much of the room this position was
-        given has it used. A 2% move means something different on a 3% stop than on a 10%
-        one, and a percentage of price cannot tell them apart.
+    @property
+    def stop_room(self) -> float:
+        """Fraction of the entry-to-stop distance still unspent, **to the live stop**.
+
+        1.0 at the entry price, 0.0 at the stop, negative below it. NaN when no protective
+        order is working at the broker: there is then no stop to have room to, whatever the
+        book intended. Expressed against the entry-to-stop distance rather than as a
+        percentage of price, because that is the quantity a reader is actually asking
+        about: how much of the room this position was given has it used. A 2% move means
+        something different on a 3% stop than on a 10% one, and a percentage of price
+        cannot tell them apart.
         """
-        span = self.entry_price - self.stop_loss
+        span = self.entry_price - self.live_stop
         if math.isnan(span) or span <= 0 or math.isnan(self.price):
             return math.nan
-        return (self.price - self.stop_loss) / span
+        return (self.price - self.live_stop) / span
 
     @property
     def stop_proximity(self) -> str:
@@ -554,19 +574,94 @@ class PositionRow:
         return (self.price / self.entry_price - 1.0) * 100.0
 
 
+#: The order types that protect a long at the broker. A limit sell is a target: it fills
+#: on the way up and does nothing on the way down. Every other type is not protection.
+TRAILING_STOP = "trailing_stop"
+PROTECTIVE_ORDER_TYPES = ("stop", "stop_limit", TRAILING_STOP)
+
+
+@dataclass(frozen=True)
+class OpenOrder:
+    """One working order as the broker reported it: the fields the stop cell reads."""
+
+    symbol: str
+    side: str
+    order_type: str
+    stop_price: float | None
+
+
+def open_orders(client) -> list[OpenOrder]:
+    """The broker's working orders, read from the SDK client. **One GET and nothing else.**
+
+    Asked for here rather than through ``AlpacaBroker.get_orders``, which returns every
+    status and a :class:`BrokerOrder` that carries neither the order type nor the stop
+    price - and whose ``raw`` the package may not read.
+    """
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+
+    from glassbox.engine.executor import ORDER_HISTORY
+
+    return [
+        OpenOrder(
+            symbol=order.symbol,
+            side=str(getattr(order.side, "value", order.side)),
+            order_type=str(getattr(order.order_type, "value", order.order_type)),
+            stop_price=None if order.stop_price is None else float(order.stop_price),
+        )
+        for order in client.get_orders(
+            GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=ORDER_HISTORY)
+        )
+    ]
+
+
+def live_stops(orders: Sequence[OpenOrder]) -> dict[str, OpenOrder]:
+    """The working sell order that protects each symbol, keyed by symbol.
+
+    ``orders`` are the broker's *open* orders, and nothing else is read: the book's
+    ``stop_loss`` is an intention, and it outlives the order it described. A stop or a
+    stop limit counts only with its stop price, which it cannot be working without; a
+    trailing stop counts with or without one, because its level moves, the broker may not
+    report it, and it protects either way. Where several protect one symbol the highest
+    reported level is kept, because on a long it is the one that fills first.
+    """
+
+    def level(order: OpenOrder) -> float:
+        return -math.inf if order.stop_price is None else order.stop_price
+
+    kept: dict[str, OpenOrder] = {}
+    for order in orders:
+        if order.side != SELL or order.order_type not in PROTECTIVE_ORDER_TYPES:
+            continue
+        if order.stop_price is None and order.order_type != TRAILING_STOP:
+            continue
+        held = kept.get(order.symbol)
+        if held is None or level(order) > level(held):
+            kept[order.symbol] = order
+    return kept
+
+
 def position_rows(
-    book: Book, quantities: dict[str, float], prices: dict[str, float]
+    book: Book,
+    quantities: dict[str, float],
+    prices: dict[str, float],
+    stops: dict[str, OpenOrder] | None,
 ) -> list[PositionRow]:
     """Every position the broker reports, managed or quarantined.
 
     A quarantined position appears with no entry basis — the system did not open it and
     cannot say what it paid — so its PnL is NaN rather than a number computed from a price
     it never traded at. It is still shown, because it is still spending buying power.
+
+    ``stops`` is :func:`live_stops` of the broker's open orders, or ``None`` when that read
+    failed. Required rather than defaulted: a default would choose between "unprotected"
+    and "unknown" for a caller that never asked, and either would be a claim nobody made.
     """
     rows = []
     for symbol in sorted(quantities):
         holding = book.managed.get(symbol)
         price = float(prices.get(symbol, math.nan))
+        order = stops.get(symbol) if stops is not None else None
         rows.append(
             PositionRow(
                 symbol=symbol,
@@ -576,6 +671,13 @@ def position_rows(
                 managed=holding is not None,
                 stop_loss=holding.stop_loss if holding else math.nan,
                 take_profit=holding.take_profit if holding else math.nan,
+                live_stop=(
+                    math.nan
+                    if order is None or order.stop_price is None
+                    else order.stop_price
+                ),
+                stop_working=order is not None,
+                orders_read=stops is not None,
             )
         )
     return rows
@@ -936,12 +1038,18 @@ def sparkline_svg(
     one, and the stop distance is the thing this panel keeps having to explain in words.
     Drawn in chrome, not status colour - the band is furniture, and the rule about status
     colour staying out of data-encoding marks applies here as it does to the ramp charts.
+
+    **The stop is the live one, the same level the stop cell reads.** With no stop working
+    at the broker, an unreported trailing level, or orders that could not be read, there is
+    no stop rule and no band: a line at a price level reads as a stop whatever its style,
+    so the book's intended level is not drawn at all.
     """
-    if prices.empty or math.isnan(row.stop_loss):
+    if prices.empty or not row.managed:
         return ""
+    stop = row.live_stop
     left, right, top, bottom = 4, width - 4, 6, height - 6
     values = prices.to_numpy(dtype="float64")
-    low = min(float(values.min()), row.stop_loss)
+    low = float(values.min()) if math.isnan(stop) else min(float(values.min()), stop)
     high = max(
         float(values.max()),
         row.take_profit if not math.isnan(row.take_profit) else float(values.max()),
@@ -957,15 +1065,19 @@ def sparkline_svg(
         for index, value in enumerate(values)
     )
     band = ""
-    if not math.isnan(row.take_profit):
+    if not math.isnan(row.take_profit) and not math.isnan(stop):
         band = (
             f'<rect x="{left}" y="{y(row.take_profit):.1f}" width="{right - left}" '
-            f'height="{abs(y(row.stop_loss) - y(row.take_profit)):.1f}" '
+            f'height="{abs(y(stop) - y(row.take_profit)):.1f}" '
             f'fill="{ORANGE}" fill-opacity="0.06"/>'
         )
     body = [
         band,
-        _rule(left, y(row.stop_loss), right, y(row.stop_loss), ORANGE, dash="3 3"),
+        (
+            ""
+            if math.isnan(stop)
+            else _rule(left, y(stop), right, y(stop), ORANGE, dash="3 3")
+        ),
         (
             ""
             if math.isnan(row.take_profit)
@@ -985,9 +1097,12 @@ def sparkline_svg(
         ),
         f'<polyline points="{points}" fill="none" stroke="{PAPER}" stroke-width="1.2"/>',
     ]
-    return _svg(
-        width, height, "".join(body), f"{row.symbol} against its stop and target"
+    label = (
+        f"{row.symbol} recent closes, no stop drawn"
+        if math.isnan(stop)
+        else f"{row.symbol} against its live stop and target"
     )
+    return _svg(width, height, "".join(body), label)
 
 
 def countdown_svg(
@@ -2150,22 +2265,61 @@ def stop_note(row: PositionRow) -> str:
     Only at :data:`CLOSE`. Emphasis alone says *look here* and leaves the reader to infer
     what happens next; the point of the innermost band is that the consequence is spelled
     out while there is still time to act on it. Below the stop the wording changes again,
-    because "approaching" is the wrong tense for a level already crossed.
+    because "approaching" is the wrong tense for a level already crossed. Silent when no
+    stop is working at the broker, because the note's consequence is that order filling.
     """
     room = row.stop_room
     if row.stop_proximity != CLOSE or math.isnan(room):
         return ""
     if room <= 0:
         return (
-            f"{row.symbol} IS AT OR THROUGH ITS STOP {row.stop_loss:,.2f}. THE STOP IS A "
+            f"{row.symbol} IS AT OR THROUGH ITS STOP {row.live_stop:,.2f}. THE STOP IS A "
             "MARKET ORDER AT THE BROKER; WHEN IT FILLS THE POSITION IS CLOSED AND THE "
             "LOOP RECONCILES IT ON THE NEXT CYCLE"
         )
     return (
         f"{row.symbol} HAS SPENT {(1 - room) * 100:.0f}% OF ITS STOP DISTANCE "
-        f"({row.price:,.2f} AGAINST {row.stop_loss:,.2f}). A STOP FILL IS NEAR: IT SELLS "
+        f"({row.price:,.2f} AGAINST {row.live_stop:,.2f}). A STOP FILL IS NEAR: IT SELLS "
         "THE WHOLE POSITION AT MARKET AND THE LOOP BOOKS THE EXIT ON THE NEXT CYCLE"
     )
+
+
+#: The stop cell's two refusals. In words, and in the accent through the table's mark -
+#: never in loss red, which is a direction of value; an absent stop is a fact about
+#: protection.
+UNPROTECTED = "NO LIVE STOP · UNPROTECTED"
+STOP_UNKNOWN = "STOP UNKNOWN · BROKER READ FAILED"
+
+#: Protected, with no level to measure room to. Styled as a live stop, not marked: the
+#: position is protected, and the only thing missing is a number.
+TRAILING_UNREPORTED = "LIVE TRAILING STOP · LEVEL NOT REPORTED"
+
+
+def stop_cell(row: PositionRow) -> str:
+    """The `STOP ROOM` cell, as module-built HTML. A room figure needs a live stop.
+
+    With no stop working at the broker the cell says so, and shows the book's level in the
+    dim colour as intent, so the level is visible without reading as protection. When the
+    orders could not be read it says that instead and shows no level at all: falling back
+    to the book would turn "could not ask" into "protected". A working stop with no
+    reported level - only a trailing stop, :func:`live_stops` keeps no other kind without
+    one - is protection without a room figure.
+    """
+    if not row.managed:
+        return EM_DASH
+    if not row.orders_read:
+        return STOP_UNKNOWN
+    if not row.stop_working:
+        if math.isnan(row.stop_loss):
+            return UNPROTECTED
+        return (
+            f'{UNPROTECTED} <span class="gb-meta">INTENDED {row.stop_loss:,.2f} '
+            "NOT AT BROKER</span>"
+        )
+    if math.isnan(row.live_stop):
+        return TRAILING_UNREPORTED
+    room = row.stop_room
+    return EM_DASH if math.isnan(room) else f"{room * 100:.0f}% TO {row.live_stop:,.2f}"
 
 
 def position_table(rows: Sequence[PositionRow]) -> str:
@@ -2174,12 +2328,17 @@ def position_table(rows: Sequence[PositionRow]) -> str:
     Two columns carry status. `UNREALISED` is coloured through :func:`status_html`, so it
     arrives with its glyph and its sign attached and reads in greyscale. `STOP ROOM` is
     *not* coloured: it is a distance rather than a direction, and colouring it would be
-    the second data family the palette rule refuses. It is marked instead.
+    the second data family the palette rule refuses. It is marked instead - near its stop,
+    and whenever :func:`stop_cell` refuses to show a room at all.
+
+    `STATE` reads ``MANAGED`` only while a stop is working at the broker. A position the
+    system opened with no stop it can see reads ``IN BOOK``: the book holds it, and nothing
+    is protecting it.
     """
     marks = [
         (number, 6)
         for number, row in enumerate(rows)
-        if row.stop_proximity in (APPROACHING, CLOSE)
+        if row.stop_proximity in (APPROACHING, CLOSE) or row.protection_unconfirmed
     ]
     return table_html(
         ("SYMBOL", "QTY", "ENTRY", "LAST", "VALUE", "UNREALISED", "STOP ROOM", "STATE"),
@@ -2198,18 +2357,18 @@ def position_table(rows: Sequence[PositionRow]) -> str:
                         f"{row.unrealised:,.2f} ({row.unrealised_pct:+.2f}%)",
                     )
                 ),
+                stop_cell(row),
                 (
-                    EM_DASH
-                    if math.isnan(row.stop_room)
-                    else f"{row.stop_room * 100:.0f}% TO {row.stop_loss:,.2f}"
+                    "QUARANTINED"
+                    if not row.managed
+                    else "IN BOOK" if row.protection_unconfirmed else "MANAGED"
                 ),
-                "MANAGED" if row.managed else "QUARANTINED",
             )
             for row in rows
         ],
         numeric=(1, 2, 3, 4, 5),
         flagged=marks,
-        raw=(5,),
+        raw=(5, 6),
     )
 
 
@@ -2854,7 +3013,7 @@ def main(
     hours = _in_market_hours(cfg)
 
     try:
-        quantities, prices, account = read_broker(cfg)
+        quantities, prices, account, stops = read_broker(cfg)
         st.session_state["last_broker"] = (quantities, prices, account, now)
         broker_age = 0.0
     except Exception:  # noqa: BLE001 - a refused read dims the panel, never empties it
@@ -2866,6 +3025,9 @@ def main(
             )
             return
         quantities, prices, account, at = cached
+        # The stops are not cached: an older answer about protection, shown as current,
+        # is the claim this cell exists to stop making.
+        stops = None
         broker_age = (now - at).total_seconds()
 
     age = cycle_age(root, now)
@@ -2968,7 +3130,7 @@ def main(
         st.markdown(calendar_region(daily, arm), unsafe_allow_html=True)
 
     # ── row 4: positions and activity ────────────────────────────────────────
-    rows = position_rows(book, quantities, prices)
+    rows = position_rows(book, quantities, prices, stops)
     closes = read_closes(cfg) if rows else {}
     pos_source = Source(LIVE, f"{len(rows)} held")
     st.markdown(
@@ -3116,7 +3278,12 @@ def _in_market_hours(cfg: Config) -> bool:  # pragma: no cover - clock
 
 
 def _broker_view(cfg: Config):  # pragma: no cover - network
-    """Positions, marks and the account, degrading to empty rather than crashing."""
+    """Positions, marks, the account and the live stops, degrading to empty rather than
+    crashing.
+
+    The stops are ``None`` when the open-orders read fails and the rest did not, so the
+    table says it could not ask rather than that nothing protects the position.
+    """
     del cfg
     try:
         from glassbox.engine.executor import AlpacaBroker
@@ -3128,9 +3295,13 @@ def _broker_view(cfg: Config):  # pragma: no cover - network
             for position in broker._client.get_all_positions()
             if position.current_price is not None
         }
-        return quantities, prices, broker.get_account()
+        try:
+            stops = live_stops(open_orders(broker._client))
+        except Exception:  # noqa: BLE001 - "could not ask" is not "no stop"
+            stops = None
+        return quantities, prices, broker.get_account(), stops
     except Exception:  # noqa: BLE001 - a dashboard must render without credentials
-        return {}, {}, {}
+        return {}, {}, {}, None
 
 
 def _recent_closes(cfg: Config) -> dict[str, pd.Series]:  # pragma: no cover - network
@@ -3244,6 +3415,7 @@ __all__ = [
     "RAMP",
     "RUNNING",
     "BandContext",
+    "OpenOrder",
     "PositionRow",
     "Reliability",
     "band_context",
@@ -3261,9 +3433,11 @@ __all__ = [
     "gain_phase_svg",
     "is_fragile",
     "is_rtl",
+    "live_stops",
     "load_reliability",
     "main",
     "narrative_html",
+    "open_orders",
     "pending_summary",
     "period_colour",
     "period_label",
@@ -3275,6 +3449,7 @@ __all__ = [
     "spectral_panel",
     "spectral_svg",
     "status_of",
+    "stop_cell",
     "stylesheet",
     "table_html",
 ]
