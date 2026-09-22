@@ -11,11 +11,21 @@ standing there.
 So this is **not** a check that fires on 15 September. A check that fires on the 15th is a
 check that has never run before the 15th, which is the cache-gated test of 20 Aug wearing a
 calendar. It is an invariant, evaluated on every run of the suite, and the suite is its
-reader. A boundary that is an invariant cannot pass unused, because there is no passing.
+reader.
+
+**That reader only reads when somebody runs it, and this docstring once said otherwise.**
+It claimed a boundary that is an invariant *cannot pass unused, because there is no
+passing*. Between 4 and 22 Sep 2026 nothing was committed and nothing ran the suite; CI
+triggers on push and pull request only, and this file was held unpushed. So 15 September
+passed with this guard red on five tasks and no reader at all - the GB-63 shape a
+second time, one layer up. An invariant beats a timestamp only while the suite runs; a
+boundary that must hold through an idle stretch needs a reader on the calendar, such as
+a scheduled CI run, and this project has none.
 
 **Every Phase 2 task must be in exactly one of two ledgers** - recorded complete in
-``PROGRESS.md``, or named in ``IDEAS_PARKED.md``. A task nobody has touched is in neither,
-so **the default state is the failing state**. That is the property GB-63's ruling lacked.
+``PROGRESS.md``, or named in an ``IDEAS_PARKED.md`` heading. A task nobody has touched
+is in neither, so **the default state is the failing state**. That is the property
+GB-63's ruling lacked.
 
 **What this cannot do, stated because a guard that oversells itself is worse than none.**
 The parking half is genuinely enforced: naming a task in ``IDEAS_PARKED.md`` *is* the
@@ -107,8 +117,19 @@ def completed(progress_text: str, tasks: tuple[str, ...]) -> dict[str, str]:
 
 
 def parked(parked_text: str, tasks: tuple[str, ...]) -> set[str]:
-    """Tasks named by ID anywhere in the parked-ideas file."""
-    return {task for task in tasks if re.search(rf"{task}\b", parked_text)}
+    """Tasks named by ID in a heading of the parked-ideas file.
+
+    A heading, not a mention: a parking entry is a section, and a body is where an
+    entry explains itself - including by naming other tasks. Matching the whole file
+    made every cross-reference a parking: a declined task's entry that named the task
+    which superseded it would mark that task parked as well as complete, and the
+    cheapest fix would have been to delete the sentence explaining the decline.
+    """
+    return {
+        task
+        for task in tasks
+        if re.search(rf"^#+ .*{task}\b", parked_text, re.MULTILINE)
+    }
 
 
 def unresolved_citations(row: str) -> bool:
@@ -180,8 +201,8 @@ def test_every_phase_2_task_is_either_recorded_complete_or_parked() -> None:
     assert not undecided, (
         f"{len(undecided)} Phase 2 task(s) in neither ledger: {', '.join(undecided)}. "
         f"Each must be recorded complete in PROGRESS.md (a title cell naming the ID and "
-        f"declaring completion) or named in IDEAS_PARKED.md. This is a decision to take, "
-        f"not a test to fix."
+        f"declaring completion) or named in an IDEAS_PARKED.md heading. This is a decision "
+        f"to take, not a test to fix."
     )
 
 
@@ -226,6 +247,8 @@ def test_the_guard_can_see_a_task_in_neither_state() -> None:
     declared = "| GB-99 COMPLETE: a synthetic row | 4 Sep 2026 | Ben | `HEAD` |"
     assert completed(declared, synthetic) == {"GB-99": declared}
     assert parked("## GB-99 parked for now", synthetic) == {"GB-99"}
+    mentioned = "## Another idea\n\nGB-99 answered this one, said in a body\n"
+    assert not parked(mentioned, synthetic), "a body mention read as a parking entry"
 
     withdrawn = "| ~~GB-99 COMPLETE~~ - retracted | 4 Sep 2026 | Ben | `HEAD` |"
     assert not completed(withdrawn, synthetic), "a struck-through title read as live"
