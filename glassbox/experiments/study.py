@@ -354,12 +354,23 @@ def conditions(full: bool = False) -> tuple[Condition, ...]:
     """The sensitivity design.
 
     **A star, not a cross product, and the choice is stated because it is a real one.**
-    The full cross of three anchors, three rates and three controls is 27 conditions and
-    about 2.2 hours; the star is 7 and about 35 minutes. What the extra 20 conditions buy
-    is *interactions* - does the learning-rate effect differ at anchor 42 under shuffled
+    The full cross of four axes - three anchors, three rates, three controls and four
+    cutoffs - is **108 conditions, 243 live cells, 3,888 arm-folds**, and it has never
+    been run, so it has no measured wall time. The star is **14 conditions, 54 live cells,
+    864 arm-folds**, measured at **100 min 56 s** on the twenty-symbol universe (2 Sep
+    2026, ``da37401``; PROGRESS's GB-61 row). What the extra 94 conditions buy is
+    *interactions* - does the learning-rate effect differ at anchor 42 under shuffled
     returns - and nobody asked that question. What every axis needs is a **common
     reference to depart from**, which is what a star gives: one departure per axis, each
     comparable against the same centre.
+
+    **CORRECTED 23 Sep 2026.** This read *"27 conditions and about 2.2 hours; the star is
+    7 and about 35 minutes"*, and spec 7.4 carried the same pair. Both predated the COF
+    axis (GB-50) and the ``target_in_loop`` spoke, so both counted three axes where the
+    code builds four - and **each was internally consistent, so the two agreed with each
+    other and not with the function three lines below them.** Cells rather than
+    ``conditions x arms`` throughout, because a COF spoke runs FITS alone; multiplying
+    gives the wrong number and gives it in the flattering direction.
 
     ``full=True`` runs the cross product, for the day somebody does want an interaction.
     """
