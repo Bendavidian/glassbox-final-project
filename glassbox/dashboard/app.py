@@ -2182,12 +2182,19 @@ def pending_summary(entry: dict) -> str:
 
 
 def provenance_label(provenance: str) -> str:
-    """How a decision's origin is shown. **A replayed decision says so on its own row.**
+    """How a record's origin is shown. **A replayed decision says so on its own row.**
 
-    Never a blank for live and a badge for replay — a viewer would then have to know that
-    the absence means something. Both are labelled, so neither can be read by default.
+    Never a blank for one and a badge for the other — a viewer would then have to know
+    that the absence means something. Both are labelled, so neither can be read by default.
+
+    **The word is ``BROKER``, and from 23 Sep 2026 it is not ``LIVE``.** Provenance
+    answers *which record stream is this* - one written against the broker, or a replay of
+    a fold - and liveness answers *is the loop running*. They are different axes, and
+    while both spelled themselves LIVE the page could say LIVE in green about a loop that
+    had been dead for nineteen days and be describing a directory. One word, one meaning:
+    LIVE on this page now means the loop wrote within a heartbeat, and nothing else.
     """
-    return "LIVE" if provenance == records.LIVE else provenance.upper()
+    return "BROKER" if provenance == records.LIVE else provenance.upper()
 
 
 def decision_detail(record: DecisionRecord) -> str:
@@ -2594,19 +2601,65 @@ def liveness(
 
 
 def cycle_age(root: str | Path, now: pd.Timestamp) -> float:
-    """Seconds since the live loop last persisted its book, or ``inf``.
+    """Seconds since the loop last left evidence that it reached a cycle, or ``inf``.
 
-    **Measured from the loop's own write, not from the dashboard's clock.** Step 10 of
-    every cycle persists the book, so this file's mtime is the last time a cycle actually
-    completed. A countdown driven by the panel's own refresh timer would tick smoothly
-    while the loop lay dead, which is the exact failure the heartbeat exists to make
-    visible - it would be an animation, not a measurement.
+    **Measured from the loop's own write, not from the dashboard's clock.** A countdown
+    driven by the panel's own refresh timer would tick smoothly while the loop lay dead,
+    which is the exact failure this exists to make visible - it would be an animation,
+    not a measurement.
+
+    **The evidence is ``heartbeat.json``, and until 23 Sep 2026 it was ``book.json``'s
+    mtime.** The book is persisted inside a cycle and a cycle only happens in session, so
+    a loop idling correctly overnight wrote nothing for seventeen hours: it aged past two
+    heartbeats and the page called a healthy loop NOT RESPONDING at the next open. The
+    loop now writes the heartbeat file on every pass, idle ones included.
+
+    Three readings, and the difference between the last two is the point:
+
+    - A file with a timestamp: its age, which is what the bands measure.
+    - A file that cannot be read or parsed: ``inf``. Unreadable evidence is not evidence,
+      and under a held lock that is NOT RESPONDING - the same answer an unparseable lock
+      gets, for the same reason.
+    - **No file at all:** the age of the lock the loop holds. A loop that started a minute
+      ago has not had a cycle in which to write one, and calling that NOT RESPONDING would
+      raise an alarm about a loop doing exactly the right thing. Taking the lock is the
+      one other thing it has left behind, so the age is measured from there until the
+      first beat replaces it.
     """
-    path = Path(root) / "book.json"
+    # The name is imported rather than repeated: the loop owns where it writes, and a
+    # second copy of the filename here would be free to disagree with it silently.
+    from glassbox.live_loop import HEARTBEAT_FILE
+
+    path = Path(root) / HEARTBEAT_FILE
     if not path.is_file():
+        return _age_since_the_lock(root, now)
+    try:
+        beat = pd.Timestamp(json.loads(path.read_text(encoding="utf-8"))["at"])
+        return max((now - beat).total_seconds(), 0.0)
+    except Exception:  # noqa: BLE001 - evidence nobody can read is not evidence
         return math.inf
-    written = pd.Timestamp(path.stat().st_mtime, unit="s", tz="UTC")
-    return max((now - written).total_seconds(), 0.0)
+
+
+def _age_since_the_lock(root: str | Path, now: pd.Timestamp) -> float:
+    """How long the loop holding ``root`` has held it, or ``inf`` if nobody holds it.
+
+    Only for a loop that has not written its first heartbeat. A lock that cannot be read
+    is ``inf`` here and :data:`LOCK_UNREADABLE` to :func:`loop_lock`, which is the pair
+    that makes it NOT RESPONDING rather than a quiet NOT RUNNING.
+    """
+    from glassbox.live_lock import LockRefused, read_lock
+
+    try:
+        holder = read_lock(root)
+    except LockRefused:
+        return math.inf
+    if holder is None:
+        return math.inf
+    # A lock that cannot say when it was taken is no evidence of when.
+    try:
+        return max((now - pd.Timestamp(holder.acquired)).total_seconds(), 0.0)
+    except Exception:  # noqa: BLE001
+        return math.inf
 
 
 def newly_written(
@@ -2995,7 +3048,7 @@ def session_strip(
         + _stat("CHANNELS", escape(cfg.channels.active.upper()), dim=True)
         + _stat("UNIVERSE", f"{len(cfg.universe)}", dim=True)
         + _stat("BOUND", escape(str(state_dir)), dim=True)
-        + _stat("SHOWING", escape(source.upper()), dim=True)
+        + _stat("SHOWING", escape(provenance_label(source)), dim=True)
         + _stat("CONFIG", escape(config_hash(cfg)[:10].upper()), dim=True)
         + (f"<span>{badge}</span>" if (badge := staleness_html(verdict)) else "")
         + "</div>"

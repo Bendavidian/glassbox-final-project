@@ -439,10 +439,23 @@ def test_a_quarantined_position_claims_no_stop_room() -> None:
 
 
 def test_the_cycle_countdown_is_measured_from_the_loops_own_write(tmp_path) -> None:
-    """Not from the panel's refresh timer, which would tick smoothly past a dead loop."""
-    assert math.isinf(app.cycle_age(tmp_path, pd.Timestamp.now(tz="UTC")))
+    """Not from the panel's refresh timer, which would tick smoothly past a dead loop.
+
+    The write is the heartbeat file since 23 Sep 2026, not book.json's mtime: the book is
+    persisted only inside a session, so ageing from it called a loop idling correctly
+    overnight NOT RESPONDING. `tests/dashboard/test_liveness.py` holds that case and the
+    rest of the sources; this holds the shape - no evidence is `inf`, a fresh write is
+    nearly nothing, and a stale book on its own buys the loop no credit at all.
+    """
+    from glassbox import live_loop
+
+    now = pd.Timestamp.now(tz="UTC")
+    assert math.isinf(app.cycle_age(tmp_path, now))
 
     (tmp_path / "book.json").write_text("{}", encoding="utf-8")
+    assert math.isinf(app.cycle_age(tmp_path, now)), "the book is not a heartbeat"
+
+    live_loop.write_heartbeat(tmp_path, now, "in session")
     age = app.cycle_age(tmp_path, pd.Timestamp.now(tz="UTC"))
 
     assert 0.0 <= age < 30.0

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -25,6 +26,10 @@ import pytest
 from glassbox.dashboard import app
 from glassbox.engine.reconcile import Book, Holding
 from tests.dashboard.conftest import a_verdict
+
+# Imported rather than rebuilt: a second decision-record factory here would be free to
+# differ from the one the rest of the dashboard tests render.
+from tests.dashboard.test_app import a_record
 
 HEARTBEAT = 900.0
 
@@ -178,6 +183,138 @@ def test_a_lock_naming_a_dead_process_is_not_running(tmp_path: Path) -> None:
     assert app.loop_lock(tmp_path) == app.LOCK_NONE
 
 
+# ── where the loop's age comes from ──────────────────────────────────────────
+
+
+def _hold_the_lock(root: Path, acquired: pd.Timestamp) -> None:
+    """A lock this very process holds, so ``process_is_alive`` says yes for real."""
+    from glassbox.live_lock import lock_path
+
+    lock_path(root).write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "mode": "auto",
+                "command": "live_loop",
+                "acquired": f"{acquired:%Y-%m-%dT%H:%M:%SZ}",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _verdict_for(
+    root: Path, now: pd.Timestamp, *, in_session: bool = False
+) -> app.Liveness:
+    """The verdict the page would show for this state directory, at this moment."""
+    return app.liveness(
+        lock=app.loop_lock(root),
+        band_fires=True,
+        in_session=in_session,
+        loop_age=app.cycle_age(root, now),
+        broker_age=0.0,
+        heartbeat=HEARTBEAT,
+    )
+
+
+def test_a_loop_idling_overnight_is_not_reported_as_dead(tmp_path: Path) -> None:
+    """**The D2b defect.** The book is persisted only inside a session, so a loop idling
+    correctly through the night wrote nothing for seventeen hours; aged from book.json's
+    mtime it passed two heartbeats and the page called it NOT RESPONDING in red - at the
+    next open, in front of whoever was watching.
+
+    The heartbeat is written by the loop itself here, not by a hand-rolled stand-in.
+    """
+    from glassbox import live_loop
+
+    now = pd.Timestamp("2026-09-24 06:00", tz="UTC")
+    _hold_the_lock(tmp_path, now - pd.Timedelta(hours=17))
+    # The book, last written when the session closed seventeen hours ago.
+    Book().save(tmp_path / "book.json")
+    os.utime(tmp_path / "book.json", (0, (now - pd.Timedelta(hours=17)).timestamp()))
+
+    live_loop.write_heartbeat(
+        tmp_path, now - pd.Timedelta(seconds=30), "outside session"
+    )
+
+    assert app.cycle_age(tmp_path, now) == pytest.approx(30.0)
+    assert _verdict_for(tmp_path, now).state == app.CLOSED  # shut, and alive
+
+
+@pytest.mark.parametrize(
+    ("beat_age", "in_session", "expected"),
+    [
+        (30.0, False, app.CLOSED),
+        (30.0, True, app.LIVE),
+        (HEARTBEAT + 1, True, app.SLOW),
+        (2 * HEARTBEAT + 1, False, app.NOT_RESPONDING),
+        (2 * HEARTBEAT + 1, True, app.NOT_RESPONDING),
+    ],
+    ids=[
+        "fresh beat, shut",
+        "fresh beat, open",
+        "one heartbeat behind, open",
+        "two heartbeats behind, shut",
+        "two heartbeats behind, open",
+    ],
+)
+def test_the_verdict_follows_the_heartbeat_file(
+    tmp_path: Path, beat_age: float, in_session: bool, expected: str
+) -> None:
+    """The age comes from the file the loop writes. Outside the session a healthy loop
+    reads OUTSIDE MARKET HOURS, because that row outranks SLOW - a late write is not slow
+    when nobody is waiting for a cycle - and NOT RESPONDING outranks both."""
+    from glassbox import live_loop
+
+    now = pd.Timestamp("2026-09-24 14:31", tz="UTC")
+    _hold_the_lock(tmp_path, now - pd.Timedelta(hours=17))
+    live_loop.write_heartbeat(tmp_path, now - pd.Timedelta(seconds=beat_age), "weekend")
+
+    assert _verdict_for(tmp_path, now, in_session=in_session).state == expected
+
+
+def test_a_loop_that_has_not_beaten_yet_is_aged_from_the_lock_it_took(
+    tmp_path: Path,
+) -> None:
+    """**A missing heartbeat file is not NOT RESPONDING.** A loop started a minute ago has
+    not had a cycle in which to write one, and the lock it took is the other thing it has
+    left behind. Aged from there the ruled bands need no new row: fresh enough and it is
+    LIVE, and a loop wedged since launch still escalates on its own after two heartbeats.
+    """
+    now = pd.Timestamp("2026-09-24 14:31", tz="UTC")
+    _hold_the_lock(tmp_path, now - pd.Timedelta(seconds=20))
+
+    assert not (tmp_path / "heartbeat.json").exists()
+    assert app.cycle_age(tmp_path, now) == pytest.approx(20.0)
+    assert (
+        _verdict_for(tmp_path, now).state == app.CLOSED
+    )  # alive; shut is why it idles
+
+    _hold_the_lock(tmp_path, now - pd.Timedelta(days=3))
+
+    assert _verdict_for(tmp_path, now).state == app.NOT_RESPONDING
+
+
+def test_a_heartbeat_nobody_can_parse_is_not_responding(tmp_path: Path) -> None:
+    """Treated like an unparseable lock: unreadable evidence is not evidence, and the
+    quiet answer about a loop that may be holding positions is the dangerous one."""
+    _hold_the_lock(tmp_path, pd.Timestamp("2026-09-24 06:00", tz="UTC"))
+    (tmp_path / "heartbeat.json").write_text("{ half a fil", encoding="utf-8")
+
+    now = pd.Timestamp("2026-09-24 06:01", tz="UTC")
+
+    assert math.isinf(app.cycle_age(tmp_path, now))
+    assert _verdict_for(tmp_path, now).state == app.NOT_RESPONDING
+
+
+def test_nothing_at_all_in_the_directory_is_not_running(tmp_path: Path) -> None:
+    """No lock and no heartbeat is a loop nobody started, which is the normal state of
+    this system between sessions and must not read as an alarm."""
+    verdict = _verdict_for(tmp_path, pd.Timestamp("2026-09-24 06:00", tz="UTC"))
+
+    assert verdict.state == app.NOT_RUNNING
+
+
 # ── the boundaries, swept ────────────────────────────────────────────────────
 
 #: Both boundaries from both sides, including the exact values. The bands are defined so
@@ -273,25 +410,28 @@ def test_a_page_that_is_not_live_wears_no_green_and_says_no_live(
     page = a_page(cfg_stub, verdict)
 
     assert app.GAIN not in page, "green on a page whose loop is not live"
-    assert "LIVE" not in _without_showing(page), "the word LIVE on a page not live"
+    # No exemption, not even for the binding label: SHOWING says BROKER since
+    # 23 Sep 2026, so LIVE on this page can only ever be a claim about the loop.
+    assert "LIVE" not in page, "the word LIVE on a page whose loop is not live"
+    assert "BROKER" in page, "the strip still says which record stream it is bound to"
     assert set(_pill_kinds(page)) == {verdict.state}
     assert _session_word(page) == verdict.state
 
 
-def _without_showing(html: str) -> str:
-    """The page minus the ``SHOWING`` stat, which is the one place the word LIVE survives.
+def test_no_row_calls_its_own_provenance_live() -> None:
+    """The other place the word lived. A decision row states where it came from, and
+    until 23 Sep 2026 that was ``LIVE`` - the same word, on a different axis, free to sit
+    in a row beside a SESSION line reading NOT RUNNING.
 
-    It names **which record stream the page is bound to** - the live directory rather than
-    a replay - which is the GB-63 provenance question and not the loop's state. It is set
-    in DIM beside the key SHOWING, never in green, and the assertion below keeps it that
-    way. Cut here rather than left to match, because a page that is not live must carry no
-    other LIVE anywhere.
+    The tables are not in :func:`a_page` because their value cells carry the gain/loss
+    family legitimately: a decision with a positive trend renders green whatever the loop
+    is doing, and folding them in would make the "no green" assertion above unfalsifiable.
     """
-    without = re.sub(
-        r'<span><span class="gb-stat-key">SHOWING</span>.*?</span></span>', "", html
-    )
-    assert without != html, "the SHOWING stat is gone; this exclusion now hides nothing"
-    return without
+    rows = app.activity_table([a_record()], []) + app.decision_table([a_record()])
+
+    assert "BROKER" in rows
+    assert "LIVE" not in rows
+    assert app.provenance_label("replay:fold-13") == "REPLAY:FOLD-13"
 
 
 def test_a_live_page_does_say_live_and_wears_the_green(cfg_stub) -> None:

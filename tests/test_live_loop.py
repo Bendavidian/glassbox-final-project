@@ -1148,6 +1148,96 @@ def test_the_loop_proves_it_is_alive_while_it_waits_for_the_next_session(
     assert any("state=outside session" in beat for beat in beats)
 
 
+def test_the_idle_loop_leaves_evidence_a_program_can_read(
+    cfg: Config,
+    broker: FakeBroker,
+    stub_bars: dict,
+    stub_predictor: None,
+    tmp_path: Path,
+) -> None:
+    """**The log line is for a person; the file is for the dashboard.** The book is
+    persisted only inside a session, so before 23 Sep 2026 a loop idling correctly
+    overnight left nothing on disk for seventeen hours - and the console, ageing it from
+    book.json's mtime, called a healthy loop NOT RESPONDING at the next open.
+    """
+    clock = AdvancingClock(pd.Timestamp("2026-08-24 21:00", tz="UTC"))
+
+    live_loop.run_sessions(
+        coarse(cfg),
+        tmp_path,
+        sessions=1,
+        broker=broker,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    beat = json.loads((tmp_path / live_loop.HEARTBEAT_FILE).read_text(encoding="utf-8"))
+    # The last write wins, and the loop ran into the next session, so the final beat is
+    # the one from inside it. What matters is that the idle passes wrote theirs too.
+    assert pd.Timestamp(beat["at"]).tzinfo is not None
+    assert beat["state"] in {"in session", "outside session", "weekend", "holiday"}
+
+
+def test_an_idle_pass_writes_its_heartbeat_before_it_sleeps(
+    cfg: Config, tmp_path: Path
+) -> None:
+    """The idle branch on its own, with no session to reach: one pass, one file.
+
+    The log line is throttled to ``heartbeat_seconds`` because a night of output has to
+    stay readable; the file is not, because the dashboard asks *how long ago* and every
+    skipped write makes that answer worse.
+    """
+    stop = RuntimeError("one pass is enough")
+    clock = AdvancingClock(pd.Timestamp("2026-08-23 12:00", tz="UTC"))  # a Sunday
+
+    def sleep_once(seconds: float) -> None:
+        raise stop
+
+    with pytest.raises(RuntimeError):
+        live_loop.run_sessions(
+            coarse(cfg), tmp_path, sessions=1, clock=clock, sleep=sleep_once
+        )
+
+    beat = json.loads((tmp_path / live_loop.HEARTBEAT_FILE).read_text(encoding="utf-8"))
+    assert beat["at"] == "2026-08-23T12:00:00Z"
+    assert beat["state"] == "weekend"
+
+
+def test_the_heartbeat_is_replaced_atomically_and_never_seen_half_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**A reader can arrive at any moment**, and the dashboard reads this file every few
+    seconds. A half-written JSON object is unparseable evidence, which the dashboard is
+    obliged to read as NOT RESPONDING - an alarm raised by the act of writing a heartbeat.
+
+    The spy stands where ``os.replace`` does: at the instant of the swap it reads what a
+    reader would see at the destination, which must be the *previous* beat, whole. A write
+    that went straight to the destination would never reach the spy at all.
+    """
+    first = pd.Timestamp("2026-09-23 10:00", tz="UTC")
+    second = first + pd.Timedelta(seconds=60)
+    live_loop.write_heartbeat(tmp_path, first, "outside session")
+
+    seen: list[dict] = []
+    real_replace = live_loop.os.replace
+
+    def spy(src, dst):
+        seen.append(json.loads(Path(dst).read_text(encoding="utf-8")))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(live_loop.os, "replace", spy)
+    live_loop.write_heartbeat(tmp_path, second, "outside session")
+
+    assert seen == [{"at": "2026-09-23T10:00:00Z", "state": "outside session"}]
+    final = json.loads(
+        (tmp_path / live_loop.HEARTBEAT_FILE).read_text(encoding="utf-8")
+    )
+    assert final["at"] == "2026-09-23T10:01:00Z"
+    assert not list(
+        tmp_path.glob(f"{live_loop.HEARTBEAT_FILE}.*.tmp")
+    ), "temp left behind"
+
+
 def test_idling_produces_no_cycles_and_so_no_records(
     cfg: Config,
     broker: FakeBroker,

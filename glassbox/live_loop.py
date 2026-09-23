@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import signal as signal_module
 import sys
 import time
@@ -186,6 +187,12 @@ FINISHED = frozenset(
 
 BOOK_FILE = "book.json"
 ENTRY_FILLS_FILE = "entry_fills.json"
+#: Evidence that the loop reached a moment, beside the lock that says whose loop it is.
+#: **Written on every cycle, idle ones included**, which is the half ``BOOK_FILE`` cannot
+#: cover: the book is persisted only inside a session, so a loop idling correctly overnight
+#: left no trace at all and the dashboard, ageing it from the book's mtime, called a
+#: healthy loop NOT RESPONDING at the next open (found 23 Sep 2026).
+HEARTBEAT_FILE = "heartbeat.json"
 THRESHOLDS_FILE = "thresholds.json"
 CHECKPOINT_DIR = "checkpoint"
 
@@ -2188,6 +2195,10 @@ def run_session(
                 )
                 stopping["reason"] = "outside the session"
                 break
+            # Before the work, not after it: a cycle that fails, or one wedged inside an
+            # unbounded socket read, still proves the loop was alive at this moment - and
+            # its heartbeat then stops ageing, which is what NOT RESPONDING is for.
+            write_heartbeat(state.state_dir, now, "in session")
             cycles.append(run_cycle(state, now))
             _log_run_of_failures(cycles)
             if stopping["reason"]:
@@ -2230,6 +2241,28 @@ def idle_state(cfg: Config, when: pd.Timestamp) -> str:
     if market_session(cfg, when) is None:
         return "weekend" if when.dayofweek >= 5 else "holiday"
     return "outside session"
+
+
+def write_heartbeat(state_dir: str | Path, when: pd.Timestamp, state: str) -> Path:
+    """Leave evidence, in :data:`HEARTBEAT_FILE`, that the loop reached ``when``.
+
+    **Written atomically.** A reader may arrive mid-write at any moment - the dashboard
+    polls this file every few seconds - and a half-written JSON object is unparseable
+    evidence, which the dashboard is obliged to read as NOT RESPONDING. A temporary file
+    and ``os.replace`` mean a reader sees either the previous beat or this one, never
+    half of either.
+
+    The companion of the log line :func:`heartbeat` returns, and for the other audience: a
+    person reads the log, a program stats the file.
+    """
+    root = Path(state_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"at": f"{when:%Y-%m-%dT%H:%M:%SZ}", "state": state}, indent=2)
+    temporary = root / f"{HEARTBEAT_FILE}.{os.getpid()}.tmp"
+    temporary.write_text(payload + "\n", encoding="utf-8")
+    written = root / HEARTBEAT_FILE
+    os.replace(temporary, written)
+    return written
 
 
 def heartbeat(
@@ -2326,6 +2359,11 @@ def run_sessions(
                 break
             continue
 
+        # The file on every idle pass, the log line at the heartbeat interval. The log is
+        # for a person reading a night of output, where one line every 15 minutes is
+        # readable and one a minute is not; the file is for the dashboard, which asks how
+        # long ago the loop was last alive and gets a worse answer the coarser this is.
+        write_heartbeat(state_dir, now, idle_state(cfg, now))
         if (
             last_beat is None
             or (now - last_beat).total_seconds() >= cfg.live.heartbeat_seconds
@@ -2695,6 +2733,7 @@ __all__ = [
     "ARMING_STRIKES",
     "CLOSED",
     "DEFAULT_STATE_DIR",
+    "HEARTBEAT_FILE",
     "PERMISSIVE_LOWER",
     "REHEARSAL_CLOSE_OUT_MINUTES",
     "REHEARSAL_NOTIONAL",
@@ -2725,4 +2764,5 @@ __all__ = [
     "run_session",
     "run_sessions",
     "session_banner",
+    "write_heartbeat",
 ]
