@@ -116,9 +116,11 @@ ORANGE_DIM = RULE
 # floor would flatten the ramp into six colours of the same lightness, destroying the one
 # thing it encodes.
 #
-# Its territory is exactly two charts, the attribution bars and the spectral panel.
-# `test_the_ramp_stays_inside_attribution_and_spectral` holds both directions: the ramp
-# appears nowhere else, and status colour appears nowhere inside those two.
+# Its territory is four charts: the attribution bars, the spectral panel, and - since
+# 23 Sep 2026 - the two backtest panels that draw an arm against buy and hold, where the
+# comparison is the data. `ramp_surfaces` in the tests is the one list of them, and both
+# directions are held: the ramp appears in no other chart, and status colour appears in
+# none of these.
 RAMP = ("#0A2239", "#123F63", "#1B6CA8", "#2E97D4", "#6FC3EC", "#B7E3F7")
 
 #: Area fills under the equity curves, at 15% - light enough that a rule reads through,
@@ -1306,82 +1308,188 @@ def radar_svg(
     return _svg(width, height, "".join(body), f"{model} performance shape")
 
 
-def cumulative_equity_svg(
-    daily: pd.DataFrame, model: str, width: int = 460, height: int = 300
-) -> str:
-    """Cumulative equity across the folds, as a filled area coloured by its own sign.
+#: The reference every backtest result is reported against (spec §7.3). It is a row in
+#: both artefacts - `results.csv` and `report/daily_equity.csv` carry it per fold and per
+#: day - and until 23 Sep 2026 every panel filtered it out on the way to the chart.
+BUY_AND_HOLD = "buy_and_hold"
+REFERENCE_LABEL = "BUY AND HOLD"
 
-    Three signs, not two: an arm that stands aside in every fold chains to an exactly flat
-    curve, which is a result rather than a gain.
+#: The arm's mark and the reference's, both from the data ramp. **Not status colour**:
+#: green above and red below a zero line is the page answering "did it gain" when the
+#: question §7.3 asks is "did it beat the reference", and those have different answers -
+#: fold 13 made +2.03% while buy and hold made +9.36%, and it rendered as a green bar.
+ARM_MARK, REFERENCE_MARK = RAMP[4], RAMP[2]
+
+
+def chained_equity(daily: pd.DataFrame, model: str) -> list[float]:
+    """One arm's folds chained on their returns, starting at 1.00.
+
+    Each fold restarts at its own opening capital, so the folds are chained on their
+    returns rather than concatenated on their levels - otherwise every fold boundary would
+    show a jump the strategy never took. Read twice per panel now, once for the arm and
+    once for the reference, which is why it is a function rather than a loop inside one.
     """
-    if daily.empty or "model" not in daily.columns:
-        return ""
     arm = arm_rows(daily, model).sort_values(["fold", "date"])
-    if arm.empty:
-        return ""
-    # Each fold restarts at its own opening capital, so the folds are chained on their
-    # returns rather than concatenated on their levels - otherwise every fold boundary
-    # would show a jump the strategy never took.
-    curve, level = [], 1.0
+    curve: list[float] = []
+    level = 1.0
     for _, fold_rows in arm.groupby("fold", sort=True):
         values = fold_rows["equity"].to_numpy(dtype="float64")
         if len(values) < 2 or values[0] == 0:
             continue
-        for value in values:
-            curve.append((level * value / values[0], fold_rows["date"].iloc[0]))
-        level = curve[-1][0]
-    if len(curve) < 2:
+        curve.extend(level * value / values[0] for value in values)
+        level = curve[-1]
+    return curve
+
+
+def cumulative_equity_svg(
+    daily: pd.DataFrame, model: str, width: int = 460, height: int = 300
+) -> str:
+    """Cumulative equity across the folds, **against buy and hold on the same dates**.
+
+    The defect this replaces: the arm's own curve, filled green, reading ``+45.51%`` in
+    the corner - a number against its own starting capital and nothing else. The same file
+    holds 938 buy-and-hold rows over identical dates chaining to ``+125.19%``, and the
+    panel filtered them out on its way here. An arm that returns +45% while the market
+    returns +125% has not made 45%; it has lost 80 points of it, and §7.3 exists because
+    the first number is the one a reader remembers.
+
+    Both curves are drawn in the data ramp and neither in status colour: green for the
+    arm's own sign would answer *did it gain* on a panel whose question is *did it beat
+    the reference*.
+    """
+    if daily.empty or "model" not in daily.columns:
         return ""
-    series = [point for point, _ in curve]
+    series = chained_equity(daily, model)
+    reference = chained_equity(daily, BUY_AND_HOLD)
+    if len(series) < 2:
+        return ""
     left, right, top, bottom = 54, width - 12, 16, height - 30
     # A flat chained curve sits at exactly 1.00, so the baseline rule and the curve are the
     # same line and both land in the middle - which is where a curve that never moved
     # belongs. See :func:`_vertical` for why this is not `max(high - low, 1e-9)`.
-    y, _ = _vertical(series, top, bottom, EQUITY_MIN_SPAN)
+    y, _ = _vertical(series + reference, top, bottom, EQUITY_MIN_SPAN)
 
-    step = (right - left) / max(len(series) - 1, 1)
-    points = [f"{left + i * step:.1f},{y(v):.1f}" for i, v in enumerate(series)]
+    def plot(values: list[float]) -> str:
+        step = (right - left) / max(len(values) - 1, 1)
+        return " ".join(
+            f"{left + i * step:.1f},{y(v):.1f}" for i, v in enumerate(values)
+        )
+
     change = series[-1] - 1.0
-    # `>= 0` would paint an arm that never traded green. Persistence stands aside in all
-    # sixteen folds and its curve is exactly flat, which is a result and not a gain.
-    colour, fill = status_colour(change), status_fill(change)
-    area = f"{left},{y(1.0):.1f} " + " ".join(points) + f" {right},{y(1.0):.1f}"
     body = [
-        f'<polygon points="{area}" fill="{fill}" stroke="none"/>',
         _rule(left, y(1.0), right, y(1.0), HAIRLINE, dash="2 3"),
         _text(left - 6, y(1.0) + 3, "1.00", MUTED, anchor="end"),
-        f'<polyline points="{" ".join(points)}" fill="none" stroke="{colour}" stroke-width="1.6"/>',
-        _text(left, bottom + 18, f"{len(series)} TRADING DAYS", MUTED),
+    ]
+    # Each line is named at its own end, the upper one above its last point and the lower
+    # one below: the curves can finish anywhere, including on top of each other, and a
+    # label is only useful while a reader can tell which line it belongs to.
+    arm_on_top = len(reference) < 2 or series[-1] >= reference[-1]
+    if len(reference) >= 2:
+        body.append(
+            f'<polyline points="{plot(reference)}" fill="none" '
+            f'stroke="{REFERENCE_MARK}" stroke-width="1.6"/>'
+        )
+        body.append(
+            _text(
+                right,
+                y(reference[-1]) + (14 if arm_on_top else -6),
+                f"{REFERENCE_LABEL} {(reference[-1] - 1.0) * 100:+.2f}%",
+                MUTED,
+                anchor="end",
+            )
+        )
+    body.append(
+        f'<polyline points="{plot(series)}" fill="none" '
+        f'stroke="{ARM_MARK}" stroke-width="1.6"/>'
+    )
+    body.append(
         _text(
             right,
-            top + 4,
-            f"{status_glyph(change)} {change * 100:+.2f}%",
-            colour,
+            y(series[-1]) + (-6 if arm_on_top else 14),
+            f"{model.upper()} {change * 100:+.2f}%",
+            MUTED,
+            anchor="end",
+        )
+    )
+    body.append(_text(left, bottom + 18, f"{len(series)} TRADING DAYS", MUTED))
+    body.extend(_cumulative_readout(model, change, reference, left, right, top, bottom))
+    return _svg(
+        width, height, "".join(body), f"{model} cumulative equity against buy and hold"
+    )
+
+
+def _cumulative_readout(
+    model: str,
+    change: float,
+    reference: list[float],
+    left: float,
+    right: float,
+    top: float,
+    bottom: float,
+) -> list[str]:
+    """**The delta, at the foot, in the body size.** The levels are on the curves.
+
+    One sentence carrying both levels and the delta does not fit this chart at any size on
+    the scale - it ran to 593px of a 460px canvas and was clipped in silence - and a header
+    band wide enough for it lands on whichever curve ends highest. So each level is written
+    where its own line ends, and what is left here is the number the panel exists to state.
+    When the artefact holds no reference rows this says which reference is missing, rather
+    than quietly presenting the arm's own number as a result.
+    """
+    if len(reference) < 2:
+        return [
+            _text(
+                left,
+                top + 4,
+                f"{model.upper()} {change * 100:+.2f}% · {REFERENCE_LABEL} NOT IN "
+                "THIS FILE",
+                MUTED,
+            )
+        ]
+    return [
+        _text(
+            right,
+            bottom + 18,
+            f"{(change - (reference[-1] - 1.0)) * 100:+.2f} PTS",
+            TEXT,
             size=TYPE_BODY,
             anchor="end",
         ),
     ]
-    return _svg(width, height, "".join(body), f"{model} cumulative equity")
 
 
 def fold_bars_svg(
     rows: pd.DataFrame, model: str, width: int = 460, height: int = 300
 ) -> str:
-    """One bar per fold: green above zero, red below, a rule for a fold that stood aside.
+    """One bar per fold, **each against buy and hold's return for that same fold**.
 
-    The third mark is not decoration. A fold that stood aside returns exactly zero, and a
-    zero bar has no height - persistence stands aside in all sixteen, so without a mark of
-    its own that arm renders as an empty axis.
+    The defect this replaces: bars against 0%, green above and red below. DLinear beats
+    buy and hold in 4 folds of 16, and fold 13 - the demonstration fold - made +2.03%
+    while the market made +9.36% and drew a green bar. Against zero that bar is a win;
+    against the reference it is seven points of underperformance, and §7.3 asks for the
+    second reading.
+
+    Three marks, and the third is not decoration. A fold that stood aside returns exactly
+    zero, and a zero bar has no height - persistence stands aside in all sixteen, so
+    without a mark of its own that arm renders as an empty axis.
     """
     arm = arm_rows(rows, model).sort_values("fold")
     if arm.empty:
         return ""
+    reference = {
+        int(row.fold): float(row.total_return)
+        for row in arm_rows(rows, BUY_AND_HOLD).itertuples()
+        if not math.isnan(float(row.total_return))
+    }
     values = [(int(r.fold), float(r.total_return)) for r in arm.itertuples()]
     values = [(f, v) for f, v in values if not math.isnan(v)]
     if not values:
         return ""
-    left, right, top, bottom = 54, width - 12, 20, height - 34
-    peak = max(abs(v) for _, v in values) or 1e-9
+    # Two footer lines now - the count against the reference and the stood-aside count -
+    # so the bars give up 14px rather than the second line being drawn off the canvas.
+    left, right, top, bottom = 54, width - 12, 20, height - 48
+    marks = [abs(v) for _, v in values] + [abs(v) for v in reference.values()]
+    peak = max(marks) or 1e-9
     zero = top + (bottom - top) / 2
     slot = (right - left) / len(values)
     body = [
@@ -1399,47 +1507,88 @@ def fold_bars_svg(
             # was never measured - and it is not a rare case: persistence stands aside in
             # all sixteen, and FITS in three.
             body.append(_rule(x, zero, x + w, zero, MUTED))
-            continue
-        y0 = zero - magnitude if value > 0 else zero
-        body.append(
-            f'<rect x="{x:.1f}" y="{y0:.1f}" width="{w:.1f}" height="{magnitude:.1f}" '
-            f'fill="{status_colour(value)}"/>'
-        )
+        else:
+            y0 = zero - magnitude if value > 0 else zero
+            body.append(
+                f'<rect x="{x:.1f}" y="{y0:.1f}" width="{w:.1f}" '
+                f'height="{magnitude:.1f}" fill="{ARM_MARK}"/>'
+            )
+        base = reference.get(fold)
+        if base is not None:
+            # The reference sits across the bar rather than beside it: a bar that ends
+            # below this line has underperformed, which is one comparison by eye instead
+            # of two bar heights a reader has to measure against each other.
+            level = zero - base / peak * (bottom - top) / 2
+            body.append(
+                _rule(
+                    x - slot * 0.09, level, x + w + slot * 0.09, level, REFERENCE_MARK
+                )
+            )
         if index % 3 == 0:
             body.append(
                 _text(x + w / 2, bottom + 14, f"f{fold}", MUTED, anchor="middle")
             )
-    best, worst = max(values, key=lambda v: v[1]), min(values, key=lambda v: v[1])
-    # Coloured by what they are rather than by which end they sit at: the best of sixteen
-    # flat folds is +0.00%, and printing that in green is the chart asserting a win.
-    body.append(
-        _text(
-            left,
-            top - 6,
-            f"BEST f{best[0]} {best[1] * 100:+.2f}%",
-            status_colour(best[1]),
-        )
+    body.extend(_fold_readouts(values, reference, left, right, top, bottom, flat))
+    return _svg(
+        width, height, "".join(body), f"{model} return by fold against buy and hold"
     )
-    body.append(
-        _text(
-            right,
-            top - 6,
-            f"WORST f{worst[0]} {worst[1] * 100:+.2f}%",
-            status_colour(worst[1]),
-            anchor="end",
-        )
-    )
-    if flat:
-        body.append(
+
+
+def _fold_readouts(
+    values: list[tuple[int, float]],
+    reference: dict[int, float],
+    left: float,
+    right: float,
+    top: float,
+    bottom: float,
+    flat: int,
+) -> list[str]:
+    """The lines above and below the bars, **all stated against the reference**.
+
+    ``BEST`` and ``WORST`` used to be the arm's own extremes in status colour, which is
+    the same misreading as the bars: the best of sixteen folds is a win only if the
+    reference lost. They now name the widest margin in each direction, and the count says
+    how many folds cleared it at all - the number a reader of this panel most needs and
+    the one it never showed.
+    """
+    beaten = [
+        (fold, value - reference[fold]) for fold, value in values if fold in reference
+    ]
+    lines = []
+    if beaten:
+        best = max(beaten, key=lambda pair: pair[1])
+        worst = min(beaten, key=lambda pair: pair[1])
+        lines = [
+            _text(left, top - 6, f"BEST f{best[0]} {best[1] * 100:+.2f} PTS", MUTED),
             _text(
-                (left + right) / 2,
+                right,
+                top - 6,
+                f"WORST f{worst[0]} {worst[1] * 100:+.2f} PTS",
+                MUTED,
+                anchor="end",
+            ),
+            _text(
+                left,
                 bottom + 28,
+                f"{sum(1 for _, margin in beaten if margin > 0)} OF {len(beaten)} FOLDS "
+                f"BEAT {REFERENCE_LABEL}",
+                MUTED,
+            ),
+        ]
+    else:
+        lines = [_text(left, top - 6, f"{REFERENCE_LABEL} NOT IN THIS FILE", MUTED)]
+    # On its own line, and printed whether or not the reference is there: a fold that
+    # stood aside is a fact about the arm, and it was the first thing this chart said.
+    if flat:
+        lines.append(
+            _text(
+                left,
+                bottom + 42,
                 f"{flat} OF {len(values)} FOLDS FLAT - STOOD ASIDE",
                 MUTED,
-                anchor="middle",
             )
         )
-    return _svg(width, height, "".join(body), f"{model} return by fold")
+    return lines
 
 
 #: Tile and gap in px, largest first. The calendar keeps **one tile per trading day** and
@@ -1600,25 +1749,38 @@ def shape_region(reference: pd.DataFrame, model: str) -> str:
 
 
 def cumulative_region(daily: pd.DataFrame, model: str) -> str:
-    """The equity area. Reads `report/daily_equity.csv`."""
+    """The equity curve against buy and hold. Reads `report/daily_equity.csv`.
+
+    **The chart is given the whole frame, and the pill the arm's rows.** They want
+    different things from one file: the chart needs the reference rows to draw the
+    comparison, and the pill states the fold range of the arm it labels. Passing the
+    filtered arm to both - which is what this did until 23 Sep 2026 - dropped the 938
+    buy-and-hold rows before the chart could see them.
+    """
     arm = arm_rows(daily, model)
     source = backtest_source(DAILY_EQUITY_PATH, arm)
     return region(
         "Cumulative equity",
         source,
-        cumulative_equity_svg(arm, model) or too_little(source, NO_DAILY),
-        "Folds chained on returns, not concatenated on levels.",
+        cumulative_equity_svg(daily, model) or too_little(source, NO_DAILY),
+        "Folds chained on returns, not concatenated on levels. Buy and hold on the "
+        "same dates, from the same file.",
     )
 
 
 def fold_region(reference: pd.DataFrame, model: str) -> str:
-    """The per-fold bars. Reads `results.csv`."""
+    """The per-fold bars against buy and hold. Reads `results.csv`.
+
+    The whole frame to the chart, the arm's rows to the pill, for the reason given on
+    :func:`cumulative_region`.
+    """
     arm = arm_rows(reference, model)
     source = backtest_source(RESULTS_PATH, arm)
     return region(
         "Return by fold",
         source,
-        fold_bars_svg(arm, model) or too_little(source, NO_REFERENCE_ROWS),
+        fold_bars_svg(reference, model) or too_little(source, NO_REFERENCE_ROWS),
+        "Each fold against buy and hold over the same window.",
     )
 
 

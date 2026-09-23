@@ -326,29 +326,46 @@ def data_surfaces() -> dict[str, str]:
     }
 
 
-def test_status_colour_never_enters_a_ramp_chart() -> None:
-    """**Narrowed in GB-63c, and narrowed rather than loosened.**
+def ramp_surfaces() -> dict[str, str]:
+    """Every chart where the ramp **is** the encoding, rendered.
 
-    The rule was once "status colour never enters a data-encoding chart", and under the
-    card language that meant every chart. Under Vermillion Slate the ramp survives in
-    exactly two surfaces and green-and-red is the primary language everywhere else - so a
-    forecast dashed in GAIN is now correct rather than a violation, and a test still
-    forbidding it would have to be deleted to let the design through.
-
-    What survives is the part that was always the point: **the two families must not meet
-    inside one chart.** Where the ramp encodes which band, status colour would make a
-    reader ask what green means on an axis already spending colour on frequency.
-    `test_the_ramp_appears_in_no_chart_outside_attribution_and_spectral` holds the other
-    direction.
+    One list, read by both directions of the rule: nothing else may use the ramp, and
+    these may not use status colour. Two hand-written lists would drift the day a chart
+    joined one of them, which is what happened on 23 Sep 2026 when D3 moved the two
+    backtest panels here - a reader of one test would have seen a rule the other did not
+    enforce.
     """
-    ramp_charts = {
+    reference = app.reference_rows(app.load_results())
+    daily = app.load_daily_equity()
+    return {
         "contributions": app.contributions_svg(
             an_attribution(close_logret=0.08, rsi14=-0.06)
         ),
         "spectral": app.spectral_panel(a_spectral_attribution()),
+        # Joined on 23 Sep 2026. Both draw an arm against buy and hold, and green above a
+        # zero line would answer "did it gain" on a panel asking "did it beat the
+        # reference" - fold 13 gained 2.03% and lost to the market by seven points.
+        "cumulative_equity_svg": app.cumulative_equity_svg(daily, "dlinear"),
+        "fold_bars_svg": app.fold_bars_svg(reference, "dlinear"),
     }
 
-    for name, surface in ramp_charts.items():
+
+def test_status_colour_never_enters_a_ramp_chart() -> None:
+    """**Narrowed in GB-63c, and narrowed rather than loosened.**
+
+    The rule was once "status colour never enters a data-encoding chart", and under the
+    card language that meant every chart. Under Vermillion Slate the ramp survives in a
+    few surfaces and green-and-red is the primary language everywhere else - so a forecast
+    dashed in GAIN is now correct rather than a violation, and a test still forbidding it
+    would have to be deleted to let the design through.
+
+    What survives is the part that was always the point: **the two families must not meet
+    inside one chart.** Where the ramp encodes which band, status colour would make a
+    reader ask what green means on an axis already spending colour on frequency.
+    `test_the_ramp_appears_in_no_chart_that_encodes_no_data` holds the other direction.
+    """
+    for name, surface in ramp_surfaces().items():
+        assert surface, f"{name} rendered nothing, so this asserted nothing about it"
         found = [c for c in app.STATUS_COLOURS if c.lower() in surface.lower()]
         assert not found, f"{name} encodes with the ramp and took status colour {found}"
 
@@ -1086,28 +1103,25 @@ def test_every_status_coloured_cell_carries_a_sign_or_arrow() -> None:
         assert f"{value:+.2f}" in rendered, f"{value} rendered without its sign"
 
 
-def test_the_ramp_stays_inside_attribution_and_spectral() -> None:
-    """It encodes *which channel* and *which band* - a quantity, not a direction. Outside
-    those two charts it would be a third colour family competing for the same eye."""
-    inside = (
-        app.contributions_svg(an_attribution(close_logret=0.08, rsi14=-0.06)),
-        app.spectral_panel(a_spectral_attribution()),
-    )
-    for surface in inside:
+def test_the_ramp_stays_inside_the_charts_that_encode_data() -> None:
+    """It encodes *which channel*, *which band*, and since 23 Sep 2026 *the arm against
+    its reference* - a quantity, not a direction. In a chart that encodes none of those it
+    would be a third colour family competing for the same eye.
+
+    **The surfaces come from `ramp_surfaces`, not from a list written here.** They used to
+    be written here, and the list named radar and fold-bars as outsiders; when D3 made the
+    fold chart draw its reference in the ramp, this test was asserting the opposite of
+    what the design now says. The other direction - that no *other* chart takes the ramp -
+    is held by `test_the_ramp_appears_in_no_chart_that_encodes_no_data`, which enumerates
+    every builder rather than naming a few.
+    """
+    for name, surface in ramp_surfaces().items():
         assert any(
             c in surface for c in app.RAMP
-        ), "the ramp left a chart that needs it"
+        ), f"{name} lost the ramp it encodes with"
         assert not [
             c for c in app.STATUS_COLOURS if c in surface
-        ], "status colour entered a data-encoding chart"
-
-    ref = app.reference_rows(app.load_results())
-    if not ref.empty:
-        outside = (app.radar_svg(ref, "dlinear"), app.fold_bars_svg(ref, "dlinear"))
-        for surface in outside:
-            assert not [
-                c for c in app.RAMP if c in surface
-            ], "the ramp escaped its charts"
+        ], f"status colour entered {name}, which encodes with the ramp"
 
 
 def test_the_ramp_boundary_can_fail(monkeypatch) -> None:
@@ -2036,7 +2050,7 @@ def test_the_forecast_region_states_that_the_bar_advances_once_per_day() -> None
     assert "advances once per trading day" in source
 
 
-def test_the_ramp_appears_in_no_chart_outside_attribution_and_spectral() -> None:
+def test_the_ramp_appears_in_no_chart_that_encodes_no_data() -> None:
     """**The boundary guard, with the hole closed.**
 
     The earlier version checked the radar and the fold chart, and the forecast chart -
@@ -2045,6 +2059,11 @@ def test_the_ramp_appears_in_no_chart_outside_attribution_and_spectral() -> None
     this one enumerates every chart builder the module exports and fails on an
     unclassified one, so a new chart must be assigned a side rather than defaulting to
     unchecked.
+
+    **The territory grew on 23 Sep 2026 and the mechanism did not.** D3 put the two
+    backtest panels on the meaning side, because each now draws an arm against buy and
+    hold and that comparison is data. Two names moved between the lists; nothing was
+    exempted, and the same assertion runs over both sides.
     """
     import pandas as pd
 
@@ -2056,10 +2075,10 @@ def test_the_ramp_appears_in_no_chart_outside_attribution_and_spectral() -> None
     )
 
     ramp_is_meaning = {
-        "contributions_svg": app.contributions_svg(
-            an_attribution(close_logret=0.08, rsi14=-0.06)
-        ),
-        "spectral_panel": app.spectral_panel(a_spectral_attribution()),
+        "contributions_svg": ramp_surfaces()["contributions"],
+        "spectral_panel": ramp_surfaces()["spectral"],
+        "cumulative_equity_svg": ramp_surfaces()["cumulative_equity_svg"],
+        "fold_bars_svg": ramp_surfaces()["fold_bars_svg"],
     }
     ramp_is_trespass = {
         "forecast_svg": app.forecast_svg(
@@ -2069,10 +2088,6 @@ def test_the_ramp_appears_in_no_chart_outside_attribution_and_spectral() -> None
         "countdown_svg": app.countdown_svg(30, 60),
         "sparkline_svg": app.sparkline_svg(history, row, loop_present=True),
         "radar_svg": app.radar_svg(reference, "dlinear") if not reference.empty else "",
-        "fold_bars_svg": (
-            app.fold_bars_svg(reference, "dlinear") if not reference.empty else ""
-        ),
-        "cumulative_equity_svg": app.cumulative_equity_svg(daily, "dlinear"),
         "calendar_svg": app.calendar_svg(daily, "dlinear"),
     }
 
