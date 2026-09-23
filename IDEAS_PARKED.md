@@ -72,6 +72,103 @@ Train directly on relative ranking across the universe rather than on absolute
 return, since ranking is an easier target than level prediction. Interesting;
 changes the loss and the whole evaluation frame.
 
+### Cross-sectional momentum as a selection arm — declined 23 Sep 2026
+
+**A different idea from the paragraph above, and the difference is the reason it got as
+far as a measurement.** That one changes the **training objective**: the model still
+forecasts, and what moves is the loss it is fitted against. This one **trains nothing**.
+It ranks the twenty symbols by trailing 12-month return, holds the top three and
+rebalances monthly — a selection rule in the family `buy_and_hold` already occupies, which
+is why it looked cheap: no `Forecaster`, no touch on spec §4, no checkpoint refused.
+
+**Deliberately not a `GB-NN` task.** Phase 2 closed on 15 September under its own hard
+boundary, so this is a parked idea and not a numbered one. `tests/test_phase2_ledger.py`
+pins the Phase 2 task set to GB-61…GB-66 and a new heading in the expansion would go red
+against it.
+
+**The producing code exists and is committed**, which is the point of this entry being
+quotable at all: `scripts/momentum_probe.py`, writing `report/momentum_probe.csv`. It reads
+`data_cache/` only, trains nothing, and runs the three controls through `study.null_bars`
+on the study's own seeding so that a finding about a control is not a finding about the
+probe. Every figure below is one of its rows. It rebalances on the **first** bar of a new
+month rather than the last bar of the old one, because only the first is knowable standing
+on `t` — and `causality.perturb` never touches the index, so `assert_causal` would certify
+either rule.
+
+**What was measured, on the committed cache.** Every row below is a cell of
+`report/momentum_probe.csv`, and `tests/test_momentum_probe_figures.py` fails if either
+side is edited without the other. **Do not reformat this table**: its shape is the guard's
+contract. A `quantity` is a CSV `quantity`, optionally `:SYMBOL` for a per-symbol row and
+optionally `@p` to address that row's `p` column instead of its `value`.
+
+| control | quantity | value |
+|---|---|---|
+| real | rebalances | 115 |
+| real | top_n_minus_equal_weight | +0.005965 |
+| real | top_n_minus_equal_weight@p | 0.2491 |
+| shuffled | top_n_minus_equal_weight | +0.007690 |
+| shuffled | top_n_minus_equal_weight@p | 0.0856 |
+| noise | top_n_minus_equal_weight | -0.007067 |
+| noise | top_n_minus_equal_weight@p | 0.1954 |
+| real | spearman_trailing_forward | +0.01703 |
+| shuffled | spearman_trailing_forward | +0.01730 |
+| noise | spearman_trailing_forward | -0.05466 |
+| real | rank_persistence_one_lookback_on | +0.05357 |
+| shuffled | rank_persistence_one_lookback_on | -0.01320 |
+| noise | rank_persistence_one_lookback_on | -0.16504 |
+| real | drift_correlation_vs_real | +1.0000 |
+| shuffled | drift_correlation_vs_real | +1.0000 |
+| noise | drift_correlation_vs_real | +0.0812 |
+| real | months_held:NVDA | 78 |
+| real | months_held:LLY | 40 |
+| real | months_held:TSLA | 36 |
+
+The guard covers this table and nothing else in this file. The cost figures further down
+come from `results.csv` and `PROGRESS.md`, not from the probe, and are not pinned by it.
+
+**The arm scores HIGHER on shuffled returns than on the market, and that is a fact about
+the control rather than about the arm.** `null_bars` permutes a symbol's log-return series
+and rebuilds prices from the cumulative sum; a permutation preserves a sum, so every
+symbol's whole-sample return survives exactly and the cross-sectional ordering of who won
+is preserved perfectly — `drift_correlation_vs_real` above is the identity under
+`shuffled` and near zero under `noise`. The shuffle *does* destroy the temporal
+persistence of the ranking, which changes sign, and the edge survives anyway, because the
+edge never came from persistence. **The shuffled
+control is structurally inert against this arm**, so one of the two robustness tests every
+headline claim is required to face could not have fired on it. See the PROGRESS row of
+23 Sep for the general form and the pre-registerable discriminator.
+
+**Survivorship, stated plainly and unbounded.** Over those 115 rebalances the rule holds
+**NVDA in 78 of them**, LLY in 40 and TSLA in 36 — 67.8%, 34.8% and 31.3%, each derived
+from two rows of the table above rather than stated a third time; `V` is never held. Spec §2.4
+criterion 3 admits only securities continuously tradable to the cache's last bar, and §2.4
+already records that the step from *admissible* to *these twenty* was judgment — `AVGO`,
+`ORCL`, `KO` and `PEP` clear all five criteria and appear nowhere. So this arm's headline
+number would be dominated by one name whose presence in the universe was a judgment call,
+inside a set selected for having survived. Reporting it as a delta against `buy_and_hold`
+removes the *level* of that bias and not the *concentration*: the reference spreads the
+survivors' drift over twenty names and the arm concentrates it on the three that rose most.
+**Nothing in this repository can bound it** — there is no delisted series and no
+point-in-time index membership anywhere in the tree, and `data/historical.py` fetches
+`cfg.universe` and nothing else.
+
+**Cost if taken up.** Small in compute and not small anywhere else. In the `buy_and_hold`
+shape it is one row per condition per fold: **224 rows, 14 conditions × 16 folds**, of
+which only 96 are distinct backtests — a selection arm depends on `anchor`, `control` and
+`target_in_loop` and on neither `lr` nor `cutoff_period_days`, so 128 of them would be
+byte-identical duplicates. Its own compute is **one to two minutes** at `buy_and_hold`'s
+measured 0.257 s a row; the real price is that `results.csv` is written whole with no
+append path, so landing it costs the **full grid re-run, measured at 100 min 56 s** on
+2 Sep. The Holm family grows from 117 reportable tests to 135, which moves every corrected
+p-value in the report without costing a survivor. And the backtest path has no
+cross-sectional selection layer at all — `rank_signals` is live-only — so this would be the
+first arm whose signal set at a bar depends on other symbols, which makes it structurally
+unlike every arm it would be compared against.
+
+**It was declined on none of those costs.** It was declined because the two things worth
+having from it — the inert control and the discriminator that predicts it — are findings
+about the method, and the probe already produced them without an arm.
+
 ## Sentiment / news channel
 
 Fragile external dependency, no room in 8 weeks.
