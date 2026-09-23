@@ -151,10 +151,19 @@ CHANNEL_SPEED = (
     "close_logret",
 )
 
-RUNNING = "RUNNING"
-IDLE = "IDLE"
-CLOSED = "OUTSIDE MARKET HOURS"
+# The six states the page may be in, and **the only vocabulary for the SESSION word, the
+# CYCLE badge and every live pill**. They are decided once, by :func:`liveness`, in the
+# precedence written there.
+#
+# `RUNNING` and `IDLE` are gone, and their removal is the D2 defect stated as a diff: they
+# were chosen by `status_of` from the *position count*, so a page whose loop had been dead
+# for nineteen days read RUNNING because one position was open. A count of positions is
+# not a statement about a process, and it now has its own word in the strip - BOOK n HELD.
 ASIDE = "STOOD ASIDE"
+NOT_RESPONDING = "NOT RESPONDING"
+NOT_RUNNING = "NOT RUNNING"
+CLOSED = "OUTSIDE MARKET HOURS"
+SLOW = "SLOW"
 
 # Below this fraction of the gross channel view surviving into the forecast, a decision
 # is flagged in the log and in its expander title. Not "weakly supported" - FRAGILE, which
@@ -241,31 +250,28 @@ def load_reliability(path: str | Path) -> Reliability | None:
     )
 
 
-def status_of(
-    thresholds: Thresholds, in_market_hours: bool, positions: dict[str, float]
-) -> str:
-    """What the bot is doing, in the order a reader needs to know it.
-
-    ``STOOD ASIDE`` outranks ``RUNNING`` because it is the more surprising fact: a session
-    whose calibrated band cannot fire is not idle between decisions, it has decided in
-    advance that it will not act, and a status line reading ``RUNNING`` beside a flat book
-    would leave a viewer waiting for a trade that cannot come.
-    """
-    if not thresholds.fires:
-        return ASIDE
-    if not in_market_hours:
-        return CLOSED
-    return RUNNING if positions else IDLE
-
-
 # ── cards, and the source every one of them must declare ────────────────────
 
 LIVE, BACKTEST, REPLAY = "LIVE", "BACKTEST", "REPLAY"
 
-#: Pill colours. BACKTEST is deliberately the dimmest of the three: it is the source with
-#: the most rows and the least authority about what the system is doing right now, and a
-#: reader skimming for what is live should not have their eye caught by it first.
-_PILL = {LIVE: GAIN, BACKTEST: MUTED, REPLAY: ACCENT}
+#: The verdict's colour, one per state, and the pill colours with it. BACKTEST is
+#: deliberately the dimmest: it is the source with the most rows and the least authority
+#: about what the system is doing right now, and a reader skimming for what is live should
+#: not have their eye caught by it first.
+#:
+#: **Green belongs to one state only.** A live pill wears the verdict, so `LIVE` in GAIN
+#: appears when the loop wrote within one heartbeat and at no other time; the page cannot
+#: show a green pill beside a loop that stopped on 3 Sep 2026.
+_PILL = {
+    LIVE: GAIN,
+    SLOW: ACCENT,
+    NOT_RESPONDING: LOSS,
+    NOT_RUNNING: DIM,
+    CLOSED: DIM,
+    ASIDE: ACCENT,
+    BACKTEST: MUTED,
+    REPLAY: ACCENT,
+}
 
 
 @dataclass(frozen=True)
@@ -1029,7 +1035,12 @@ def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
 
 
 def sparkline_svg(
-    prices: pd.Series, row: PositionRow, width: int = 320, height: int = 64
+    prices: pd.Series,
+    row: PositionRow,
+    *,
+    loop_present: bool,
+    width: int = 320,
+    height: int = 64,
 ) -> str:
     """One position's recent price against the band its stop and target define.
 
@@ -1043,16 +1054,25 @@ def sparkline_svg(
     at the broker, an unreported trailing level, or orders that could not be read, there is
     no stop rule and no band: a line at a price level reads as a stop whatever its style,
     so the book's intended level is not drawn at all.
+
+    **The target needs a running loop, so it is drawn only when there is one.** Unlike the
+    stop, the target is not at the broker at all: a working sell would hold the whole
+    position, so since 26 Aug 2026 the stop is the only protective order and the target is
+    a rule the loop applies itself, cycle by cycle. With no loop, a line at that level
+    promises an exit nothing will execute, which is the stop defect of D1 wearing the other
+    leg. Dropped rather than restyled: this chart has no legend, so a mark that survives in
+    a different dash is still a mark a reader has to be told how to read.
     """
     if prices.empty or not row.managed:
         return ""
     stop = row.live_stop
+    target = row.take_profit if loop_present else math.nan
     left, right, top, bottom = 4, width - 4, 6, height - 6
     values = prices.to_numpy(dtype="float64")
     low = float(values.min()) if math.isnan(stop) else min(float(values.min()), stop)
     high = max(
         float(values.max()),
-        row.take_profit if not math.isnan(row.take_profit) else float(values.max()),
+        target if not math.isnan(target) else float(values.max()),
     )
     span = max(high - low, 1e-9)
 
@@ -1065,10 +1085,10 @@ def sparkline_svg(
         for index, value in enumerate(values)
     )
     band = ""
-    if not math.isnan(row.take_profit) and not math.isnan(stop):
+    if not math.isnan(target) and not math.isnan(stop):
         band = (
-            f'<rect x="{left}" y="{y(row.take_profit):.1f}" width="{right - left}" '
-            f'height="{abs(y(stop) - y(row.take_profit)):.1f}" '
+            f'<rect x="{left}" y="{y(target):.1f}" width="{right - left}" '
+            f'height="{abs(y(stop) - y(target)):.1f}" '
             f'fill="{ORANGE}" fill-opacity="0.06"/>'
         )
     body = [
@@ -1080,15 +1100,8 @@ def sparkline_svg(
         ),
         (
             ""
-            if math.isnan(row.take_profit)
-            else _rule(
-                left,
-                y(row.take_profit),
-                right,
-                y(row.take_profit),
-                ORANGE_DIM,
-                dash="3 3",
-            )
+            if math.isnan(target)
+            else _rule(left, y(target), right, y(target), ORANGE_DIM, dash="3 3")
         ),
         (
             ""
@@ -1097,10 +1110,15 @@ def sparkline_svg(
         ),
         f'<polyline points="{points}" fill="none" stroke="{PAPER}" stroke-width="1.2"/>',
     ]
+    drawn = [
+        name
+        for name, level in (("live stop", stop), ("target", target))
+        if not math.isnan(level)
+    ]
     label = (
-        f"{row.symbol} recent closes, no stop drawn"
-        if math.isnan(stop)
-        else f"{row.symbol} against its live stop and target"
+        f"{row.symbol} against its " + " and ".join(drawn)
+        if drawn
+        else f"{row.symbol} recent closes, no stop or target drawn"
     )
     return _svg(width, height, "".join(body), label)
 
@@ -1139,22 +1157,30 @@ def countdown_svg(
 # ── staleness: a value that could not be refreshed says so ───────────────────
 
 
-def staleness_html(age_seconds: float, heartbeat_seconds: float) -> str:
-    """The age stamp beside a value the last read could not refresh.
+def staleness_html(verdict: Liveness) -> str:
+    """The badge at the end of the strip: what could not be refreshed, and how old it is.
 
-    Empty while the read is current. Beyond two heartbeat intervals the wording escalates
-    from *this number is old* to *the loop is not answering*, because those are different
-    problems for a reader: the first is a stale panel and the second is a dead system, and
-    a dashboard that renders them identically has hidden the one that matters.
+    **Reads the verdict; applies no threshold of its own.** Until 23 Sep 2026 this function
+    re-derived ``2 * heartbeat`` while its call site derived the same number to decide
+    *which age to pass in* - so the badge's subject switched between the loop's write and
+    the broker's read at a boundary computed from the other one. Two copies of one rule,
+    and the page could not say which age it was showing.
+
+    A loop not answering is a dead system and takes :data:`LOSS` through
+    ``.gb-not-responding``; a stale broker read is an old number on a live page and stays
+    in the dim stale style. The two were rendered identically before, in the same class.
     """
-    if age_seconds <= 0:
-        return ""
-    if age_seconds > 2 * heartbeat_seconds:
+    if verdict.state == NOT_RESPONDING:
         return (
-            f'<span class="gb-stale">LOOP NOT RESPONDING &nbsp;·&nbsp; LAST READ '
-            f"{age_seconds / 60:.0f} MIN AGO</span>"
+            f'<span class="gb-not-responding">LOOP NOT RESPONDING &nbsp;·&nbsp; '
+            f"LAST WRITE {escape(ago(verdict.loop_age))}</span>"
         )
-    return f'<span class="gb-stale">STALE &nbsp;·&nbsp; {age_seconds:.0f}S OLD</span>'
+    if verdict.broker_age > 0:
+        return (
+            f'<span class="gb-stale">BROKER READ &nbsp;·&nbsp; '
+            f"{escape(ago(verdict.broker_age))}</span>"
+        )
+    return ""
 
 
 # ── BACKTEST regions ─────────────────────────────────────────────────────────
@@ -1737,24 +1763,27 @@ def price_path(last_close: float, forecast_path) -> pd.Series:
     return pd.Series(prices, dtype="float64")
 
 
-def forecast_source(as_of: pd.Timestamp) -> Source:
+def forecast_source(as_of: pd.Timestamp, state: str) -> Source:
     """The forecast card's pill. **It states the SOURCE, and it cannot state freshness.**
 
-    `LIVE` is one of three provenances and always has been - the type exists to stop
-    backtest numbers wearing a live face, and no test has ever asked it about recency. But
-    a green pill beside a bare date is read as *as of*, and on 3 Sep 2026 that misreading
-    cost a reader who knows the system: the loop had correctly dropped the in-progress bar,
-    the panel said `LIVE 2026-09-02` while the clock said the 3rd, and a working
-    look-ahead guard was indistinguishable from a dead feed. So the detail now names the
-    axis - *live feed* - and *bar* qualifies the date as a bar rather than a timestamp.
+    `LIVE` was one of three provenances - the type exists to stop backtest numbers wearing
+    a live face - but a green pill beside a bare date is read as *as of*, and on
+    3 Sep 2026 that misreading cost a reader who knows the system: the loop had correctly
+    dropped the in-progress bar, the panel said `LIVE 2026-09-02` while the clock said the
+    3rd, and a working look-ahead guard was indistinguishable from a dead feed. So the
+    detail names the axis - *live feed* - and *bar* qualifies the date as a bar rather
+    than a timestamp.
 
-    **The signature is the mechanism.** This takes the bar and nothing else: no clock, no
-    session state. A pill that cannot see the time cannot make a claim about it, which is
-    a stronger guarantee than a convention that it should not. Freshness is stated twice
-    already, by :func:`staleness_html` and by `LAST CYCLE` in :func:`session_strip`; a
-    third copy here would be a second place for one fact to live and diverge from.
+    **The signature is still the mechanism, and ``state`` does not weaken it.** From
+    23 Sep 2026 the kind is the page's one verdict rather than the word LIVE, because a
+    green pill on a loop that stopped nineteen days ago is the same misreading in its
+    worst form. What arrives here is the *word* - never the verdict object, never a clock,
+    never an age - so this pill still cannot make a claim about recency: it can only
+    repeat the state somebody else decided. Freshness is stated by :func:`staleness_html`
+    and by `LAST CYCLE` in :func:`session_strip`, and a third copy here would be a second
+    place for one fact to live and diverge from.
     """
-    return Source(LIVE, f"live feed · {as_of:%Y-%m-%d} bar")
+    return Source(state, f"live feed · {as_of:%Y-%m-%d} bar")
 
 
 def bar_note(as_of: pd.Timestamp, now: pd.Timestamp, session_open: bool) -> str:
@@ -2322,7 +2351,24 @@ def stop_cell(row: PositionRow) -> str:
     return EM_DASH if math.isnan(room) else f"{room * 100:.0f}% TO {row.live_stop:,.2f}"
 
 
-def position_table(rows: Sequence[PositionRow]) -> str:
+def state_cell(row: PositionRow, verdict: Liveness) -> str:
+    """The `STATE` cell: what is looking after this position, in one word.
+
+    **MANAGED is a claim about the loop, not about the book.** The protective order is a
+    DAY order: it expires at the close, and only a running loop re-arms it the next
+    morning (``live_loop.protect_book``). With no loop, a stop working today is protection
+    until 20:00 and nothing after that, so the position reads ``STOP ONLY`` - there is a
+    stop, and there is nothing managing it. ``IN BOOK`` is the book holding a position
+    with no working stop at all, and ``QUARANTINED`` is a position the system never opened.
+    """
+    if not row.managed:
+        return "QUARANTINED"
+    if not row.stop_working:
+        return "IN BOOK"
+    return "MANAGED" if verdict.loop_present else "STOP ONLY"
+
+
+def position_table(rows: Sequence[PositionRow], verdict: Liveness) -> str:
     """The positions panel. A quarantined holding shows em dashes, never zeros.
 
     Two columns carry status. `UNREALISED` is coloured through :func:`status_html`, so it
@@ -2331,9 +2377,9 @@ def position_table(rows: Sequence[PositionRow]) -> str:
     the second data family the palette rule refuses. It is marked instead - near its stop,
     and whenever :func:`stop_cell` refuses to show a room at all.
 
-    `STATE` reads ``MANAGED`` only while a stop is working at the broker. A position the
-    system opened with no stop it can see reads ``IN BOOK``: the book holds it, and nothing
-    is protecting it.
+    `STATE` comes from :func:`state_cell`: ``MANAGED`` needs both a stop working at the
+    broker and a loop running to re-arm it, and says so in one word rather than leaving a
+    reader to combine two panels.
     """
     marks = [
         (number, 6)
@@ -2358,11 +2404,7 @@ def position_table(rows: Sequence[PositionRow]) -> str:
                     )
                 ),
                 stop_cell(row),
-                (
-                    "QUARANTINED"
-                    if not row.managed
-                    else "IN BOOK" if row.protection_unconfirmed else "MANAGED"
-                ),
+                state_cell(row, verdict),
             )
             for row in rows
         ],
@@ -2420,6 +2462,134 @@ def decision_table(decisions: list[DecisionRecord]) -> str:
         rows,
         numeric=(3, 4, 5),
         flagged=flagged,
+    )
+
+
+def ago(seconds: float) -> str:
+    """One duration, in the largest unit that leaves a number a person can hold.
+
+    **One formatter, used by every age on the page.** The strip carried two of them on
+    22 Sep 2026 - ``LAST CYCLE 444.3h ago`` beside ``LAST READ 26660 MIN AGO`` - which are
+    the same afternoon in September written two ways, and neither says *nineteen days*.
+    """
+    if not math.isfinite(seconds):
+        return EM_DASH
+    seconds = max(seconds, 0.0)
+    # Floored, never rounded: 18 days and 12 hours is "18 days ago". Rounding it to 19
+    # would age a measurement upwards, and this number is read as *at least this long*.
+    for size, unit in ((86400, "days"), (3600, "h"), (60, "min")):
+        if seconds >= size:
+            count = math.floor(seconds / size)
+            return f"{count} {unit[:-1] if unit == 'days' and count == 1 else unit} ago"
+    return f"{math.floor(seconds)}s ago"
+
+
+#: What the lock file says about a loop process. Three answers, because "the lock cannot
+#: be read" is not "there is no lock": a file this module cannot parse may name a running
+#: loop, and :func:`live_lock.read_lock` raises rather than guessing for us.
+LOCK_ALIVE, LOCK_NONE, LOCK_UNREADABLE = "alive", "none", "unreadable"
+
+
+def loop_lock(state_dir: str | Path) -> str:
+    """Whether a live loop holds ``state_dir``: :data:`LOCK_ALIVE`, :data:`LOCK_NONE` or
+    :data:`LOCK_UNREADABLE`.
+
+    A lock whose PID is gone is :data:`LOCK_NONE`, because that is what ``acquire``
+    reclaims. ``process_is_alive`` answers True when it cannot tell, so an unanswerable
+    question resolves towards *a loop may be there*, which is the direction that raises an
+    alarm rather than hiding one.
+    """
+    from glassbox.live_lock import LockRefused, process_is_alive, read_lock
+
+    try:
+        holder = read_lock(state_dir)
+    except LockRefused:
+        return LOCK_UNREADABLE
+    if holder is None:
+        return LOCK_NONE
+    return LOCK_ALIVE if process_is_alive(holder.pid) else LOCK_NONE
+
+
+@dataclass(frozen=True)
+class Liveness:
+    """Whether the loop is alive, **decided once and read everywhere**.
+
+    The defect this type exists to end: on 22 Sep 2026 the page said ``SESSION OUTSIDE
+    MARKET HOURS``, ``LOOP NOT RESPONDING`` and ``LAST CYCLE 444.3h ago`` in one line,
+    while the CYCLE panel wore a green LIVE pill over ``NEXT CYCLE 0s`` and three more
+    pills read LIVE. Four surfaces, four answers, none of them a reading of the loop.
+
+    Every threshold is applied here and nowhere else. A consumer that re-derived
+    ``2 * heartbeat`` would be a second copy of the rule, free to disagree with this one -
+    which is exactly what the old ``staleness_html`` and its call site did.
+    """
+
+    #: One of the six words. See :func:`liveness` for the precedence.
+    state: str
+    #: Seconds since the loop's own last write, and since the last good broker read.
+    loop_age: float
+    broker_age: float
+    #: A loop process holds the lock and has written within two heartbeats. **Not the
+    #: same question as** :attr:`state`: ``STOOD ASIDE`` outranks every other row, so it
+    #: would otherwise hide a dead loop from the surfaces that must not imply one.
+    loop_present: bool
+
+    @property
+    def colour(self) -> str:
+        return _PILL[self.state]
+
+    def pill(self, detail: str) -> Source:
+        """The live pill for a card, wearing this verdict rather than the word LIVE."""
+        return Source(self.state, detail)
+
+
+def liveness(
+    *,
+    lock: str,
+    band_fires: bool,
+    in_session: bool,
+    loop_age: float,
+    broker_age: float,
+    heartbeat: float,
+) -> Liveness:
+    """The one verdict, from the one set of thresholds.
+
+    The rows are evaluated in this order, and the order is the ruling of 23 Sep 2026:
+
+    ===================== ================================================ =======
+    state                 condition                                        colour
+    ===================== ================================================ =======
+    STOOD ASIDE           the band cannot fire                             ACCENT
+    NOT RESPONDING        lock held, PID alive, no write for 2 heartbeats  LOSS
+    NOT RUNNING           no lock, or the PID is gone                      DIM
+    OUTSIDE MARKET HOURS  outside the session                              DIM
+    SLOW                  one to two heartbeats since the last write       ACCENT
+    LIVE                  a write within one heartbeat                     GAIN
+    ===================== ================================================ =======
+
+    ``STOOD ASIDE`` stays at the top because it is the most surprising fact: a session
+    whose calibrated band cannot fire has decided in advance that it will not act, and a
+    reader told anything else waits for a trade that cannot come. A lock that cannot be
+    parsed is NOT RESPONDING, never NOT RUNNING: the quiet answer is the dangerous one.
+
+    Both boundaries belong to the calmer band - a write exactly one heartbeat old is LIVE,
+    one exactly two heartbeats old is SLOW - so a threshold has to be *crossed* to escalate.
+    """
+    present = lock == LOCK_ALIVE and loop_age <= 2 * heartbeat
+    if not band_fires:
+        state = ASIDE
+    elif lock == LOCK_UNREADABLE or (lock == LOCK_ALIVE and loop_age > 2 * heartbeat):
+        state = NOT_RESPONDING
+    elif lock == LOCK_NONE:
+        state = NOT_RUNNING
+    elif not in_session:
+        state = CLOSED
+    elif loop_age > heartbeat:
+        state = SLOW
+    else:
+        state = LIVE
+    return Liveness(
+        state=state, loop_age=loop_age, broker_age=broker_age, loop_present=present
     )
 
 
@@ -2770,7 +2940,7 @@ def band_context(path: Path) -> BandContext | None:
     """Read the band's selection context from the artefact GB-20 wrote.
 
     ``None`` when there is no artefact — the loop then stands aside for a different reason
-    (no band at all), which ``status_of`` already says.
+    (no band at all), which :func:`liveness` already says as ``STOOD ASIDE``.
     """
     if not path.is_file():
         return None
@@ -2796,11 +2966,10 @@ def _stat(key: str, value: str, dim: bool = False) -> str:
 
 def session_strip(
     cfg: Config,
-    state: str,
+    verdict: Liveness,
     state_dir: str | Path,
     source: str,
-    cycle_seconds: float,
-    stale: str = "",
+    held: int,
 ) -> str:
     """Row 1: what is happening now, one line, 20px gaps.
 
@@ -2809,28 +2978,26 @@ def session_strip(
     Co-Pilot queue rendered empty and correct, and criterion 2 had to be satisfied through
     the API. An empty queue and no recommendations are indistinguishable unless the panel
     says which directory it read.
+
+    ``held`` is counted from ``book.json`` and stated as ``BOOK n HELD``, **a fact about
+    the book and not about the loop**. It is here because it used to be the SESSION word:
+    ``status_of`` returned RUNNING when any position was open, so a count of positions was
+    being read aloud as the state of a process that had not run since 3 Sep 2026. Counting
+    from the book rather than from the broker read also keeps it true when that read fails.
     """
-    colour = GAIN if state in (RUNNING, IDLE) else DIM if state == CLOSED else ACCENT
-    age = (
-        EM_DASH
-        if math.isinf(cycle_seconds)
-        else (
-            f"{cycle_seconds:.0f}s ago"
-            if cycle_seconds < 3600
-            else f"{cycle_seconds / 3600:.1f}h ago"
-        )
-    )
     return (
         '<div class="gb-strip">' + f'<span><span class="gb-stat-key">SESSION</span>'
-        f'<span class="gb-stat-value" style="color:{colour}">{escape(state)}</span></span>'
-        + _stat("LAST CYCLE", escape(age))
+        f'<span class="gb-stat-value" style="color:{verdict.colour}">'
+        f"{escape(verdict.state)}</span></span>"
+        + _stat("LAST CYCLE", escape(ago(verdict.loop_age)))
+        + _stat("BOOK", f"{held} HELD")
         + _stat("MODEL", escape(cfg.model.active.upper()), dim=True)
         + _stat("CHANNELS", escape(cfg.channels.active.upper()), dim=True)
         + _stat("UNIVERSE", f"{len(cfg.universe)}", dim=True)
         + _stat("BOUND", escape(str(state_dir)), dim=True)
         + _stat("SHOWING", escape(source.upper()), dim=True)
         + _stat("CONFIG", escape(config_hash(cfg)[:10].upper()), dim=True)
-        + (f"<span>{stale}</span>" if stale else "")
+        + (f"<span>{badge}</span>" if (badge := staleness_html(verdict)) else "")
         + "</div>"
     )
 
@@ -3030,22 +3197,21 @@ def main(
         stops = None
         broker_age = (now - at).total_seconds()
 
-    age = cycle_age(root, now)
-    loop_silent = age > 2 * cfg.live.heartbeat_seconds
-    stale = staleness_html(
-        age if loop_silent else broker_age, cfg.live.heartbeat_seconds
+    # One verdict, built once, read by the strip, the CYCLE panel, every live pill, the
+    # positions table and every sparkline. Nothing below re-derives a threshold from the
+    # ages: that was the defect, in four places that disagreed.
+    verdict = liveness(
+        lock=loop_lock(root),
+        band_fires=thresholds.fires,
+        in_session=hours,
+        loop_age=cycle_age(root, now),
+        broker_age=broker_age,
+        heartbeat=cfg.live.heartbeat_seconds,
     )
 
     # ── row 1: now ───────────────────────────────────────────────────────────
     st.markdown(
-        session_strip(
-            cfg,
-            status_of(thresholds, hours, quantities),
-            root,
-            source,
-            age,
-            stale,
-        ),
+        session_strip(cfg, verdict, root, source, len(book.symbols())),
         unsafe_allow_html=True,
     )
 
@@ -3057,7 +3223,7 @@ def main(
 
     left, right = st.columns([2, 1])
     with left:
-        live_source = Source(LIVE, f"{sessions} sessions, {len(trades)} trades")
+        live_source = verdict.pill(f"{sessions} sessions, {len(trades)} trades")
         body = (
             equity_svg(curve)
             if len(curve) > 1
@@ -3076,13 +3242,23 @@ def main(
             unsafe_allow_html=True,
         )
     with right:
+        cycle_source = verdict.pill("loop cadence")
+        # A countdown is a claim that something is due. With no loop writing, nothing is
+        # due, and `NEXT CYCLE 0s` under a green pill was the page's most confident lie.
         st.markdown(
             region(
                 "Cycle",
-                Source(LIVE, "loop cadence"),
-                countdown_svg(
-                    0.0 if math.isinf(age) else max(cfg.live.poll_seconds - age, 0.0),
-                    cfg.live.poll_seconds,
+                cycle_source,
+                (
+                    countdown_svg(
+                        max(cfg.live.poll_seconds - verdict.loop_age, 0.0),
+                        cfg.live.poll_seconds,
+                    )
+                    if verdict.loop_present
+                    else too_little(
+                        cycle_source,
+                        f"NOTHING IS COUNTING DOWN - LAST WRITE {ago(verdict.loop_age)}",
+                    )
                 ),
                 "Measured from the loop's own last write, not this page's timer.",
             ),
@@ -3132,13 +3308,13 @@ def main(
     # ── row 4: positions and activity ────────────────────────────────────────
     rows = position_rows(book, quantities, prices, stops)
     closes = read_closes(cfg) if rows else {}
-    pos_source = Source(LIVE, f"{len(rows)} held")
+    pos_source = verdict.pill(f"{len(rows)} held")
     st.markdown(
         region(
             "Positions",
             pos_source,
             (
-                position_table(rows)
+                position_table(rows, verdict)
                 if rows
                 else too_little(pos_source, "NO POSITIONS HELD")
             ),
@@ -3151,7 +3327,10 @@ def main(
             st.markdown(f'<div class="gb-stale">{note}</div>', unsafe_allow_html=True)
         history = closes.get(row.symbol)
         if history is not None and not history.empty:
-            st.markdown(sparkline_svg(history.tail(60), row), unsafe_allow_html=True)
+            st.markdown(
+                sparkline_svg(history.tail(60), row, loop_present=verdict.loop_present),
+                unsafe_allow_html=True,
+            )
 
     decisions = read_decisions(root, source)
     # Computed here, before the activity region draws, because a row written since the
@@ -3162,7 +3341,7 @@ def main(
         decisions, st.session_state.get("seen_decisions", set())
     )
     st.session_state["seen_decisions"] = seen
-    activity_source = Source(LIVE, f"{len(decisions)} decisions, {len(trades)} trades")
+    activity_source = verdict.pill(f"{len(decisions)} decisions, {len(trades)} trades")
     st.markdown(
         region(
             "Recent activity",
@@ -3173,7 +3352,7 @@ def main(
         unsafe_allow_html=True,
     )
 
-    _copilot_panel(root, cfg, st)
+    _copilot_panel(root, cfg, verdict, st)
 
     if not decisions:
         _refresh(cfg, st)
@@ -3199,7 +3378,7 @@ def main(
                 st.markdown(
                     region(
                         f"{symbol} close and forecast",
-                        forecast_source(latest[symbol].as_of),
+                        forecast_source(latest[symbol].as_of, verdict.state),
                         forecast_svg(
                             history,
                             price_path(
@@ -3337,7 +3516,9 @@ def _recent_decisions(
     return records.load_decisions(today - window, today, root, source)
 
 
-def _copilot_panel(root: Path, cfg: Config, st) -> None:  # pragma: no cover - widgets
+def _copilot_panel(
+    root: Path, cfg: Config, verdict: Liveness, st
+) -> None:  # pragma: no cover - widgets
     """Recommendations awaiting an answer, with Approve and Reject. **GB-37.**
 
     Rendered above the log because it is the only thing on the page waiting for a person.
@@ -3369,7 +3550,7 @@ def _copilot_panel(root: Path, cfg: Config, st) -> None:  # pragma: no cover - w
     st.markdown(
         region(
             "Awaiting approval — Co-Pilot",
-            Source(LIVE, f"{len(queue)} pending"),
+            verdict.pill(f"{len(queue)} pending"),
             "".join(body),
             "A rejection is recorded too: the log is what happened, not what was wanted.",
         ),
@@ -3410,14 +3591,18 @@ if __name__ == "__main__":  # pragma: no cover
 __all__ = [
     "ASIDE",
     "CLOSED",
-    "IDLE",
+    "LIVE",
+    "NOT_RESPONDING",
+    "NOT_RUNNING",
     "ORANGE",
     "RAMP",
-    "RUNNING",
+    "SLOW",
     "BandContext",
+    "Liveness",
     "OpenOrder",
     "PositionRow",
     "Reliability",
+    "ago",
     "band_context",
     "bar_note",
     "channel_colour",
@@ -3434,7 +3619,9 @@ __all__ = [
     "is_fragile",
     "is_rtl",
     "live_stops",
+    "liveness",
     "load_reliability",
+    "loop_lock",
     "main",
     "narrative_html",
     "open_orders",
@@ -3448,7 +3635,7 @@ __all__ = [
     "response_svg",
     "spectral_panel",
     "spectral_svg",
-    "status_of",
+    "state_cell",
     "stop_cell",
     "stylesheet",
     "table_html",

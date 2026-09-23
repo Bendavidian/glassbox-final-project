@@ -35,6 +35,7 @@ from glassbox.dashboard import app, tokens
 from glassbox.engine.reconcile import Book, Holding
 from glassbox.engine.signal import ENTER_LONG, HOLD, Thresholds
 from glassbox.explain.channel import cancellation, shares
+from tests.dashboard.conftest import a_verdict
 
 HISTORY = pd.Series([100.0, 101.0, 99.5, 102.0, 103.5])
 
@@ -63,18 +64,10 @@ def a_holding(symbol: str = "AAPL", entry: float = 100.0) -> Holding:
 # ── GB-34: status, positions, reliability ────────────────────────────────────
 
 
-def test_a_band_that_cannot_fire_outranks_every_other_status() -> None:
-    """A viewer told "RUNNING" beside a flat book waits for a trade that cannot come."""
-    assert app.status_of(Thresholds.never(), True, {"AAPL": 1.0}) == app.ASIDE
-    assert app.status_of(Thresholds.never(), False, {}) == app.ASIDE
-
-
-def test_status_distinguishes_closed_idle_and_running() -> None:
-    band = Thresholds(lower=0.004)
-
-    assert app.status_of(band, False, {}) == app.CLOSED
-    assert app.status_of(band, True, {}) == app.IDLE
-    assert app.status_of(band, True, {"AAPL": 1.0}) == app.RUNNING
+# `status_of` and its two tests were deleted on 23 Sep 2026, not moved. It chose RUNNING
+# or IDLE from the *position count* and never read the loop, so the tests that pinned that
+# mapping were pinning the D2 defect. `tests/dashboard/test_liveness.py` tests what
+# replaced it, including the band precedence the first of them was written for.
 
 
 def test_a_managed_position_reports_its_pnl() -> None:
@@ -119,11 +112,8 @@ def test_reliability_is_read_from_the_measurement_file(tmp_path: Path) -> None:
     assert not found.beats_the_bar
 
 
-@pytest.fixture
-def cfg_stub():
-    from glassbox.config.loader import load_config
-
-    return load_config()
+# `cfg_stub` moved to tests/dashboard/conftest.py on 23 Sep 2026, when a second dashboard
+# test module needed it. One definition, not two that drift.
 
 
 # ── GB-35: the forecast path ─────────────────────────────────────────────────
@@ -320,8 +310,18 @@ def data_surfaces() -> dict[str, str]:
         "sparkline": app.sparkline_svg(
             pd.Series([100.0, 99.0, 98.0, 97.0]),
             app.PositionRow(
-                "AAPL", 1.0, 100.0, 97.0, True, stop_loss=94.0, take_profit=112.0
+                "AAPL",
+                1.0,
+                100.0,
+                97.0,
+                True,
+                stop_loss=94.0,
+                take_profit=112.0,
+                live_stop=94.0,
+                stop_working=True,
+                orders_read=True,
             ),
+            loop_present=True,
         ),
     }
 
@@ -449,10 +449,22 @@ def test_the_cycle_countdown_is_measured_from_the_loops_own_write(tmp_path) -> N
 
 
 def test_a_silent_loop_outranks_a_stale_broker_read() -> None:
-    """Two different silences: old numbers, versus a system that is not running."""
-    assert app.staleness_html(0, 900) == ""
-    assert "STALE" in app.staleness_html(12, 900)
-    assert "LOOP NOT RESPONDING" in app.staleness_html(2000, 900)
+    """Two different silences: old numbers, versus a system that is not running.
+
+    Both now come from the verdict rather than from an age this function thresholds for
+    itself, and the loop's silence takes the LOSS class the stylesheet had defined and
+    never emitted.
+    """
+    live = a_verdict()
+    stale_read = a_verdict(broker_age=12.0)
+    silent = a_verdict(loop_age=2000.0)  # lock held, two heartbeats without a write
+
+    assert silent.state == app.NOT_RESPONDING
+    assert app.staleness_html(live) == ""
+    assert "BROKER READ" in app.staleness_html(stale_read)
+    assert "gb-stale" in app.staleness_html(stale_read)
+    assert "LOOP NOT RESPONDING" in app.staleness_html(silent)
+    assert "gb-not-responding" in app.staleness_html(silent)
 
 
 def test_the_equity_curve_survives_a_half_written_line(tmp_path) -> None:
@@ -838,7 +850,7 @@ def test_a_quarantined_position_shows_em_dashes_rather_than_zeros() -> None:
     from glassbox.engine.reconcile import Book
 
     html = app.position_table(
-        app.position_rows(Book(), {"AAPL": 0.0919}, {"AAPL": 310.0}, {})
+        app.position_rows(Book(), {"AAPL": 0.0919}, {"AAPL": 310.0}, {}), a_verdict()
     )
 
     assert "QUARANTINED" in html
@@ -1136,7 +1148,11 @@ def test_the_session_strip_names_the_bound_directory(cfg_stub) -> None:
     while the rehearsal wrote to `checkpoints/rehearsal`, so its queue rendered empty and
     correct and criterion 2 had to be satisfied through the API."""
     html = app.session_strip(
-        cfg_stub, app.RUNNING, "checkpoints/rehearsal", "rehearsal:gate2", 42.0
+        cfg_stub,
+        a_verdict(loop_age=42.0),
+        "checkpoints/rehearsal",
+        "rehearsal:gate2",
+        1,
     )
 
     assert "checkpoints/rehearsal" in html
@@ -1365,12 +1381,17 @@ def test_a_stood_aside_band_says_so_rather_than_showing_a_threshold() -> None:
 
 def test_the_status_strip_is_one_line_of_stated_facts(cfg_stub) -> None:
     html = app.session_strip(
-        cfg_stub, app.RUNNING, "checkpoints/rehearsal", "rehearsal:gate2", 42.0
+        cfg_stub,
+        a_verdict(loop_age=42.0),
+        "checkpoints/rehearsal",
+        "rehearsal:gate2",
+        1,
     )
 
     for key in (
         "SESSION",
         "LAST CYCLE",
+        "BOOK",
         "MODEL",
         "CHANNELS",
         "UNIVERSE",
@@ -2033,7 +2054,7 @@ def test_the_ramp_appears_in_no_chart_outside_attribution_and_spectral() -> None
         ),
         "equity_svg": _equity([100.0, 101.0, 99.0]),
         "countdown_svg": app.countdown_svg(30, 60),
-        "sparkline_svg": app.sparkline_svg(history, row),
+        "sparkline_svg": app.sparkline_svg(history, row, loop_present=True),
         "radar_svg": app.radar_svg(reference, "dlinear") if not reference.empty else "",
         "fold_bars_svg": (
             app.fold_bars_svg(reference, "dlinear") if not reference.empty else ""
@@ -2154,7 +2175,7 @@ def _every_chart() -> dict[str, str]:
         "equity_svg gaining": _equity([100.0, 101.0, 102.0]),
         "countdown_svg full": app.countdown_svg(60, 60),
         "countdown_svg spent": app.countdown_svg(0, 60),
-        "sparkline_svg": app.sparkline_svg(HISTORY, row),
+        "sparkline_svg": app.sparkline_svg(HISTORY, row, loop_present=True),
         "radar_svg": app.radar_svg(reference, "dlinear"),
         "cumulative_equity_svg": app.cumulative_equity_svg(daily, "dlinear"),
         "fold_bars_svg": app.fold_bars_svg(reference, "dlinear"),
@@ -2457,7 +2478,7 @@ def test_a_chart_holds_its_marks_on_a_series_that_runs_off_the_scale(name: str) 
         # Stop stated at the broker since D1 (22 Sep 2026): the sparkline draws a stop
         # rule only from a live stop.
         "sparkline stop off scale": lambda: app.sparkline_svg(
-            HISTORY, D7_GAPPED_BELOW_STOP
+            HISTORY, D7_GAPPED_BELOW_STOP, loop_present=True
         ),
         "response negative gain": lambda: app.response_svg(
             [8.0, 12.0, 24.0, 120.0], [0.22, 0.41, 0.83, -5.0]
@@ -2479,7 +2500,7 @@ def test_the_d7_sparkline_fixture_draws_its_live_stop_above_every_close() -> Non
     above every close - which is the scenario D7 is about. Stated as position relative to
     the closes rather than as a coordinate, so it stays true once D7 fixes the scale.
     """
-    svg = app.sparkline_svg(HISTORY, D7_GAPPED_BELOW_STOP)
+    svg = app.sparkline_svg(HISTORY, D7_GAPPED_BELOW_STOP, loop_present=True)
 
     rules = re.findall(
         rf'<line x1="[^"]*" y1="([^"]*)" x2="[^"]*" y2="[^"]*" stroke="{app.ORANGE}"',
@@ -2682,20 +2703,23 @@ def test_the_pill_names_its_source_and_has_no_way_to_name_freshness() -> None:
     """**The pill states the SOURCE. A reader took it for FRESHNESS, which it never
     measured.**
 
-    ``LIVE`` is one of three provenances and the type exists to stop backtest numbers
-    wearing a live face; no test has ever asked it about recency. Freshness is already
-    stated twice - ``staleness_html`` and ``LAST CYCLE`` in ``session_strip`` - and a
-    third copy here is a second place for one fact to diverge from.
+    The type exists to stop backtest numbers wearing a live face; no test has ever asked
+    it about recency. Freshness is already stated twice - ``staleness_html`` and ``LAST
+    CYCLE`` in ``session_strip`` - and a third copy here is a second place for one fact to
+    diverge from.
 
-    The signature is the mechanism rather than the docstring: the constructor takes the
-    bar and nothing else, so a pill that cannot see the clock cannot claim anything
-    about it.
+    The signature is the mechanism rather than the docstring, and D2 kept it that way. On
+    23 Sep 2026 the pill's kind became the page's liveness verdict, because a green LIVE
+    pill on a loop that stopped on 3 Sep is the same misreading this test was written for.
+    What the function receives is the **word** - never the verdict object, which carries
+    both ages, and never a clock - so it still cannot say how old the bar is.
     """
-    source = app.forecast_source(_LAST_BAR)
+    source = app.forecast_source(_LAST_BAR, app.LIVE)
 
     assert source.kind == app.LIVE
     assert source.detail == "live feed · 2026-09-02 bar"
-    assert list(inspect.signature(app.forecast_source).parameters) == ["as_of"]
+    assert list(inspect.signature(app.forecast_source).parameters) == ["as_of", "state"]
+    assert app.forecast_source(_LAST_BAR, app.NOT_RUNNING).kind == app.NOT_RUNNING
 
 
 def test_the_reason_reaches_the_page_as_written() -> None:
@@ -2706,7 +2730,10 @@ def test_the_reason_reaches_the_page_as_written() -> None:
     note = app.bar_note(_LAST_BAR, _OPEN_CLOCK, session_open=True)
 
     rendered = app.region(
-        "AAPL close and forecast", app.forecast_source(_LAST_BAR), "<svg></svg>", note
+        "AAPL close and forecast",
+        app.forecast_source(_LAST_BAR, app.LIVE),
+        "<svg></svg>",
+        note,
     )
 
     assert note in rendered, "the caption was altered on its way to the page"

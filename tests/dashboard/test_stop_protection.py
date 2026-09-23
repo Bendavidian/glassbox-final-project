@@ -21,6 +21,7 @@ import pytest
 
 from glassbox.dashboard import app, tokens
 from glassbox.engine.reconcile import Book, Holding
+from tests.dashboard.conftest import a_verdict
 
 #: WMT as the book held it on 22 Sep 2026. The stop cell does not read the target.
 WMT = Holding(
@@ -56,7 +57,9 @@ def _row(
 
 
 def _rendered(stops: dict[str, app.OpenOrder] | None) -> str:
-    return app.position_table([_row(stops)])
+    # A running loop, so STATE can still say MANAGED: these tests are about the stop, and
+    # `test_liveness.py` holds what the loop's own state does to that word.
+    return app.position_table([_row(stops)], a_verdict())
 
 
 def _cell(html: str, header: str) -> tuple[str, str]:
@@ -220,7 +223,7 @@ CLOSES = pd.Series([100.00, 104.00, 110.00])
 
 
 def _sparkline(stops: dict[str, app.OpenOrder] | None) -> str:
-    return app.sparkline_svg(CLOSES, _row(stops, holding=TARGETED))
+    return app.sparkline_svg(CLOSES, _row(stops, holding=TARGETED), loop_present=True)
 
 
 def _stop_rules(svg: str) -> list[str]:
@@ -263,7 +266,9 @@ def test_the_sparkline_draws_no_stop_it_cannot_place_at_the_broker(
 
     assert _stop_rules(svg) == []
     assert f'fill="{app.ORANGE}"' not in svg
-    assert "against its" not in svg
+    # The label names what is drawn, so it may still name the target - the loop is running
+    # in these cases - but it may not name a stop.
+    assert "live stop" not in svg
     assert _close_heights(svg), "the closes are still drawn"
 
 
@@ -289,7 +294,9 @@ def test_a_position_the_system_opened_keeps_its_closes_and_entry_without_a_stop(
     old gate it drew nothing at all."""
     closes = pd.Series([106.00, 108.70, 110.00])  # the middle close sits at the entry
 
-    svg = app.sparkline_svg(closes, _row({}, holding=replace(WMT, stop_loss=book_stop)))
+    svg = app.sparkline_svg(
+        closes, _row({}, holding=replace(WMT, stop_loss=book_stop)), loop_present=True
+    )
 
     heights = _close_heights(svg)
     assert _entry_rules(svg) == [heights[1]]
@@ -302,7 +309,7 @@ def test_a_position_the_system_did_not_open_draws_no_sparkline() -> None:
     system set, so there is nothing to draw its closes against."""
     row = app.position_rows(Book(), {"WMT": 1.0}, {"WMT": PRICE}, {})[0]
 
-    assert app.sparkline_svg(CLOSES, row) == ""
+    assert app.sparkline_svg(CLOSES, row, loop_present=True) == ""
 
 
 # ── the raw column's blast radius ────────────────────────────────────────────
@@ -350,7 +357,9 @@ def _every_stop_cell() -> list[str]:
         _row(None, holding=wmt),
         app.position_rows(Book(), {HOSTILE: 1.0}, {HOSTILE: 107.91}, {})[0],
     ]
-    return [_cell(app.position_table([row]), "STOP ROOM")[1] for row in rows]
+    return [
+        _cell(app.position_table([row], a_verdict()), "STOP ROOM")[1] for row in rows
+    ]
 
 
 def test_the_stop_cell_carries_nothing_but_its_own_words_and_numbers() -> None:
