@@ -1447,6 +1447,55 @@ def _equity(values: list[float]) -> str:
     return app.equity_svg(pd.Series(values, index=index))
 
 
+def _equity_height(svg: str) -> int:
+    return int(re.search(r'viewBox="0 0 \d+ (\d+)"', svg).group(1))
+
+
+@pytest.mark.parametrize(
+    ("readings", "band"),
+    [(2, app.EQUITY_THIN_BAND), (9, app.EQUITY_THIN_BAND)]
+    + [(10, app.EQUITY_BAND), (11, app.EQUITY_BAND)],
+    ids=["2 readings", "9 readings", "10 readings", "11 readings"],
+)
+def test_the_equity_panel_shrinks_below_ten_readings(readings: int, band: int) -> None:
+    """**All four pinned, and the shrunken side is below ten.** Nine readings or fewer get
+    the thin band; ten or more the full one. The drawable range starts at exactly 2 - the
+    panel renders its empty state below that - so 2 is a case the panel is in, not an
+    edge it approaches.
+
+    The chrome does not shrink with it: `EQUITY_HEADER` and `EQUITY_FOOTER` are what carry
+    the title, the opening-balance label and the reading count, and taking their space is
+    how a label gets clipped in silence.
+    """
+    svg = _equity([100.0 + index for index in range(readings)])
+
+    assert app.equity_band(readings) == band
+    assert _equity_height(svg) == app.EQUITY_HEADER + band + app.EQUITY_FOOTER
+    assert f"{readings} READINGS THIS SESSION" in svg, "the count survives the shrink"
+
+
+def test_a_two_reading_panel_is_small_but_still_a_chart() -> None:
+    """Small is not degenerate. At two readings the panel still draws its curve, its
+    opening-balance rule and that rule's label, and they still clear each other - which
+    the geometry guards hold for every chart, this one by name because it is the case the
+    shrink was built for.
+    """
+    svg = _equity([100_000.0, 100_013.35])
+
+    assert _equity_height(svg) == 112
+    assert svg.count("<polyline") >= 1, "the curve is still drawn"
+    assert "100,000" in svg, "the opening balance is still labelled"
+    assert "2 READINGS THIS SESSION" in svg
+    labels = list(_labels(svg))
+    for first in range(len(labels)):
+        for second in range(first + 1, len(labels)):
+            _, _, ax0, ax1, atop, abottom = labels[first]
+            _, _, bx0, bx1, btop, bbottom = labels[second]
+            assert not (
+                ax0 < bx1 and bx0 < ax1 and atop < bbottom and btop < abottom
+            ), "two labels overlap in the thin panel"
+
+
 def test_the_equity_curve_is_green_above_the_opening_and_red_below() -> None:
     """Colouring the whole line by its closing sign was the wrong reading of the data: a
     session that spends most of itself under water and closes a cent up is not a green

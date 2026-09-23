@@ -825,6 +825,21 @@ EQUITY_HEADER, EQUITY_FOOTER = 32, 32
 #: balance label hangs *into* the top of the footer band and the two would meet again.
 EQUITY_TITLE_Y, EQUITY_COUNT_INSET = 16, 10
 
+#: The plot band, and the band a session with fewer than :data:`EQUITY_THIN_READINGS`
+#: readings gets instead. **The bands shrink; the chrome does not.** A session two
+#: readings old filled a 180px card with one line segment - 116px of plot for a single
+#: step - and shrinking the card as a whole would have squeezed the two 32px bands toward
+#: nothing, taking the title, the opening-balance label and the reading count with them.
+#: 48 units still holds the balance label's 13-unit glyph and its 3-unit drop with room
+#: either side, so nothing is clipped to make the panel smaller.
+EQUITY_BAND, EQUITY_THIN_BAND = 116, 48
+
+#: Ten, and **the shrunken side is below it**: nine readings or fewer get the thin band,
+#: ten or more the full one. A session reaches ten readings in ten minutes at the deployed
+#: poll interval, so the small panel is the first few minutes of a session and not a
+#: state anybody looks at for long.
+EQUITY_THIN_READINGS = 10
+
 #: The smallest vertical span an equity curve is drawn at, as a fraction of the level it
 #: sits at. **Taken from the risk policy rather than by eye.** The worst outcome one
 #: position is permitted is ``risk.max_position_pct`` of equity stopped out at
@@ -994,7 +1009,16 @@ def _vertical(
     return y, flat
 
 
-def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
+def equity_band(readings: int) -> int:
+    """The plot band for a session this many readings old.
+
+    **Thin below :data:`EQUITY_THIN_READINGS`, full at it and above.** The boundary is
+    here, once, so the panel and its tests cannot hold two answers about where ten is.
+    """
+    return EQUITY_THIN_BAND if readings < EQUITY_THIN_READINGS else EQUITY_BAND
+
+
+def equity_svg(series: pd.Series, width: int = 720) -> str:
     """The session equity curve: gain above the opening balance, loss below, flat on it.
 
     **A flat session is the common case here, not an edge case.** The loop stands aside on
@@ -1006,10 +1030,18 @@ def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
     The plot is the card minus :data:`EQUITY_HEADER` and :data:`EQUITY_FOOTER`, because the
     opening-balance label rides on ``y(opening)`` and the title and the reading count do
     not move: reserving the two bands is what keeps them off each other.
+
+    **The band shrinks for a young session and the two bands do not.** Two readings drew
+    one line segment across 116 units of plot inside a 180-unit card, which reads as an
+    empty panel rather than a short one; below ten readings the plot takes
+    :data:`EQUITY_THIN_BAND` instead. The reading count survives the shrink, because it is
+    what tells a reader the panel is small on account of the session rather than the
+    result.
     """
     if series.empty:
         return ""
     left, right = 90, width - 20
+    height = EQUITY_HEADER + equity_band(len(series)) + EQUITY_FOOTER
     top, bottom = EQUITY_HEADER, height - EQUITY_FOOTER
     values = [float(value) for value in series.to_numpy(dtype="float64")]
     opening, latest = values[0], values[-1]
