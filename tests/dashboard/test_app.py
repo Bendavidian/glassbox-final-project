@@ -2506,10 +2506,13 @@ def test_a_chart_holds_its_marks_on_a_series_that_runs_off_the_scale(name: str) 
     Each is a scale computed from a subset of what is then drawn against it, which is the
     same defect three times:
 
-    - `sparkline_svg` takes ``low = min(prices.min(), stop_loss)`` but never takes the max
-      with it, so a long whose price has gapped below its own stop - the stop is then above
-      every visible bar - draws that rule at y = -12,998,648 of 64. Reachable today: it
-      needs only a quarantined target, which the builder already branches on.
+    - `sparkline_svg` takes ``low = min(prices.min(), stop)`` but never takes the max with
+      it, so a long whose price has gapped below its own stop - the stop is then above
+      every visible bar - draws that rule at y = -12,998,634 of 78. Reachable today: it
+      needs only a quarantined target, which the builder already branches on. **The
+      figure moved on 23 Sep 2026** and the defect did not: D5a reserved a 14px band at
+      the top of the sparkline for its symbol, so the canvas is 78 units rather than 64
+      and the plot starts lower. It was -12,998,648 of 64.
     - `response_svg` normalises by ``max(gains)``, so a negative gain larger in magnitude
       than the largest positive one puts a vertex at y = 1340 of 288.
     - `forecast_svg` takes low and high over the *finite* values and then maps every value,

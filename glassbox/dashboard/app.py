@@ -1051,15 +1051,27 @@ def equity_svg(series: pd.Series, width: int = 720, height: int = 180) -> str:
     return _svg(width, height, "".join(body), "session equity curve")
 
 
+#: The band reserved at the top of a sparkline for the symbol it belongs to. **A chart
+#: that does not name itself is a chart a reader attaches to the wrong row**: on
+#: 23 Sep 2026 the POSITIONS panel held UNH, V and WMT and drew one unlabelled chart -
+#: WMT's, because the other two are quarantined - directly beneath a three-row table.
+SPARKLINE_HEADER = 14
+
+
 def sparkline_svg(
     prices: pd.Series,
     row: PositionRow,
     *,
     loop_present: bool,
     width: int = 320,
-    height: int = 64,
+    height: int = 78,
 ) -> str:
     """One position's recent price against the band its stop and target define.
+
+    **It carries its own symbol**, in the band :data:`SPARKLINE_HEADER` reserves, so the
+    chart can be read on its own rather than by counting down from the table above it.
+    The ``aria-label`` names the symbol too and always did; it is not visible, which is
+    exactly why it was not enough.
 
     The band is the point. A price is a number without them and a *position* with them:
     the same 218.50 is comfortable inside a wide band and nearly closed inside a narrow
@@ -1084,7 +1096,7 @@ def sparkline_svg(
         return ""
     stop = row.live_stop
     target = row.take_profit if loop_present else math.nan
-    left, right, top, bottom = 4, width - 4, 6, height - 6
+    left, right, top, bottom = 4, width - 4, SPARKLINE_HEADER + 6, height - 6
     values = prices.to_numpy(dtype="float64")
     low = float(values.min()) if math.isnan(stop) else min(float(values.min()), stop)
     high = max(
@@ -1109,6 +1121,9 @@ def sparkline_svg(
             f'fill="{ORANGE}" fill-opacity="0.06"/>'
         )
     body = [
+        # First, and visible: every other mark on this chart is a price, and the one
+        # thing a reader needs before reading any of them is whose prices they are.
+        _text(left, SPARKLINE_HEADER - 2, row.symbol, MUTED),
         band,
         (
             ""
@@ -1138,6 +1153,56 @@ def sparkline_svg(
         else f"{row.symbol} recent closes, no stop or target drawn"
     )
     return _svg(width, height, "".join(body), label)
+
+
+#: Why a position has no chart, in the reader's terms. **Three reasons, three sentences.**
+#: They are different problems - a broken feed, a symbol with no history, and a position
+#: the system never opened - and a page that renders them identically, or renders none of
+#: them at all, has hidden the one that matters. Until 23 Sep 2026 all three were silence.
+PRICES_UNREADABLE = "PRICES COULD NOT BE READ"
+NO_RECENT_CLOSES = "NO RECENT CLOSES FOR THIS SYMBOL"
+NOT_IN_BOOK = "HELD AT THE BROKER, NOT OPENED BY THIS SYSTEM"
+
+
+def sparkline_slot(
+    row: PositionRow,
+    history: pd.Series | None,
+    *,
+    prices_read: bool,
+    loop_present: bool,
+) -> str:
+    """One position's chart, **or the reason there is none. Never nothing.**
+
+    Every row in the table gets one of these, in the table's order. The panel used to
+    render a chart per position and skip in silence when it could not: three positions,
+    one chart, no symbol on it, and no way to tell which row it belonged to or why the
+    other two had none. A failed price fetch removed all three at once and looked
+    identical to three quarantined positions.
+
+    ``prices_read`` is False only when the fetch itself failed, which is a fact about the
+    feed rather than about this symbol - so it is said first, and in its own words.
+    """
+    if not prices_read:
+        return _slot_note(row.symbol, PRICES_UNREADABLE)
+    if history is None or history.empty:
+        return _slot_note(row.symbol, NO_RECENT_CLOSES)
+    if not row.managed:
+        return _slot_note(row.symbol, NOT_IN_BOOK)
+    return sparkline_svg(history.tail(HISTORY_BARS), row, loop_present=loop_present)
+
+
+def _slot_note(symbol: str, reason: str) -> str:
+    """A slot with no chart in it, naming the symbol and the reason.
+
+    In ``.gb-stale``, which is what the stop note directly above it uses. The class name
+    says staleness and one of its three uses is staleness - the BROKER READ badge - but
+    its treatment is the page's one dim, tracked, 12px line beneath a panel, and giving
+    one of these three notes a different class would make it look like a different kind
+    of object without meaning anything by it.
+    """
+    return (
+        f'<div class="gb-stale">{escape(symbol)} &nbsp;·&nbsp; {escape(reason)}</div>'
+    )
 
 
 def countdown_svg(
@@ -3723,16 +3788,21 @@ def main(
         ),
         unsafe_allow_html=True,
     )
+    # One slot per row, in the table's order, each a chart or the reason there is none.
+    prices_read = closes is not None
     for row in rows:
         note = stop_note(row)
         if note:
             st.markdown(f'<div class="gb-stale">{note}</div>', unsafe_allow_html=True)
-        history = closes.get(row.symbol)
-        if history is not None and not history.empty:
-            st.markdown(
-                sparkline_svg(history.tail(60), row, loop_present=verdict.loop_present),
-                unsafe_allow_html=True,
-            )
+        st.markdown(
+            sparkline_slot(
+                row,
+                (closes or {}).get(row.symbol),
+                prices_read=prices_read,
+                loop_present=verdict.loop_present,
+            ),
+            unsafe_allow_html=True,
+        )
 
     decisions = read_decisions(root, source)
     # Computed here, before the activity region draws, because a row written since the
@@ -3768,14 +3838,18 @@ def main(
         "taken on the last completed bar and does not change within a session.</div>",
         unsafe_allow_html=True,
     )
+    # `read_closes` answers None when the read failed, so this section works from a
+    # mapping either way: with no prices there are no forecast cards, which is what it
+    # already did when the failure was spelled `{}`.
     if not closes:
         closes = read_closes(cfg)
-    symbols = [s for s in sorted(latest) if s in closes and not closes[s].empty]
+    available = closes or {}
+    symbols = [s for s in sorted(latest) if s in available and not available[s].empty]
     for start in range(0, len(symbols), 2):
         for column, symbol in zip(
             st.columns(2), symbols[start : start + 2], strict=False
         ):
-            history = closes[symbol]
+            history = available[symbol]
             with column:
                 st.markdown(
                     region(
@@ -3885,13 +3959,20 @@ def _broker_view(cfg: Config):  # pragma: no cover - network
         return {}, {}, {}, None
 
 
-def _recent_closes(cfg: Config) -> dict[str, pd.Series]:  # pragma: no cover - network
-    """Display history only.
+def _recent_closes(
+    cfg: Config,
+) -> dict[str, pd.Series] | None:  # pragma: no cover - network
+    """Display history only, or ``None`` when the read failed.
 
     ``HISTORY_BARS`` is far below ``min_history_bars`` on purpose and is **not** a
     weakening of that floor: the model window is assembled by the live loop from a full
     history, and this is a picture of recent closes beside it. Nothing here reaches a
     forecast.
+
+    **``None`` and ``{}`` are different answers and used to be the same one.** An empty
+    mapping means the read succeeded and had nothing to return; ``None`` means it failed.
+    Returning ``{}`` for both made a broken feed indistinguishable from a book of
+    positions with no history - every chart vanished at once, and the page said nothing.
     """
     try:
         from glassbox.data.live import load_live_bars
@@ -3901,7 +3982,7 @@ def _recent_closes(cfg: Config) -> dict[str, pd.Series]:  # pragma: no cover - n
             symbol: frame["close"].tail(HISTORY_BARS) for symbol, frame in bars.items()
         }
     except Exception:  # noqa: BLE001 - the rest of the page still renders
-        return {}
+        return None
 
 
 def _recent_decisions(
