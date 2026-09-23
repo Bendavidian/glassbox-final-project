@@ -43,14 +43,6 @@ FRAMES = {
 #: quietly, and `test_an_exemption_that_stopped_being_true_fails` removes the entry's
 #: cover the moment the panel starts stating one.
 UNREFERENCED = {
-    "shape_region": (
-        "Five of its six axes are absolutes: only DIRECTION carries a reference "
-        "(direction_reference). SHARPE, RETURN and DRAWDOWN could take buy and hold from "
-        "the same file; CANCELLATION and FLATNESS have no buy-and-hold analogue, because "
-        "the reference makes no forecast. Not started on 23 Sep 2026: half of it would be "
-        "a panel that states a reference on four axes and not on two, which is the "
-        "defect it has now."
-    ),
     "calendar_region": (
         "Every tile is a day's change against nothing. The reference exists in the same "
         "file - buy and hold has a row for each of those dates - so the fix is a second "
@@ -93,8 +85,10 @@ def test_every_performance_panel_states_its_reference_or_is_named_as_unfixed() -
         if name in UNREFERENCED:
             assert UNREFERENCED[name].strip(), f"{name} is exempt with no reason given"
             continue
+        # Case-insensitive: a chart shouts its reference in a label and a caption says it
+        # in a sentence, and both are the panel stating it.
         assert any(
-            word in html for word in REFERENCES
+            word in html.upper() for word in REFERENCES
         ), f"{name} reports a result against nothing; §7.3 forbids it"
         # Naming the reference is not stating it. A panel whose artefact has lost its
         # reference rows says "BUY AND HOLD NOT IN THIS FILE", which names it and reports
@@ -111,7 +105,7 @@ def test_an_exemption_that_stopped_being_true_fails() -> None:
     panels = rendered_panels()
 
     for name in UNREFERENCED:
-        assert not any(word in panels[name] for word in REFERENCES), (
+        assert not any(word in panels[name].upper() for word in REFERENCES), (
             f"{name} now states a reference - delete its UNREFERENCED entry, which is "
             "claiming otherwise"
         )
@@ -195,7 +189,126 @@ def test_neither_fixed_panel_carries_a_status_colour() -> None:
         assert any(c in svg for c in app.RAMP), f"{name} lost the ramp it encodes with"
 
 
-@pytest.mark.parametrize("panel", ["cumulative_region", "fold_region"])
+# ── the radar, D4 ────────────────────────────────────────────────────────────
+
+#: The caption today's axes produce, in full. Pinned rather than recomputed: the caption
+#: is built from `RADAR_AXES`, so it can never contradict them - and this is the other
+#: half, so an axis changing sides is *noticed* rather than silently redescribed.
+RADAR_CAPTION = (
+    "4 of 6 axes carry a reference: Direction against the always-long bar, Sharpe, "
+    "Return and Drawdown against buy and hold. Cancellation and Flatness have none - "
+    "the reference makes no forecast - and say so on the axis. No composite score."
+)
+
+
+def test_the_radar_caption_describes_todays_axes() -> None:
+    """The caption it replaces read *Six measured axes, each against its own reference*
+    on a chart where five of six had none: true when written, and tied to nothing."""
+    assert app.radar_caption() == RADAR_CAPTION
+    assert RADAR_CAPTION in app.shape_region(_frames()["results"], ARM)
+
+
+def test_every_radar_axis_either_names_its_reference_or_says_it_has_none() -> None:
+    """No axis prints a bare absolute. Four print ``value vs reference``; the two with no
+    analogue print the value and `NO REFERENCE`, which is a statement about themselves.
+    """
+    axes = {
+        point.label: point for point in app.radar_axis_values(_frames()["results"], ARM)
+    }
+
+    assert len(axes) == len(app.RADAR_AXES)
+    for axis in app.RADAR_AXES:
+        point = axes[axis.label]
+        if axis.referenced:
+            assert point.against.startswith("vs "), f"{axis.label} names no reference"
+            assert point.reference_unit == app.REFERENCE_RING
+        else:
+            assert point.against == app.NO_REFERENCE, f"{axis.label} is unmarked"
+            assert point.reference_unit is None
+
+
+def test_the_radar_places_each_axis_against_its_reference_not_its_own_best_fold() -> (
+    None
+):
+    """**The old scale was self-normalising against ``arm[column].max()``**, so the same
+    mean drew a different radius depending on the arm's best fold - and two arms with the
+    same shape meant different things. Same means, different maxima, same geometry."""
+    steady = pd.concat(
+        [
+            a_results_frame(folds=2, total_return=0.02),
+            a_results_frame(folds=2, model=app.BUY_AND_HOLD, total_return=0.05),
+        ]
+    )
+    spiky = steady.copy()
+    arm = (spiky["model"] == ARM).to_numpy()
+    spiky.loc[arm, "total_return"] = [0.0, 0.04]  # same mean, double the maximum
+
+    def unit_for(frame: pd.DataFrame) -> float:
+        return next(
+            point.unit
+            for point in app.radar_axis_values(frame, ARM)
+            if point.label == "RETURN"
+        )
+
+    assert unit_for(steady) == pytest.approx(unit_for(spiky))
+    assert unit_for(steady) < app.REFERENCE_RING, "0.02 against 0.05 is behind"
+
+
+def test_an_axis_the_arm_leads_on_sits_outside_the_reference_ring() -> None:
+    """Both directions, on the real study: the arm is behind on return and ahead on
+    drawdown, where lower is better - so the shape crosses the ring rather than sitting
+    wholly inside it, which is what makes the ring worth drawing."""
+    units = {
+        point.label: point.unit
+        for point in app.radar_axis_values(_frames()["results"], ARM)
+    }
+
+    assert units["RETURN"] < app.REFERENCE_RING
+    assert units["DIRECTION"] < app.REFERENCE_RING
+    assert units["DRAWDOWN"] > app.REFERENCE_RING, "0.0231 drawdown against 0.0540"
+
+
+def test_an_arm_that_forecasts_nothing_does_not_draw_the_best_flatness() -> None:
+    """**Found while choosing the scale, and it is the older defect.** Flatness is
+    mean|forecast| / mean|actual|, where 1.0 is right-sized; the axis was scored as though
+    lower were better, so persistence - which forecasts exactly nothing and measures 0.0 -
+    drew the best flatness on the page while making no forecast at all.
+    """
+
+    def flatness_unit(value: float) -> float:
+        frame = a_results_frame(folds=2, flatness=value)
+        return next(
+            point.unit
+            for point in app.radar_axis_values(frame, ARM)
+            if point.label == "FLATNESS"
+        )
+
+    assert flatness_unit(1.0) == pytest.approx(1.0), "right-sized is the best flatness"
+    assert flatness_unit(0.0) == pytest.approx(0.0), "forecasting nothing is not best"
+    assert flatness_unit(2.0) == pytest.approx(0.0), "twice right-sized is not best"
+
+
+def test_the_radar_draws_one_reference_mark_per_referenced_axis() -> None:
+    """The reference is a tick per axis, not a second polygon: a closed shape through four
+    of six vertices would draw a line across the two axes that have no reference."""
+    svg = app.radar_svg(_frames()["results"], ARM)
+
+    ticks = svg.count(f'stroke="{app.REFERENCE_MARK}"')
+    assert ticks == sum(1 for axis in app.RADAR_AXES if axis.referenced) == 4
+    assert svg.count("<polygon") == 5, "four rings and one shape, no reference polygon"
+
+
+def test_the_radar_is_drawn_in_the_ramp_and_never_in_status_colour() -> None:
+    """The polygon was hardcoded `fill=GAIN_FILL stroke=GAIN`, so an arm behind its
+    reference on every axis that has one still arrived green."""
+    svg = app.radar_svg(_frames()["results"], ARM)
+
+    assert f'stroke="{app.ARM_MARK}"' in svg
+    assert app.GAIN not in svg and app.GAIN_FILL not in svg
+    assert not [c for c in app.STATUS_COLOURS if c.lower() in svg.lower()]
+
+
+@pytest.mark.parametrize("panel", ["cumulative_region", "fold_region", "shape_region"])
 def test_the_region_hands_the_chart_the_reference_rows(panel: str) -> None:
     """**Where the reference was dropped.** Both regions filtered the frame to the arm and
     passed that to the chart, so the buy-and-hold rows were gone one line before the chart
@@ -204,5 +317,5 @@ def test_the_region_hands_the_chart_the_reference_rows(panel: str) -> None:
     frames = _frames()
     html = getattr(app, panel)(frames[FRAMES[panel]], ARM)
 
-    assert "BUY AND HOLD" in html
+    assert "BUY AND HOLD" in html.upper()
     assert "BACKTEST" in html, "the pill still names the source"

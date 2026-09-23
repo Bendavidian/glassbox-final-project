@@ -347,6 +347,9 @@ def ramp_surfaces() -> dict[str, str]:
         # reference" - fold 13 gained 2.03% and lost to the market by seven points.
         "cumulative_equity_svg": app.cumulative_equity_svg(daily, "dlinear"),
         "fold_bars_svg": app.fold_bars_svg(reference, "dlinear"),
+        # And the radar, whose polygon was hardcoded to GAIN fill and stroke: an arm
+        # behind its reference on all four axes that have one still arrived green.
+        "radar_svg": app.radar_svg(reference, "dlinear"),
     }
 
 
@@ -1146,20 +1149,28 @@ def test_the_radar_has_no_composite_score() -> None:
     axes = app.radar_axis_values(ref, "dlinear")
 
     assert len(axes) == len(app.RADAR_AXES)
-    for label, unit, printed in axes:
-        assert label, "every axis is labelled with its own name"
-        assert 0.0 <= unit <= 1.0
-        assert printed, "every axis prints its measured value in its own units"
+    for point in axes:
+        assert point.label, "every axis is labelled with its own name"
+        assert 0.0 <= point.unit <= 1.0
+        assert point.printed, "every axis prints its measured value in its own units"
     assert not hasattr(app, "edge_score")
 
 
 def test_each_radar_axis_is_measured_against_its_own_reference() -> None:
     """These quantities are not commensurable, and pretending otherwise is how a composite
-    gets invented. Direction carries its own reference column; the rest do not."""
-    named = {label: reference for label, _, reference, _ in app.RADAR_AXES}
+    gets invented. **Each names where its own reference comes from**: direction from a
+    column of the arm's rows, three from the buy-and-hold arm, and two from nowhere -
+    which they say on the chart rather than printing a bare absolute (D4, 23 Sep 2026).
+    """
+    named = {axis.label: axis for axis in app.RADAR_AXES}
 
-    assert named["DIRECTION"] == "direction_reference"
-    assert all(axis[1] for axis in app.RADAR_AXES), "every axis names a measured column"
+    assert named["DIRECTION"].reference_column == "direction_reference"
+    assert named["SHARPE"].reference_arm == app.BUY_AND_HOLD
+    assert named["RETURN"].reference_arm == app.BUY_AND_HOLD
+    assert named["DRAWDOWN"].reference_arm == app.BUY_AND_HOLD
+    assert not named["CANCELLATION"].referenced
+    assert not named["FLATNESS"].referenced
+    assert all(axis.column for axis in app.RADAR_AXES), "every axis names a column"
 
 
 def test_a_backtest_card_never_borrows_the_live_source(tmp_path) -> None:
@@ -1652,21 +1663,29 @@ def test_the_radar_has_six_measured_axes_and_no_composite() -> None:
     axes = app.radar_axis_values(ref, "dlinear")
 
     assert len(axes) == 6
-    for label, unit, printed in axes:
-        assert label and printed, "every axis is named and prints its measured value"
-        assert 0.0 <= unit <= 1.0
+    for point in axes:
+        assert point.label and point.printed, "every axis is named and prints its value"
+        assert 0.0 <= point.unit <= 1.0
     assert not hasattr(app, "edge_score")
 
 
-def test_flatness_is_an_axis_where_lower_is_better() -> None:
-    """A high flatness is a model declining to forecast. It earns its place for the reason
-    7.3 bans MAE from a table without it: across these arms MAE is close to a monotone
-    function of flatness, so a shape showing error without flatness would be showing one
-    axis twice and calling one of them accuracy."""
-    named = {label: higher for label, _, _, higher in app.RADAR_AXES}
+def test_flatness_is_an_axis_where_being_right_sized_is_best() -> None:
+    """**Rewritten on 23 Sep 2026, because it pinned the wrong direction.**
 
-    assert "FLATNESS" in named
-    assert named["FLATNESS"] is False
+    It asserted `higher is False` - lower flatness is better - and flatness is
+    mean|forecast| / mean|actual|, where 1.0 is right-sized and 0.0 is a model that
+    forecasts nothing at all. Under "lower is better" persistence, which forecasts
+    exactly nothing, drew the best flatness on the page. The axis is two-sided: its best
+    value is 1.0 and either side of it is worse.
+
+    It earns its place for the reason 7.3 bans MAE from a table without it: across these
+    arms MAE is close to a monotone function of flatness, so a shape showing error without
+    flatness would be showing one axis twice and calling one of them accuracy.
+    """
+    named = {axis.label: axis for axis in app.RADAR_AXES}
+
+    assert named["FLATNESS"].best == 1.0
+    assert not named["FLATNESS"].referenced, "buy and hold makes no forecast to compare"
 
 
 def _folds_in(path: str, model: str) -> list[int]:
@@ -2068,7 +2087,6 @@ def test_the_ramp_appears_in_no_chart_that_encodes_no_data() -> None:
     import pandas as pd
 
     history = pd.Series([100.0, 101.0, 99.5, 102.0, 103.5])
-    reference = app.reference_rows(app.load_results())
     daily = app.load_daily_equity()
     row = app.PositionRow(
         "AAPL", 1.0, 100.0, 97.0, True, stop_loss=94.0, take_profit=112.0
@@ -2079,6 +2097,7 @@ def test_the_ramp_appears_in_no_chart_that_encodes_no_data() -> None:
         "spectral_panel": ramp_surfaces()["spectral"],
         "cumulative_equity_svg": ramp_surfaces()["cumulative_equity_svg"],
         "fold_bars_svg": ramp_surfaces()["fold_bars_svg"],
+        "radar_svg": ramp_surfaces()["radar_svg"],
     }
     ramp_is_trespass = {
         "forecast_svg": app.forecast_svg(
@@ -2087,7 +2106,6 @@ def test_the_ramp_appears_in_no_chart_that_encodes_no_data() -> None:
         "equity_svg": _equity([100.0, 101.0, 99.0]),
         "countdown_svg": app.countdown_svg(30, 60),
         "sparkline_svg": app.sparkline_svg(history, row, loop_present=True),
-        "radar_svg": app.radar_svg(reference, "dlinear") if not reference.empty else "",
         "calendar_svg": app.calendar_svg(daily, "dlinear"),
     }
 

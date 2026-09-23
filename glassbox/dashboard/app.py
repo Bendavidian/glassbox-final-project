@@ -131,8 +131,23 @@ GAIN_FILL = "rgba(34,197,94,0.15)"
 LOSS_FILL = "rgba(239,68,68,0.15)"
 FLAT_FILL = "rgba(125,135,148,0.15)"
 
-#: Every surface that encodes data with colour. The ramp's territory is exactly two charts;
-#: `test_the_ramp_stays_inside_attribution_and_spectral` holds both directions of that.
+#: The arm's mark and its reference's, both from the data ramp. **Not status colour**:
+#: green above and red below a zero line is the page answering "did it gain" when the
+#: question §7.3 asks is "did it beat the reference", and those have different answers -
+#: fold 13 made +2.03% while buy and hold made +9.36%, and it rendered as a green bar.
+#: The radar joined them on 23 Sep 2026, where the whole polygon was drawn in GAIN
+#: whatever it said: an arm losing on five axes of six was filled green.
+ARM_MARK, REFERENCE_MARK = RAMP[4], RAMP[2]
+
+#: The reference every backtest result is reported against (spec §7.3). It is a row in
+#: both artefacts - `results.csv` and `report/daily_equity.csv` carry it per fold and per
+#: day - and until 23 Sep 2026 every panel filtered it out on the way to the chart.
+BUY_AND_HOLD = "buy_and_hold"
+REFERENCE_LABEL = "BUY AND HOLD"
+
+#: Every surface that encodes data with colour. The ramp's territory is the four charts
+#: `ramp_surfaces` lists in the tests, and `test_the_ramp_stays_inside_the_charts_that_
+#: encode_data` holds both directions of that.
 STATUS_COLOURS = (GAIN, LOSS)
 
 # Channels from slowest to fastest, which is the order the ramp is assigned in. The ramp
@@ -1212,70 +1227,185 @@ def arm_rows(
     return arm
 
 
-#: The radar's axes. Each is a measured metric with **its own** reference, because these
-#: quantities are not commensurable and pretending otherwise is how a composite score gets
-#: invented. `higher` says which direction is good, so drawdown can sit beside Sharpe
-#: without either being silently negated.
+# The radar's axes. Each is a measured metric with **its own** reference, because these
+# quantities are not commensurable and pretending otherwise is how a composite score gets
+# invented. `higher_is_better` says which direction is good, so drawdown can sit beside
+# Sharpe without either being silently negated.
+@dataclass(frozen=True)
+class RadarAxis:
+    """One spoke: what it measures, and **what it is measured against**.
+
+    An axis carries a reference from one of two places, or from neither. ``DIRECTION``
+    takes it from a column of the arm's own rows - the always-long bar, which the backtest
+    computes per fold. ``SHARPE``, ``RETURN`` and ``DRAWDOWN`` take it from the same column
+    on the buy-and-hold arm, which sits in the same file and was being filtered out.
+    ``CANCELLATION`` and ``FLATNESS`` take it from nowhere, because they are properties of
+    a forecast and the reference makes none - buy and hold has sixteen NaNs in both
+    columns. Those two say so on the chart rather than printing a bare absolute.
+    """
+
+    label: str
+    column: str
+    #: Which way is good, for an axis with a reference.
+    higher_is_better: bool = True
+    #: A column of the arm's own rows carrying this axis's reference.
+    reference_column: str | None = None
+    #: An arm whose same column is this axis's reference.
+    reference_arm: str | None = None
+    #: For an axis with no reference: the value that is best on this axis and the distance
+    #: from it that fills the radius, **from the metric's own definition** rather than from
+    #: the arm's own maximum. See :func:`radar_axis_values`.
+    best: float = 0.0
+    span: float = 1.0
+
+    @property
+    def referenced(self) -> bool:
+        return self.reference_column is not None or self.reference_arm is not None
+
+
 RADAR_AXES = (
-    ("DIRECTION", "direction", "direction_reference", True),
-    ("SHARPE", "sharpe", None, True),
-    ("RETURN", "total_return", None, True),
-    ("DRAWDOWN", "max_drawdown", None, False),
-    ("CANCELLATION", "cancellation", None, False),
-    # Sixth axis, and lower is better: flatness measures how close to zero the forecast
-    # sits, so a high value is a model declining to forecast. It earns a place here for
-    # the reason 7.3 bans MAE from a table without it - across these arms MAE is close to
-    # a monotone function of flatness, so a shape that showed error without flatness would
-    # be showing the same axis twice and calling one of them accuracy.
-    ("FLATNESS", "flatness", None, False),
+    RadarAxis("DIRECTION", "direction", reference_column="direction_reference"),
+    RadarAxis("SHARPE", "sharpe", reference_arm=BUY_AND_HOLD),
+    RadarAxis("RETURN", "total_return", reference_arm=BUY_AND_HOLD),
+    RadarAxis(
+        "DRAWDOWN", "max_drawdown", higher_is_better=False, reference_arm=BUY_AND_HOLD
+    ),
+    # Cancellation is |sum(c)| / sum(|c|), so it is a fraction by construction and zero is
+    # best: nothing of the channel view has offset.
+    RadarAxis("CANCELLATION", "cancellation", best=0.0, span=1.0),
+    # Sixth axis, and **two-sided**, which the old scale had wrong. Flatness is
+    # mean|forecast| / mean|actual|: 1.0 is right-sized, below it timid, above it
+    # overconfident. Scored as "lower is better" - which is what this chart did until
+    # 23 Sep 2026 - persistence forecasts exactly nothing, scores 0.0, and draws the best
+    # flatness on the page. It earns its place here for the reason §7.3 bans MAE from a
+    # table without it: across these arms MAE is close to a monotone function of flatness,
+    # so a shape showing error without it would be showing one axis twice.
+    RadarAxis("FLATNESS", "flatness", best=1.0, span=1.0),
 )
 
 
-def radar_axis_values(rows: pd.DataFrame, model: str) -> list[tuple[str, float, str]]:
-    """``(label, unit_value, printed)`` per axis for one arm.
+#: Where an axis's reference sits on its spoke. **The middle ring is the reference**, so
+#: the arm's shape reads directly: outside it on an axis is better than the reference, and
+#: inside it is worse.
+REFERENCE_RING = 0.5
 
-    ``unit_value`` is the radius, normalised **against that axis's own reference** and
-    clamped to [0, 1]; ``printed`` is the measured number in its own units, which is what
-    the card actually labels. There is deliberately no aggregate of these five: the
+#: What an unreferenced axis prints instead of a comparison, so a reader can see at a
+#: glance which spokes are comparisons and which are the arm alone.
+NO_REFERENCE = "NO REFERENCE"
+
+
+@dataclass(frozen=True)
+class RadarPoint:
+    """One axis as the chart draws it: where the arm sits, and where its reference does."""
+
+    label: str
+    #: The arm's radius, in [0, 1].
+    unit: float
+    #: The measured number in its own units.
+    printed: str
+    #: What it is measured against, on its own line beneath: ``vs 1.8600``, or
+    #: :data:`NO_REFERENCE`. **Every axis has this line**, so a reader sees which spokes
+    #: are comparisons without holding the caption in their head - and a comparison on one
+    #: line ran off this canvas, which is how a label gets clipped in silence.
+    against: str
+    reference_unit: float | None
+
+    @property
+    def referenced(self) -> bool:
+        return self.reference_unit is not None
+
+
+def radar_axis_values(rows: pd.DataFrame, model: str) -> list[RadarPoint]:
+    """One :class:`RadarPoint` per axis for one arm.
+
+    ``unit`` is the radius in [0, 1] and ``reference_unit`` is where that axis's reference
+    sits, or ``None`` when it has none. There is deliberately no aggregate of the six: the
     reference dashboard shows an "Edge Score" and there is no such quantity in this
     project. Inventing one in a system whose thesis is exact attribution would be the
     opposite of the point.
+
+    **Two scales, and neither is the arm's own maximum.** Until 23 Sep 2026 an axis without
+    a reference was normalised against ``arm[column].max()``, which makes the radius a
+    statement about the arm's best fold rather than about anything a reader can name - the
+    same shape means different things on two arms, and on one arm it changes when a fold
+    is added.
+
+    - **An axis with a reference** is placed against the larger magnitude of the two, so
+      the reference lands on the middle ring and the arm sits inside or outside it by its
+      own margin. Both marks are then on one scale and the comparison is the geometry.
+    - **An axis without one** is placed against the metric's own definition: cancellation
+      is a fraction where zero is best, and flatness is a ratio where 1.0 is right-sized
+      and either side of it is worse. Those anchors are properties of the measurement, not
+      of this arm's rows.
     """
     arm = arm_rows(rows, model)
-    out: list[tuple[str, float, str]] = []
+    out: list[RadarPoint] = []
     if arm.empty:
         return out
-    for label, column, reference, higher in RADAR_AXES:
-        if column not in arm.columns:
+    for axis in RADAR_AXES:
+        if axis.column not in arm.columns:
             continue
-        value = float(arm[column].mean())
+        value = float(arm[axis.column].mean())
         if math.isnan(value):
-            out.append((label, 0.0, EM_DASH))
+            out.append(RadarPoint(axis.label, 0.0, EM_DASH, NO_REFERENCE, None))
             continue
-        if reference and reference in arm.columns:
-            base = float(arm[reference].mean())
-            unit = 0.5 + (value - base) * 5.0 if not math.isnan(base) else 0.5
-            printed = f"{value:.4f} vs {base:.4f}"
-        else:
-            span = max(abs(float(arm[column].max())), 0.02)
-            unit = 0.5 + value / (2 * span)
-            printed = f"{value:+.4f}" if abs(value) < 1 else f"{value:+.2f}"
-        if not higher:
-            unit = 1.0 - unit
-        out.append((label, max(0.0, min(1.0, unit)), printed))
+        base = _radar_reference(rows, arm, axis)
+        if base is None or math.isnan(base):
+            distance = min(abs(value - axis.best) / axis.span, 1.0)
+            out.append(
+                RadarPoint(
+                    axis.label, 1.0 - distance, f"{value:.4f}", NO_REFERENCE, None
+                )
+            )
+            continue
+        span = max(abs(value), abs(base), 1e-9)
+        margin = (value - base) / span * (1.0 if axis.higher_is_better else -1.0)
+        unit = max(0.0, min(1.0, REFERENCE_RING + REFERENCE_RING * margin))
+        out.append(
+            RadarPoint(
+                axis.label, unit, f"{value:.4f}", f"vs {base:.4f}", REFERENCE_RING
+            )
+        )
     return out
+
+
+def _radar_reference(
+    rows: pd.DataFrame, arm: pd.DataFrame, axis: RadarAxis
+) -> float | None:
+    """This axis's reference value, from the arm's own column or from the reference arm."""
+    if axis.reference_column:
+        if axis.reference_column not in arm.columns:
+            return None
+        return float(arm[axis.reference_column].mean())
+    if axis.reference_arm:
+        other = arm_rows(rows, axis.reference_arm)
+        if other.empty or axis.column not in other.columns:
+            return None
+        return float(other[axis.column].mean())
+    return None
 
 
 def radar_svg(
     rows: pd.DataFrame, model: str, width: int = 420, height: int = 300
 ) -> str:
-    """A five-axis radar of measured metrics. **No number in the middle.**"""
+    """A six-axis radar of measured metrics. **No number in the middle.**
+
+    **Drawn in the data ramp, not in status colour.** The polygon was hardcoded to
+    ``GAIN``, fill and stroke, so the shape arrived green whatever it said - and what it
+    said on 23 Sep 2026 was that the arm was behind its reference on four axes of the four
+    that have one. Green for a losing shape is the chart contradicting its own numbers,
+    and status colour inside a data-encoding chart is the palette rule besides.
+
+    The reference is a tick on each axis that has one, at the middle ring, rather than a
+    second polygon: a closed shape through four of six vertices would draw a line across
+    the two axes where no reference exists, which is the claim this panel is fixing.
+    """
     axes = radar_axis_values(rows, model)
     if len(axes) < 3:
         return ""
     cx, cy, radius = width / 2, height / 2 - 6, min(width, height) / 2 - 58
     body = []
-    for ring in (0.25, 0.5, 0.75, 1.0):
+    for ring in (0.25, REFERENCE_RING, 0.75, 1.0):
         points = " ".join(
             f"{cx + radius * ring * math.sin(2 * math.pi * i / len(axes)):.1f},"
             f"{cy - radius * ring * math.cos(2 * math.pi * i / len(axes)):.1f}"
@@ -1285,11 +1415,15 @@ def radar_svg(
             f'<polygon points="{points}" fill="none" stroke="{HAIRLINE}" stroke-width="1"/>'
         )
     shape = []
-    for index, (label, unit, printed) in enumerate(axes):
+    for index, point in enumerate(axes):
         angle = 2 * math.pi * index / len(axes)
-        px = cx + radius * unit * math.sin(angle)
-        py = cy - radius * unit * math.cos(angle)
+        px = cx + radius * point.unit * math.sin(angle)
+        py = cy - radius * point.unit * math.cos(angle)
         shape.append(f"{px:.1f},{py:.1f}")
+        if point.reference_unit is not None:
+            body.append(
+                _radar_reference_tick(cx, cy, radius, angle, point.reference_unit)
+            )
         lx = cx + (radius + 26) * math.sin(angle)
         ly = cy - (radius + 26) * math.cos(angle)
         anchor_at = (
@@ -1297,28 +1431,36 @@ def radar_svg(
             if abs(math.sin(angle)) < 0.3
             else ("start" if math.sin(angle) > 0 else "end")
         )
-        body.append(_text(lx, ly, label, MUTED, anchor=anchor_at))
+        body.append(_text(lx, ly, point.label, MUTED, anchor=anchor_at))
         body.append(
-            _text(lx, ly + RADAR_AXIS_LEADING, printed, PAPER, anchor=anchor_at)
+            _text(lx, ly + RADAR_AXIS_LEADING, point.printed, PAPER, anchor=anchor_at)
+        )
+        # Three lines on every axis, not two on some: the comparison on the same line as
+        # the value - "1.7413 vs 1.8600" - ran to 454px of a 420px canvas on the two
+        # right-hand spokes and was clipped in silence.
+        body.append(
+            _text(
+                lx, ly + 2 * RADAR_AXIS_LEADING, point.against, MUTED, anchor=anchor_at
+            )
         )
     body.append(
-        f'<polygon points="{" ".join(shape)}" fill="{GAIN_FILL}" '
-        f'stroke="{GAIN}" stroke-width="1.5"/>'
+        f'<polygon points="{" ".join(shape)}" fill="{ARM_MARK}" fill-opacity="0.15" '
+        f'stroke="{ARM_MARK}" stroke-width="1.5"/>'
     )
     return _svg(width, height, "".join(body), f"{model} performance shape")
 
 
-#: The reference every backtest result is reported against (spec §7.3). It is a row in
-#: both artefacts - `results.csv` and `report/daily_equity.csv` carry it per fold and per
-#: day - and until 23 Sep 2026 every panel filtered it out on the way to the chart.
-BUY_AND_HOLD = "buy_and_hold"
-REFERENCE_LABEL = "BUY AND HOLD"
+def _radar_reference_tick(
+    cx: float, cy: float, radius: float, angle: float, unit: float, half: float = 9.0
+) -> str:
+    """The reference's mark on one spoke: a tick across the axis, in the ramp.
 
-#: The arm's mark and the reference's, both from the data ramp. **Not status colour**:
-#: green above and red below a zero line is the page answering "did it gain" when the
-#: question §7.3 asks is "did it beat the reference", and those have different answers -
-#: fold 13 made +2.03% while buy and hold made +9.36%, and it rendered as a green bar.
-ARM_MARK, REFERENCE_MARK = RAMP[4], RAMP[2]
+    Across rather than along, so it reads as a level the arm's vertex is inside or outside
+    rather than as part of the shape.
+    """
+    px, py = cx + radius * unit * math.sin(angle), cy - radius * unit * math.cos(angle)
+    dx, dy = half * math.cos(angle), half * math.sin(angle)
+    return _rule(px - dx, py - dy, px + dx, py + dy, REFERENCE_MARK)
 
 
 def chained_equity(daily: pd.DataFrame, model: str) -> list[float]:
@@ -1736,15 +1878,60 @@ NO_REFERENCE_ROWS = f"no reference-condition rows in {RESULTS_PATH}"
 NO_DAILY = f"{DAILY_EQUITY_PATH} not generated - run the study grid"
 
 
+def radar_caption() -> str:
+    """The radar's caption, **built from the axes rather than written beside them**.
+
+    The caption it replaces read *Six measured axes, each against its own reference*, on a
+    chart where five of the six had none. It was true when it was written for a different
+    set of axes and nothing tied it to them, so it stayed on the page while the axes
+    changed underneath it - a description of intent, which is not a mechanism. Derived
+    here, an axis that changes sides changes the sentence; the test pins the sentence
+    today's axes produce, so the change is also noticed.
+    """
+    referenced = [axis for axis in RADAR_AXES if axis.referenced]
+    bare = [axis.label for axis in RADAR_AXES if not axis.referenced]
+    against_arm = [
+        axis.label for axis in referenced if axis.reference_arm == BUY_AND_HOLD
+    ]
+    against_column = [axis.label for axis in referenced if axis.reference_column]
+    parts = [
+        (
+            f"{len(referenced)} of {len(RADAR_AXES)} axes carry a reference: "
+            f"{_listed(against_column)} against the always-long bar, "
+            f"{_listed(against_arm)} against buy and hold."
+        )
+    ]
+    if bare:
+        parts.append(
+            f"{_listed(bare)} have none - the reference makes no forecast - and say so "
+            "on the axis."
+        )
+    parts.append("No composite score.")
+    return " ".join(parts)
+
+
+def _listed(labels: list[str]) -> str:
+    """``A``, ``A and B``, ``A, B and C``. Title case, because these are axis names."""
+    names = [label.title() for label in labels]
+    if len(names) < 2:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
 def shape_region(reference: pd.DataFrame, model: str) -> str:
-    """The radar. Reads `results.csv`."""
+    """The radar against its references. Reads `results.csv`.
+
+    The whole frame to the chart and the arm's rows to the pill, for the reason given on
+    :func:`cumulative_region`: three of the six axes take their reference from the
+    buy-and-hold rows, which `arm_rows` removes.
+    """
     arm = arm_rows(reference, model)
     source = backtest_source(RESULTS_PATH, arm)
     return region(
         f"{model.upper()} performance shape",
         source,
-        radar_svg(arm, model) or too_little(source, NO_REFERENCE_ROWS),
-        "Six measured axes, each against its own reference. No composite score.",
+        radar_svg(reference, model) or too_little(source, NO_REFERENCE_ROWS),
+        radar_caption(),
     )
 
 
