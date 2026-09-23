@@ -1798,134 +1798,74 @@ def _fold_readouts(
     return lines
 
 
-#: Tile and gap in px, largest first. The calendar keeps **one tile per trading day** and
-#: shrinks the tile until the whole span fits, rather than dropping the days that do not.
-CALENDAR_SCALES = ((13, 3), (9, 2), (6, 2), (4, 1), (3, 1), (2, 1), (2, 0))
-
-#: What the weekday ruler occupies on the left, and the margin kept on the right.
-CALENDAR_LEFT, CALENDAR_RIGHT = 76, 12
-
-#: Where the tiles start, and the room the footer needs beneath them. **Two lines, not
-#: one.** At 9px the day count and the up/down/flat tally sat on one baseline at opposite
-#: ends of a 700-unit chart and cleared each other by 200 units; at the type floor the
-#: longer count - "16 OF 190 TRADING DAYS - 174 EARLIER WEEKS NOT SHOWN" - runs past the
-#: middle and they collide. Stacking them is the fix that does not shorten a sentence to
-#: fit a chart.
-CALENDAR_TOP, CALENDAR_FOOT = 26, 46
-
-#: Below this row pitch the three weekday labels collide, and the axis they name is too
-#: dense to read a day off anyway, so the band is labelled once instead of three times.
-#: It tracks the type: three labels one row apart need a pitch above the height of the
-#: type they are set in, which is why raising the floor raised this with it.
-CALENDAR_RULER_PITCH = 16
+#: What a panel says instead of naming a reference, when what it reports is not a result.
+#: §7.3 asks for a reference wherever a result is reported; a tally of how many days went
+#: up is not a result and has nothing to be measured against. **Declared on the panel
+#: rather than exempted in a test**, so the reader sees the same claim the guard reads.
+NOT_A_RESULT = "DAY COUNTS, NOT RESULTS"
 
 
-def calendar_scale(weeks: int, width: int) -> tuple[int, int, int]:
-    """``(tile, gap, weeks shown)`` for a span of ``weeks``. **Never a silent truncation.**
+@dataclass(frozen=True)
+class DailyCounts:
+    """How many trading days went up, down and nowhere, and over what window."""
 
-    The daily artefact holds three folds today and sixteen after the next grid - about 190
-    weeks, fifteen times what a fixed 13px tile fits in this width. The first version drew
-    every tile at 13px and dropped the ones past the right edge with a bare ``continue``
-    while the footer went on counting the days it had not drawn. That is the pill defect
-    one level down - a caption describing more data than the picture holds - and unlike the
-    pill it would have arrived silently, on the first grid wide enough to trigger it.
+    up: int
+    down: int
+    flat: int
+    first: pd.Timestamp
+    last: pd.Timestamp
 
-    So the tile shrinks first, and only past the smallest tile that still reads as a mark
-    does the chart drop anything: the oldest weeks, the recent end being the one a reader
-    came for, and :func:`calendar_svg` then says how many weeks went with them.
-    """
-    span = max(width - CALENDAR_LEFT - CALENDAR_RIGHT, 1)
-    for tile, gap in CALENDAR_SCALES:
-        if weeks * (tile + gap) <= span:
-            return tile, gap, weeks
-    tile, gap = CALENDAR_SCALES[-1]
-    return tile, gap, max(span // (tile + gap), 1)
+    @property
+    def days(self) -> int:
+        return self.up + self.down + self.flat
 
 
-def calendar_svg(daily: pd.DataFrame, model: str, width: int = 700) -> str:
-    """A heatmap of daily equity change, one tile per trading day, by calendar week.
+def daily_direction_counts(daily: pd.DataFrame, model: str) -> DailyCounts | None:
+    """The three counts and the window they cover, or ``None`` with nothing to count.
 
-    **The height is derived rather than fixed**, because five weekday rows at the fitted
-    tile size is the whole of what this chart is tall. A fixed 280 left the three-fold span
-    ending at y=103 with 150px of nothing beneath it, which is the flat-equity lesson
-    again: the case the chart is usually in was the one that looked broken.
+    **What is left of the daily calendar, and deliberately not a chart.** The calendar
+    drew one tile per trading day: at 922 days in a 700px row the tiles were 2px with no
+    gap, which is a smear rather than a heatmap, and it carried nothing the three counts
+    beneath it did not already say. Removed on 23 Sep 2026 rather than rebuilt - a tile
+    compared against buy and hold is a different chart, and this pass has no room for one.
+
+    A flat day is counted rather than dropped. This loop stands aside on most bars, so
+    exactly-zero days are the common case, and a tally that reported only up and down
+    would be describing a different market from the one measured.
     """
     if daily.empty or "model" not in daily.columns:
-        return ""
+        return None
     arm = arm_rows(daily, model).sort_values(["fold", "date"])
     if arm.empty:
-        return ""
+        return None
     changes: dict[pd.Timestamp, float] = {}
     for _, fold_rows in arm.groupby("fold", sort=True):
         values = fold_rows["equity"].to_numpy(dtype="float64")
         dates = list(fold_rows["date"])
-        for i in range(1, len(values)):
-            if values[i - 1]:
-                changes[dates[i]] = values[i] / values[i - 1] - 1.0
+        for index in range(1, len(values)):
+            if values[index - 1]:
+                changes[dates[index]] = values[index] / values[index - 1] - 1.0
     if not changes:
-        return ""
+        return None
     days = sorted(changes)
-    peak = max(abs(v) for v in changes.values()) or 1e-9
-    first = days[0] - pd.Timedelta(days=int(days[0].dayofweek))
-    weeks = int((days[-1] - first).days // 7) + 1
-    tile, gap, shown = calendar_scale(weeks, width)
-    dropped, pitch = weeks - shown, tile + gap
-    height = CALENDAR_TOP + 5 * pitch + CALENDAR_FOOT
-    drawn = [day for day in days if int((day - first).days // 7) >= dropped]
-    body = []
-    for day in drawn:
-        value = changes[day]
-        week = int((day - first).days // 7) - dropped
-        opacity = 0.18 + 0.82 * min(abs(value) / peak, 1.0)
-        body.append(
-            f'<rect x="{CALENDAR_LEFT + week * pitch}" '
-            f'y="{CALENDAR_TOP + int(day.dayofweek) * pitch}" '
-            f'width="{tile}" height="{tile}" rx="2" '
-            f'fill="{status_colour(value)}" fill-opacity="{opacity:.2f}"/>'
-        )
-    if pitch >= CALENDAR_RULER_PITCH:
-        for index, label in enumerate(("MON", "", "WED", "", "FRI")):
-            if label:
-                body.append(
-                    _text(
-                        CALENDAR_LEFT - 6,
-                        CALENDAR_TOP + index * pitch + tile - 3,
-                        label,
-                        MUTED,
-                        anchor="end",
-                    )
-                )
-    else:
-        body.append(
-            _text(
-                CALENDAR_LEFT - 6,
-                CALENDAR_TOP + 2 * pitch + tile / 2 + 3,
-                "MON-FRI",
-                MUTED,
-                anchor="end",
-            )
-        )
-    up = sum(1 for day in drawn if changes[day] > 0)
-    down = sum(1 for day in drawn if changes[day] < 0)
-    # **The caption counts the tiles, not the rows.** They are the same number until the
-    # span outgrows the width, and the case where they are not is the whole reason the
-    # sentence is built rather than written.
-    counted = (
-        f"{len(drawn)} TRADING DAYS"
-        if not dropped
-        else f"{len(drawn)} OF {len(days)} TRADING DAYS - "
-        f"{dropped} EARLIER WEEKS NOT SHOWN"
+    up = sum(1 for day in days if changes[day] > 0)
+    down = sum(1 for day in days if changes[day] < 0)
+    return DailyCounts(up, down, len(days) - up - down, days[0], days[-1])
+
+
+def daily_counts_body(counts: DailyCounts) -> str:
+    """The counts, and the window they were counted over.
+
+    Three numbers with no window would be three bare absolutes replacing one bad chart,
+    which is the trade this was not meant to be: *434 up* means nothing until a reader
+    knows it is 434 of 922 days and which days those were.
+    """
+    return (
+        f'<div class="gb-body">{counts.up} UP &nbsp;·&nbsp; {counts.down} DOWN '
+        f"&nbsp;·&nbsp; {counts.flat} FLAT</div>"
+        f'<div class="gb-meta">OF {counts.days} TRADING DAYS &nbsp;·&nbsp; '
+        f"{counts.first:%Y-%m-%d} TO {counts.last:%Y-%m-%d}</div>"
     )
-    body.append(_text(CALENDAR_LEFT, height - 30, counted, MUTED))
-    body.append(
-        _text(
-            CALENDAR_LEFT,
-            height - 10,
-            f"{up} UP / {down} DOWN / {len(drawn) - up - down} FLAT",
-            MUTED,
-        )
-    )
-    return _svg(width, height, "".join(body), f"{model} daily results calendar")
 
 
 # ── the four measured regions, one frame each ────────────────────────────────
@@ -2037,13 +1977,23 @@ def fold_region(reference: pd.DataFrame, model: str) -> str:
 
 
 def calendar_region(daily: pd.DataFrame, model: str) -> str:
-    """The daily heatmap. Reads `report/daily_equity.csv`."""
+    """The daily direction counts. Reads `report/daily_equity.csv`.
+
+    **The heatmap is gone, and the counts it carried are what is left.** One tile per
+    trading day fitted 922 days into a 700px row at 2px a tile with no gap, which reads
+    as a smear; every reading a person took from it came from the three counts printed
+    beneath it. Removed on 23 Sep 2026 rather than rebuilt against buy and hold, which is
+    a different chart and a different pass.
+    """
     arm = arm_rows(daily, model)
     source = backtest_source(DAILY_EQUITY_PATH, arm)
+    counts = daily_direction_counts(daily, model)
     return region(
-        "Daily results",
+        "Daily direction",
         source,
-        calendar_svg(arm, model) or too_little(source, NO_DAILY),
+        daily_counts_body(counts) if counts else too_little(source, NO_DAILY),
+        f"{NOT_A_RESULT}: a tally of which way a day went is not measured against a "
+        "reference, and §7.3 asks for one where a result is reported.",
     )
 
 

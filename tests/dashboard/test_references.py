@@ -15,6 +15,7 @@ chart, in `arm_rows`, one line before it was drawn.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -39,17 +40,10 @@ FRAMES = {
 }
 
 #: **Panels that still do not state a reference, each with the reason it is still here.**
-#: The goal is an empty dict. Anything in it is reported as unfixed rather than passing
-#: quietly, and `test_an_exemption_that_stopped_being_true_fails` removes the entry's
-#: cover the moment the panel starts stating one.
-UNREFERENCED = {
-    "calendar_region": (
-        "Every tile is a day's change against nothing. The reference exists in the same "
-        "file - buy and hold has a row for each of those dates - so the fix is a second "
-        "value per tile or a tile of the difference, which is a redesign of the "
-        "encoding rather than a filter change. Not started on 23 Sep 2026."
-    ),
-}
+#: Empty since D5 on 23 Sep 2026, and `test_the_unfixed_list_is_empty` holds it that way:
+#: a panel added without a reference has to put its name here in the same commit, where a
+#: reader of the diff will see it, rather than passing quietly.
+UNREFERENCED: dict[str, str] = {}
 
 
 def _frames() -> dict[str, pd.DataFrame]:
@@ -78,17 +72,31 @@ def rendered_panels() -> dict[str, str]:
     }
 
 
+def test_the_unfixed_list_is_empty() -> None:
+    """**Every panel states its reference or declares it reports no result.** The list
+    exists so an unfixed panel is named rather than silent; it is empty, and a panel added
+    without a reference has to write its own name here to pass."""
+    assert UNREFERENCED == {}, f"still unfixed: {sorted(UNREFERENCED)}"
+
+
 def test_every_performance_panel_states_its_reference_or_is_named_as_unfixed() -> None:
-    """The guard. A panel either names the thing its result is measured against, or it is
-    in `UNREFERENCED` with a reason a reader can act on."""
+    """The guard. A panel either names the thing its result is measured against, declares
+    on its face that what it reports is not a result, or is in `UNREFERENCED` with a
+    reason a reader can act on.
+
+    The middle case arrived with D5: the daily panel counts which way each day went, and a
+    tally is not a result §7.3 could ask for a reference for. **It says so on the page**,
+    in the caption a reader sees, rather than in a list only this test reads - an
+    exemption nobody but the guard can see is the shape this project keeps paying for.
+    """
     for name, html in rendered_panels().items():
         if name in UNREFERENCED:
             assert UNREFERENCED[name].strip(), f"{name} is exempt with no reason given"
             continue
         # Case-insensitive: a chart shouts its reference in a label and a caption says it
         # in a sentence, and both are the panel stating it.
-        assert any(
-            word in html.upper() for word in REFERENCES
+        assert any(word in html.upper() for word in REFERENCES) or (
+            app.NOT_A_RESULT in html
         ), f"{name} reports a result against nothing; §7.3 forbids it"
         # Naming the reference is not stating it. A panel whose artefact has lost its
         # reference rows says "BUY AND HOLD NOT IN THIS FILE", which names it and reports
@@ -101,7 +109,12 @@ def test_every_performance_panel_states_its_reference_or_is_named_as_unfixed() -
 
 def test_an_exemption_that_stopped_being_true_fails() -> None:
     """An exemption list nobody can leave is a list that outlives its reasons. A panel
-    that starts stating a reference fails here until its entry is deleted."""
+    that starts stating a reference fails here until its entry is deleted.
+
+    **Inert while `UNREFERENCED` is empty, which it is**, and that is the intended end
+    state rather than an oversight: `test_the_unfixed_list_is_empty` is what holds the
+    list at zero, and this is what stops the next entry outliving its reason.
+    """
     panels = rendered_panels()
 
     for name in UNREFERENCED:
@@ -109,6 +122,59 @@ def test_an_exemption_that_stopped_being_true_fails() -> None:
             f"{name} now states a reference - delete its UNREFERENCED entry, which is "
             "claiming otherwise"
         )
+
+
+# ── the daily panel, D5 ──────────────────────────────────────────────────────
+
+
+def test_the_daily_panel_counts_days_and_says_that_is_what_it_does() -> None:
+    """The counts, the window they cover, and the declaration that a tally is not a
+    result. Three bare absolutes replacing one bad chart would be the trade this was not
+    meant to be."""
+    html = app.calendar_region(_frames()["daily"], ARM)
+
+    assert "434 UP" in html and "371 DOWN" in html and "117 FLAT" in html
+    assert "OF 922 TRADING DAYS" in html
+    assert "2022-07-07 TO 2026-06-26" in html, "the window the counts were taken over"
+    assert app.NOT_A_RESULT in html
+
+
+def test_the_daily_strip_is_gone_and_nothing_draws_it() -> None:
+    """**Deleted, not reduced.** A `calendar_svg` that drew no tiles would still be a
+    chart builder: on the ramp guard's enumeration, in `_every_chart`, and in every
+    geometry guard, with nothing left for any of them to check."""
+    source = Path(app.__file__).read_text(encoding="utf-8")
+
+    assert not hasattr(app, "calendar_svg")
+    assert not hasattr(app, "calendar_scale")
+    assert "CALENDAR_" not in source, "the tile-scaling constants went with it"
+
+
+def test_a_day_that_did_not_move_is_counted_rather_than_dropped() -> None:
+    """This loop stands aside on most bars, so exactly-zero days are the common case. A
+    tally of up and down alone would describe a different market from the measured one -
+    the same reason the fold chart marks a fold that stood aside."""
+    flat = a_daily_frame(folds=2, drift=0.0)
+
+    counts = app.daily_direction_counts(flat, ARM)
+
+    assert counts is not None
+    assert counts.up == 0 and counts.down == 0
+    assert counts.flat == counts.days > 0
+    assert "0 UP" in app.daily_counts_body(counts)
+
+
+def test_the_counts_are_the_days_the_arm_actually_traded() -> None:
+    """Counted from the arm's own rows: a frame holding two arms must not count both."""
+    frame = pd.concat(
+        [a_daily_frame(folds=1), a_daily_frame(folds=1, model=app.BUY_AND_HOLD)]
+    )
+
+    counts = app.daily_direction_counts(frame, ARM)
+    arm_only = app.daily_direction_counts(a_daily_frame(folds=1), ARM)
+
+    assert counts is not None and arm_only is not None
+    assert counts.days == arm_only.days
 
 
 # ── the two panels D3 fixed ──────────────────────────────────────────────────

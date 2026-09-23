@@ -1815,83 +1815,24 @@ def test_one_selection_rule_serves_both_the_chart_and_its_pill() -> None:
     assert app.fold_range(arm) == "folds 1-2"
 
 
-def test_the_calendar_counts_the_days_it_drew() -> None:
-    """**The pill defect one level down, and it would have arrived silently.**
-
-    The first version drew 13px tiles and dropped everything past the right edge with a
-    bare `continue` while the footer went on counting the days it had not drawn. Three
-    folds fit, so nothing looked wrong; sixteen folds is about 190 weeks, and the first
-    grid wide enough to trigger it would have shipped a caption describing several times
-    the data the picture held.
-    """
-    for daily in (
-        a_daily_frame(folds=3),
-        a_daily_frame(folds=16),
-        a_daily_frame(folds=40),
-    ):
-        svg = app.calendar_svg(daily, "dlinear")
-        tiles = re.findall(
-            r'<rect x="(\d+)" y="(\d+)" width="(\d+)" height="\d+" rx="2"', svg
-        )
-        edge = int(re.search(r'viewBox="0 0 (\d+) (\d+)"', svg).group(2))
-
-        counted = re.search(r"(\d+)(?: OF (\d+))? TRADING DAYS", svg)
-
-        assert counted, "the calendar drew no day count"
-        assert int(counted.group(1)) == len(
-            tiles
-        ), "the caption counts days it did not draw"
-        # The other half of the same claim: a tile pushed off the canvas is as absent as
-        # one never drawn, and it would leave the count and the picture agreeing on paper.
-        assert all(
-            int(x) + int(side) <= 700 and int(y) + int(side) <= edge
-            for x, y, side in tiles
-        ), "a tile fell outside the chart"
-
-
-def test_the_calendar_says_so_when_a_span_will_not_fit() -> None:
-    """No silent cap. Past the smallest tile that still reads as a mark the chart keeps the
-    recent weeks and states how many it dropped."""
-    tile, gap, shown = app.calendar_scale(400, 700)
-
-    assert shown < 400, "this span cannot fit, and the scale must say which part does"
-    assert (tile, gap) == app.CALENDAR_SCALES[-1]
-
-    svg = app.calendar_svg(a_daily_frame(folds=40), "dlinear")
-
-    assert "WEEKS NOT SHOWN" in svg
-    assert " OF " in svg, "a truncated calendar states the total it drew from"
-
-
-def test_the_calendar_height_follows_its_tiles() -> None:
-    """Five weekday rows at the fitted tile size is the whole of what this chart is tall. A
-    fixed 280 left the three-fold span ending at y=103 under 150px of nothing, which is the
-    flat-equity lesson: the case the chart is usually in was the one that looked broken.
-    """
-
-    def height(svg: str) -> int:
-        return int(re.search(r'viewBox="0 0 \d+ (\d+)"', svg).group(1))
-
-    short = app.calendar_svg(a_daily_frame(folds=3), "dlinear")
-    long = app.calendar_svg(a_daily_frame(folds=16), "dlinear")
-
-    assert height(short) < 200, "the tiles end long before a fixed 280 would"
-    assert height(long) < height(short), "smaller tiles make a shorter chart"
+# Four calendar tests were deleted with the chart on 23 Sep 2026 (D5): the day count
+# against the tiles drawn, the no-silent-truncation scale, the derived height, and the
+# flat-day half of `test_a_flat_result_is_never_drawn_as_a_gain`. Each pinned a property
+# of a heatmap that no longer exists - 922 days at 2px a tile - and the counts it carried
+# are now the panel. `tests/dashboard/test_references.py` holds what replaced them,
+# including that a day which did not move is still counted.
 
 
 def test_a_flat_result_is_never_drawn_as_a_gain() -> None:
     """**Flat is the common case here, not the edge case.** This loop stands aside on most
     bars: persistence stands aside in all sixteen folds, and 143 of FITS's 175 daily
-    changes are exactly zero. `>= 0` painted every one of them green, so the calendar read
-    as a mostly-green year for an arm that did nothing."""
+    changes are exactly zero. `>= 0` painted every one of them green, so the panel read as
+    a mostly-green year for an arm that did nothing."""
     flat = a_daily_frame(folds=2, drift=0.0)
 
-    calendar = app.calendar_svg(flat, "dlinear")
     area = app.cumulative_equity_svg(flat, "dlinear")
 
-    assert app.GAIN not in calendar, "a flat day was drawn as a gain"
     assert app.GAIN not in area and app.GAIN_FILL not in area
-    assert "0 UP / 0 DOWN /" in calendar, "the caption must name the third case"
 
 
 def test_a_flat_cumulative_curve_is_centred_not_floored() -> None:
@@ -2087,7 +2028,6 @@ def test_the_ramp_appears_in_no_chart_that_encodes_no_data() -> None:
     import pandas as pd
 
     history = pd.Series([100.0, 101.0, 99.5, 102.0, 103.5])
-    daily = app.load_daily_equity()
     row = app.PositionRow(
         "AAPL", 1.0, 100.0, 97.0, True, stop_loss=94.0, take_profit=112.0
     )
@@ -2106,7 +2046,6 @@ def test_the_ramp_appears_in_no_chart_that_encodes_no_data() -> None:
         "equity_svg": _equity([100.0, 101.0, 99.0]),
         "countdown_svg": app.countdown_svg(30, 60),
         "sparkline_svg": app.sparkline_svg(history, row, loop_present=True),
-        "calendar_svg": app.calendar_svg(daily, "dlinear"),
     }
 
     # Every chart builder the module exports is on one side or the other. A new one that
@@ -2225,8 +2164,6 @@ def _every_chart() -> dict[str, str]:
         "radar_svg": app.radar_svg(reference, "dlinear"),
         "cumulative_equity_svg": app.cumulative_equity_svg(daily, "dlinear"),
         "fold_bars_svg": app.fold_bars_svg(reference, "dlinear"),
-        "calendar_svg": app.calendar_svg(a_daily_frame(folds=3), "dlinear"),
-        "calendar_svg truncated": app.calendar_svg(a_daily_frame(folds=40), "dlinear"),
         "forecast_svg": app.forecast_svg(
             HISTORY, app.price_path(103.5, [0.01]), Thresholds(lower=0.004), "AAPL"
         ),
