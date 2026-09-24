@@ -9,7 +9,7 @@ Two invocations produce every frame here:
     streamlit run glassbox/dashboard/app.py -- --state-dir checkpoints/fits-demo \
         --source replay:fold-13
 
-Two viewports: 1920×1080, and 1280×900 for the reflow frame.
+Two viewports: 1920×1080, and 1280×900 for the two reflow frames.
 
 ## Why three frames are older than the rest
 
@@ -43,6 +43,7 @@ hold.
 | `04-attribution.png` | *awaiting capture* | 1920×1080 | 20 | folds 1–16 | folds 1–16 | `1325D8B280` | `checkpoints/live` |
 | `05-spectral-fits.png` | *awaiting capture* | 1920×1080 | 5 (replay) | — | — | `F74F34D3B0` | `checkpoints/fits-demo` |
 | `06-reflow-1280.png` | 1 Sep 2026 | 1280×900 | 5 | folds 1–16 | folds 1–3 | `484B917496` | `checkpoints/live` |
+| `06b-reflow-1280-fixed.png` | *awaiting capture* | 1280×900 | 20 | folds 1–16 | folds 1–16 | `1325D8B280` | `checkpoints/live` |
 | `07-young-session.png` | *awaiting capture* | 1920×1080 | 20 | folds 1–16 | folds 1–16 | `1325D8B280` | `checkpoints/live` |
 
 **`awaiting capture` means the file on disk is still the 1 September 2026 frame, or does
@@ -181,6 +182,11 @@ design chapter claims the page reads at both widths; resting that claim, and the
 defects, on a single file at a single width would make the archive depend on one artefact.
 Neither this frame nor 01 can be retaken.
 
+`06b-reflow-1280-fixed.png` is the after-frame, same viewport. **The pair exists because
+preserving this one costs the report its only current narrow-viewport evidence**: the claim
+that the page reads at both widths cannot rest on a 1 September 2026 frame carrying six
+defects, so the claim needs a frame of its own rather than inheriting one from 01.
+
 ---
 
 # Frames awaiting capture
@@ -256,6 +262,22 @@ The panel had never rendered from a real decision record before 28 August 2026 �
 five-symbol universe.** The model-shaping hash includes the model, so this replay is
 correctly refused under a DLinear config; whether it loads under the 24 September 2026
 configuration must be confirmed on screen before the frame is trusted.
+
+## 06b-reflow-1280-fixed.png — the layout at a narrow viewport, after
+
+*Awaiting capture: 1280×900, `--state-dir checkpoints/live --source live`, universe 20,
+config `1325D8B280`, same viewport as 06.*
+
+The after half of the 1280×900 pair, and the report's only current evidence that the page
+reads at the narrow width. Sections stack, the status strip wraps, nothing overflows — and
+the six defects catalogued under 01 are absent, which is the point of capturing it at this
+width rather than inferring it from the 1920 frames.
+
+Twenty symbols rather than five means more forecast cards stacking at this width, so this
+capture is also where the second half of the deferred grid item shows itself or does not:
+an odd symbol count leaves an unfilled, unlabelled cell in the two-column forecast grid.
+The universe is even, so the cell should not appear; if it does, the item is worse than
+recorded and `IDEAS_PARKED.md` needs amending rather than the page needing a patch here.
 
 ## 07-young-session.png — the session equity panel early in a session
 
