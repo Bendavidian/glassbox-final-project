@@ -52,11 +52,13 @@ Wilcoxon families on the full condition key, for the same 29 cells:
 
 | metric | mean abs effect (5) | mean abs effect (20) | ratio | grew in |
 |---|---|---|---|---|
-| `direction` | 0.0599 | 0.0580 | **0.97** | 1 of 3 |
+| `direction` | 0.0599 | 0.0580 | **0.97** | 2 of 3 |
 | `total_return` | 0.0827 | 0.0473 | **0.57** | 0 of 4 |
-| `mae` | 0.000636 | 0.000491 | **0.77** | 3 of 22 |
+| `mae` | 0.000620 | 0.000475 | **0.77** | 4 of 22 |
 
-**Effect sizes did not grow; in 26 of 29 cells they are the same or smaller.** The number
+**Effect sizes did not grow; in 23 of 29 cells they are the same or smaller.** One further
+cell rose by 2.6e-5, which is a tie at any reportable precision and is counted as grown here.
+The number
 of paired observations is 16 at both universe sizes, so the extra power did not come from
 more folds. It came from the collapse of the paired-difference standard deviation — the
 quantity the signed-rank test actually consumes — as each fold's metric moved from an
@@ -335,7 +337,7 @@ came from precision rather than from a larger effect.
 |---|---|---|
 | verdict at five | 17 of 117 survive Holm, **none** on `direction`, `sharpe` or `total_return` | prediction **did not hold**: p = 0.5282, 9 of 16 folds |
 | verdict at twenty | **29** survive, spanning `direction`, `mae`, `total_return` | prediction **HELD**: p = 0.0042, 13 of 16 folds |
-| effect size | **same or smaller in 26 of 29 cells**; `total_return` shrank to 57% | FITS −0.0127 → +0.1946, WITS +0.0331 → +0.0838 |
+| effect size | **same or smaller in 23 of 29 cells**; `total_return` shrank to 57% | FITS −0.0127 → +0.1946, WITS +0.0331 → +0.0838 |
 | n | **16 folds, unchanged** | **16 folds, unchanged** |
 | what actually moved | paired-difference sd fell by **2.5–3×** | neither correlation differed from zero at five (t = −0.44, +0.75); both do at twenty (t = +7.24, +2.56) |
 

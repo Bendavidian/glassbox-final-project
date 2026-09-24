@@ -1,3 +1,25 @@
+> **SUPERSEDED 23 September 2026 by `docs/GB57_RESULTS.md`.**
+>
+> This file is retained as a source of **argument and phrasing — not of numbers.**
+>
+> Its snapshot is `results.csv` at last bar **2026-08-13**, over a **five-symbol**
+> universe. It was written before the flip to twenty symbols (`9dd5a01`) and before
+> the grid re-ran on that universe (`da37401`). **Every figure in it is a five-symbol
+> figure.**
+>
+> Therefore **no number may be carried across** into the submitted chapter without
+> being re-read from the current `results.csv`, or from `docs/GB57_OUTLINE.md`, which
+> is gated on the 3 September evidence audit.
+>
+> **Pasting a figure from this file into the submitted chapter is the stale-copy defect
+> this project records repeatedly.** It is a fact stored in a second place: the copy
+> stays internally consistent and reads as correct long after the source it was taken
+> from has moved, so nothing fails and the disagreement is invisible. The numbers below
+> are not wrong — they are answers to a question this study stopped asking on
+> `9dd5a01`.
+
+---
+
 # GlassBox Trader — Results and Discussion
 
 *Draft, 27 August 2026. Every number in this chapter carries its source. Sources are
