@@ -272,3 +272,77 @@ will read it and not only here.
 
 **Cost if taken up separately:** none. The rehearsals are GB-54's, the screenshots and the
 caption rule are GB-55's, and shot 6 is cut.
+
+## The dashboard honesty pass — what landed 22–23 Sep 2026, and what did not
+
+**Parked 24 Sep 2026.** A pass over `glassbox/dashboard/app.py` against one rule: *the
+console must never state something a reasonable reader will take as true when it is not.*
+Eight items were fixed. The remainder is recorded here because a defect found, numbered and
+left is scope that disappears without anybody deciding to drop it — the same failure mode
+this file's GB-65 entry exists for.
+
+**What landed.** Each was proven by breaking the guard it added, confirming failure, and
+restoring the file byte-identical:
+
+- **D1 — the stop room measured against the book, not the broker** (`9b760d5`, 22 Sep 2026).
+  The panel read `stop_loss` from `book.json`, so a stop that had been cancelled, filled or
+  never placed still rendered as protection. It now reads the broker's working stop and says
+  `NO LIVE STOP · UNPROTECTED` or `STOP UNKNOWN · BROKER READ FAILED` when it cannot.
+- **D2 — one liveness verdict** (`780823a`, 23 Sep 2026). Each surface decided separately
+  whether the loop was alive, so the page could claim live in one region and stale in
+  another. Six state words, one function, read by every surface that makes the claim.
+- **D2b — liveness resting on evidence** (`cb92425`, 23 Sep 2026). The loop now writes a
+  heartbeat a program can read, so the page's claim rests on the loop's own last write
+  rather than on the page's timer, and `LIVE` means one thing everywhere it appears.
+- **D3 — the two headline backtest panels against buy and hold** (`f87deec`, 23 Sep 2026).
+  Cumulative equity and the fold bars reported absolutes; spec §7.3 asks for a reference.
+- **D4 — the radar's references** (`9f95b9c`, 23 Sep 2026). Five axes of six printed a bare
+  number under a caption reading *"each against its own reference"*. Also removed green from
+  a data encoding, and corrected flatness, which was scored one-sided on a two-sided metric.
+- **D5a — a chart slot for every position** (`b294e04`, 23 Sep 2026). Sparklines were drawn
+  for some positions and not others, none of them labelled, so a chart could be read against
+  the wrong row. Every position gets a slot, every slot says whose it is, and a slot with no
+  chart gives one of three distinguishable reasons.
+- **D5 — the daily strip deleted** (`fb633f8`, 23 Sep 2026). 922 trading days in a 700px row
+  is 2px a tile, which renders as a smear. The counts and their window are the panel, and it
+  declares on its face that day counts are not a result.
+- **D6 — the session equity panel sized to its session** (`b866cc4`, 23 Sep 2026). Two
+  readings across a full plot band read as an empty panel rather than a short one, which is
+  the state the live session is in every morning until the loop has polled ten times.
+
+The report screenshots were re-captioned on 24 Sep 2026 (`4bbd224`) rather than retaken:
+three frames document defects this pass fixed, and are preserved and dated because fixing a
+defect destroys the ability to photograph it. That is GB-55's retake, narrowed.
+
+**What was left unfixed.**
+
+- **D7 — three charts compute a scale from a subset of what they draw against it.** Held as
+  `xfail(strict=True)` at `tests/dashboard/test_app.py:2484`, with its premise pinned
+  outside the xfail so the case cannot pass for the wrong reason. `sparkline_svg` takes
+  `min(prices, stop_loss)` but never the max, so a position gapped below its own stop draws
+  that rule at y = −12,998,634 of 78; `response_svg` normalises by `max(gains)`, so a
+  negative gain past it lands off the canvas; `forecast_svg` takes its range over the finite
+  values and then maps every value, so one non-finite close emits `y=-inf`. Not done because
+  it is one defect in three places and belongs in a pass of its own; a strict xfail turns red
+  the day any of the three is fixed, so this entry cannot rot quietly.
+- **D8 — every broker failure renders as an empty book.** The outer `except Exception` in
+  `_broker_view` at `glassbox/dashboard/app.py:3940` returns `{}, {}, {}, None`, so absent
+  credentials, a network failure, a rate limit and an account genuinely holding nothing are
+  indistinguishable on the page. **This is the defect the bound state directory was added to
+  fix, in a second place:** an empty queue and no recommendations read alike unless the page
+  says which it is. D1 narrowed the inner read — `stops = None` now means *could not ask*
+  rather than *no stop* — and the outer handler was deliberately left alone as out of scope.
+  Not done because it needs the same `None` vs `{}` distinction `_recent_closes` already
+  draws for prices, applied to four return values and every caller of them.
+- **D9, D10 and D11 — numbered in the session's prompts and never enumerated to it.** They
+  were referred to only as the range "D7 to D11". This entry cannot state what they are, and
+  guessing would put three invented items into the one file whose purpose is to record real
+  decisions. **Recorded as a gap on purpose:** whoever holds those three numbers should write
+  them in here, and until they do, "D7 to D11" names five items of which this project has a
+  written record of two.
+
+**Cost if taken up separately:** D7 is bounded and mechanical — one scale rule applied in
+three builders, with the failing tests already written. D8 is the larger one, because the
+honest answer changes four return values and every reader of them, and because it cannot be
+verified without deliberately breaking the credential path. Neither blocks Gate 3. D9 to D11
+cannot be costed, which is the cost of not writing them down.
