@@ -334,15 +334,39 @@ defect destroys the ability to photograph it. That is GB-55's retake, narrowed.
   rather than *no stop* — and the outer handler was deliberately left alone as out of scope.
   Not done because it needs the same `None` vs `{}` distinction `_recent_closes` already
   draws for prices, applied to four return values and every caller of them.
-- **D9, D10 and D11 — numbered in the session's prompts and never enumerated to it.** They
-  were referred to only as the range "D7 to D11". This entry cannot state what they are, and
-  guessing would put three invented items into the one file whose purpose is to record real
-  decisions. **Recorded as a gap on purpose:** whoever holds those three numbers should write
-  them in here, and until they do, "D7 to D11" names five items of which this project has a
-  written record of two.
+- **D9 — the MSFT forecast card rendered empty, and the same grid can leave an unlabelled
+  cell.** Observed 3 Sep 2026. The diagnosis, which is a hypothesis and not a finding, is
+  that `18f6382` set `min-width:{width}px` on every chart wrapper
+  (`glassbox/dashboard/app.py:744`) while `forecast_svg` is 1200 units wide by default, so
+  two cards in the two-column grid at `app.py:3830` ask for 2400px of content inside a
+  container of roughly 1800px at a 1920 viewport. The SVG itself was valid, which is what
+  makes it a layout failure rather than a builder failure. **This one cannot be settled by a
+  session:** nothing in the suite renders a browser, so it needs eyes on a page, and frame 02
+  of the report captures is the occasion. Second half of the same item: that grid zips two
+  columns against a slice of symbols with `strict=False`, so an odd symbol count creates a
+  column nobody fills and the page shows an empty cell with no label. Latent rather than
+  visible as of 24 Sep 2026 because the universe is 20 and even — it appears the day
+  somebody makes it 19, which is a defect hidden by the shape of a default.
+- **D10 — `0 trades` printed beside a held position.** The pills at `app.py:3675` and
+  `app.py:3798` count `records.load_trades`, which returns completed round trips only.
+  Correct by definition and misleading in practice: with a position open and nothing closed,
+  the page says `0 trades` and a reader takes it as nothing happened. The fix is a label
+  — closed trades, or round trips — not a change of number. **Partly mitigated by
+  D2 and not closed by it:** the status strip now carries `BOOK n HELD` (`app.py:3442`), so
+  the page states the book somewhere, but both pills are unchanged.
+- **D11 — RECENT ACTIVITY mixes two universes with nothing marking the boundary.**
+  `_decisions()` at `app.py:3973` filters by provenance and a thirty-day window and by
+  nothing else, so decisions taken under the five-symbol universe sit in one table beside
+  decisions taken under twenty. Every record carries `config_hash`, which separates them
+  cleanly, but a hash cannot name a universe — so the minimum honest fix is to mark the
+  rows whose `config_hash` differs from the running configuration rather than to drop them.
+  `config_hash` is read once, for the status strip at `app.py:3448`, and is never compared
+  against a record.
 
 **Cost if taken up separately:** D7 is bounded and mechanical — one scale rule applied in
 three builders, with the failing tests already written. D8 is the larger one, because the
 honest answer changes four return values and every reader of them, and because it cannot be
-verified without deliberately breaking the credential path. Neither blocks Gate 3. D9 to D11
-cannot be costed, which is the cost of not writing them down.
+verified without deliberately breaking the credential path. D9 is a CSS rule and three lines
+once a browser has confirmed which of the two halves is real; D10 is a label; D11 is a
+comparison the page already holds both sides of. None of the five blocks Gate 3, and D9 is
+the only one that cannot be finished without somebody looking at a screen.
