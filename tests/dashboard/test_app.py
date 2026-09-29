@@ -2034,6 +2034,108 @@ def test_both_answers_are_wired_and_neither_reuses_a_widget_key() -> None:
     assert source.count('entry["decision_id"], False') == 1
 
 
+def _bindings(tree: ast.Module, module: str, name: str) -> set[str]:
+    """Every local name ``module.name`` is reachable by: the import, any ``as`` alias, and
+    any plain assignment of one of those names to another."""
+    names = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == module
+        for alias in node.names
+        if alias.name == name
+    }
+    grew = True
+    while grew:
+        grew = False
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in names
+            ):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id not in names:
+                        names.add(target.id)
+                        grew = True
+    return names
+
+
+def _calls_to(tree: ast.Module, names: set[str], attribute: str) -> list[ast.Call]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id in names)
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == attribute)
+        )
+    ]
+
+
+def test_the_approval_path_is_pinned_at_every_call_site() -> None:
+    """**GB-67, guard 7: the entry approval path, as it stood on 29 Sep 2026.**
+
+    It is the only approval path that exists - the Co-Pilot exit path never queues - and
+    the one the AMZN approval of 28 Sep 2026 took. Every call to `answer_pending` in the
+    module, by any binding, must pass ``cfg``, an ``AlpacaBroker()`` built at the call
+    site, ``root``, the entry subscripted by ``"decision_id"``, and a literal answer, and
+    the literals across the module must be exactly ``{True, False}``.
+
+    **Module-scoped, not scoped to ``_copilot_panel``,** so that moving the controls into a
+    helper leaves it unchanged, and routing them through a wrapper or a rename fails it
+    rather than removing the only call it could see.
+
+    **The reject side builds an ``AlpacaBroker`` it never uses** - ``decline`` touches no
+    broker, but the constructor still demands credentials. That is behaviour, pinned as
+    it is, so a change to it is noticed rather than tidied in passing.
+
+    It overlaps `test_both_answers_are_wired_and_neither_reuses_a_widget_key` on one
+    property, that both answers are wired, and asserts it structurally rather than by
+    counting text. **It does not count call sites**: that is a different property, and a
+    second copy of the count would be free to disagree with the first.
+    """
+    tree = ast.parse(Path(app.__file__).read_text(encoding="utf-8"))
+    brokers = _bindings(tree, "glassbox.engine.executor", "AlpacaBroker")
+    calls = _calls_to(
+        tree, _bindings(tree, "glassbox.live_loop", "answer_pending"), "answer_pending"
+    )
+
+    assert calls, "no call to answer_pending: the approval path was rerouted or renamed"
+
+    answers = set()
+    for call in calls:
+        where = f"line {call.lineno}: {ast.unparse(call)}"
+        assert (
+            not call.keywords and len(call.args) == 5
+        ), f"{where} - not five positionals"
+        cfg, broker, root, decision, answer = call.args
+        assert isinstance(cfg, ast.Name) and cfg.id == "cfg", f"{where} - not cfg"
+        assert (
+            isinstance(broker, ast.Call)
+            and not broker.args
+            and not broker.keywords
+            and (
+                (isinstance(broker.func, ast.Name) and broker.func.id in brokers)
+                or (
+                    isinstance(broker.func, ast.Attribute)
+                    and broker.func.attr == "AlpacaBroker"
+                )
+            )
+        ), f"{where} - the broker is not an AlpacaBroker() built at the call site"
+        assert isinstance(root, ast.Name) and root.id == "root", f"{where} - not root"
+        assert (
+            isinstance(decision, ast.Subscript)
+            and isinstance(decision.slice, ast.Constant)
+            and decision.slice.value == "decision_id"
+        ), f"{where} - not a subscript keyed by the constant 'decision_id'"
+        assert isinstance(answer, ast.Constant) and isinstance(
+            answer.value, bool
+        ), f"{where} - the answer is not a literal True or False"
+        answers.add(answer.value)
+
+    assert answers == {True, False}, f"answers wired: {answers}; both must be"
+
+
 def test_card_is_gone_and_nothing_calls_it() -> None:
     """**Deleted in region 7, when nothing called it.**
 
