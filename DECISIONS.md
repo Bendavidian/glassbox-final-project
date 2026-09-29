@@ -7,6 +7,45 @@ Format: date · decision · reasoning · consequence.
 
 ---
 
+## 2026-09-28 — playwright, for the capture script, and the ruling it reverses
+
+**Decision.** `playwright==1.61.0` joins the `dev` extra, pinned exactly, and
+`scripts/capture_screenshots.py` is committed. Required by CLAUDE.md §4: a new dependency
+needs a line here. The lock gains `playwright`, `greenlet==3.5.4` and `pyee==13.0.1`.
+
+**This reverses a ruling, and it says so.** On 23 Aug 2026 Decision 1 of *"The spectral
+panel's capture is deferred"* chose to capture the report screenshots **by hand**,
+specifically to avoid adding a browser stack the night before the first GATE 2 session.
+The six frames committed in `5109431` on 1 Sep 2026 were then taken with a browser stack
+anyway: a headless Playwright script, `shoot6.py`, written and run from a session
+scratchpad against `checkpoints/live` and `checkpoints/fits-demo`. It was never committed,
+the scratchpad was deleted, and no entry here recorded the change of method. This entry
+closes that gap. It does not claim scripted capture was always the plan.
+
+**Reasoning.** A figure the report depends on whose producing code a clone does not have is
+the defect GB-59 exists to catch, and the same class as the 16.00% gross exposure and the
+86% geometry figure. The script is reconstructed from the session transcript that wrote it,
+with four changes that make it safe to run: `--out` is required and no target is ever
+overwritten, so the three retained frames (01, 03, 06) cannot be replaced by accident;
+`--decision` names the record to expand instead of taking the first; the activity and
+positions frame refuses when the strip reads NOT RUNNING or NOT RESPONDING, or when either
+panel is empty, because an empty positions panel is indistinguishable from a broker read
+failure (GB-55 §55.11); and the young-session frame is its own shot, bounded by
+`EQUITY_THIN_READINGS` read from the dashboard rather than restated.
+
+**Why pinned exactly, not a lower bound like the rest.** Each Playwright release expects
+one browser build (`1.61.0` expects chromium revision 1228, 149.0.7827.55), so a lower bound
+would let an upgrade silently look for a browser that is not installed.
+
+**Consequence.** It is a dev dependency only, imported inside `capture()`, and never from
+`glassbox/`. CI installs the Python package from the lock and never a browser; the script's
+refusals are pure functions tested in `tests/test_capture_screenshots.py`, so they run in CI
+without one. Running a capture still needs `python -m playwright install chromium` once.
+The dependency counts in `ARCHITECTURE_DECK.md` and `ARCHITECTURE_INVENTORY.md` (5 dev,
+96 pinned) are now 6 and 99.
+
+---
+
 ## 2026-08-24 — The read timeout, and a dry run that could damage what it verifies
 
 **The bound.** No HTTP read had a timeout, and 90 minutes of the first GATE 2 session went
