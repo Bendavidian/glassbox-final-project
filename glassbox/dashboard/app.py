@@ -3997,9 +3997,6 @@ def _copilot_panel(
     a record of what the system wanted rather than of what happened, and "the operator
     said no" is the only place a human enters the loop.
     """
-    from glassbox.engine.executor import AlpacaBroker
-    from glassbox.live_loop import answer_pending
-
     queue = records.load_pending(root)
     if not queue:
         return
@@ -4024,21 +4021,38 @@ def _copilot_panel(
 
     for entry in queue:
         st.markdown(narrative_html(entry.get("narrative", "")), unsafe_allow_html=True)
-        approve_col, reject_col = st.columns(2)
-        with approve_col:
-            st.markdown('<div class="gb-approve">', unsafe_allow_html=True)
-            approved = st.button("APPROVE", key=f"a-{entry['decision_id']}")
-            st.markdown("</div>", unsafe_allow_html=True)
-        with reject_col:
-            st.markdown('<div class="gb-reject">', unsafe_allow_html=True)
-            rejected = st.button("REJECT", key=f"r-{entry['decision_id']}")
-            st.markdown("</div>", unsafe_allow_html=True)
-        if approved:
-            answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], True)
-            st.rerun()
-        if rejected:
-            answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], False)
-            st.rerun()
+        _approval_controls(root, cfg, entry, st, key_prefix="")
+
+
+def _approval_controls(
+    root: Path, cfg: Config, entry: dict, st, *, key_prefix: str
+) -> None:  # pragma: no cover - widgets
+    """Approve and Reject for one pending entry, wired to ``answer_pending``. **GB-67.**
+
+    **The only place in the module an approval is wired**, so every surface that offers
+    one answers through the same call rather than through a copy that has to be kept in
+    agreement with it. ``key_prefix`` namespaces the two widget keys so two surfaces can
+    render the pair in one run; it is required rather than defaulted, because a surface
+    that forgot it would collide with the panel's keys.
+    """
+    from glassbox.engine.executor import AlpacaBroker
+    from glassbox.live_loop import answer_pending
+
+    approve_col, reject_col = st.columns(2)
+    with approve_col:
+        st.markdown('<div class="gb-approve">', unsafe_allow_html=True)
+        approved = st.button("APPROVE", key=f"{key_prefix}a-{entry['decision_id']}")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with reject_col:
+        st.markdown('<div class="gb-reject">', unsafe_allow_html=True)
+        rejected = st.button("REJECT", key=f"{key_prefix}r-{entry['decision_id']}")
+        st.markdown("</div>", unsafe_allow_html=True)
+    if approved:
+        answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], True)
+        st.rerun()
+    if rejected:
+        answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], False)
+        st.rerun()
 
 
 if __name__ == "__main__":  # pragma: no cover

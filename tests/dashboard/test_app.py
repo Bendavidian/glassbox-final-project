@@ -2028,8 +2028,15 @@ def test_both_answers_are_wired_and_neither_reuses_a_widget_key() -> None:
     """
     source = Path(app.__file__).read_text(encoding="utf-8")
 
-    assert source.count("key=f\"a-{entry['decision_id']}\"") == 1
-    assert source.count("key=f\"r-{entry['decision_id']}\"") == 1
+    # Not redundant with guard 1b, and neither is to be deleted as a copy of the other.
+    # This counts raw source and 1b walks the AST; on 2026-09-29 break 1 of guard 7 showed
+    # the two can disagree, because a reroute through a local wrapper left these strings
+    # intact. Since the key_prefix refactor (GB-67, 2026-09-29) this asserts that each
+    # control and each answer is WRITTEN ONCE in the source - it no longer asserts that
+    # runtime keys are unique, because one `{key_prefix}` string can produce two keys or
+    # the same one twice. Runtime key uniqueness is guard 1b, assertion 4.
+    assert source.count("key=f\"{key_prefix}a-{entry['decision_id']}\"") == 1
+    assert source.count("key=f\"{key_prefix}r-{entry['decision_id']}\"") == 1
     assert source.count('entry["decision_id"], True') == 1
     assert source.count('entry["decision_id"], False') == 1
 
@@ -2134,6 +2141,155 @@ def test_the_approval_path_is_pinned_at_every_call_site() -> None:
         answers.add(answer.value)
 
     assert answers == {True, False}, f"answers wired: {answers}; both must be"
+
+
+def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
+    found = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+    assert len(found) == 1, f"{name} is defined {len(found)} times"
+    return found[0]
+
+
+def _keyed_by_a_decision(call: ast.Call) -> ast.JoinedStr | None:
+    """The ``key`` of a widget keyed the way Approve and Reject are - by a decision id -
+    or ``None``."""
+    for keyword in call.keywords:
+        if (
+            keyword.arg == "key"
+            and isinstance(keyword.value, ast.JoinedStr)
+            and any(
+                isinstance(part, ast.FormattedValue)
+                and isinstance(part.value, ast.Subscript)
+                and isinstance(part.value.slice, ast.Constant)
+                and part.value.slice.value == "decision_id"
+                for part in keyword.value.values
+            )
+        ):
+            return keyword.value
+    return None
+
+
+def _approval_controls_in(tree: ast.Module, answers: list[ast.Call]) -> list[ast.Call]:
+    """Every approval control in the module, by what it is rather than what it says: a
+    widget keyed by a decision id, or one whose answer gates a call to the approval path.
+    A caption is not consulted, so a button relabelled CONFIRM is still found."""
+    wired = {id(call) for call in answers}
+    found = {
+        id(node): node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _keyed_by_a_decision(node) is not None
+    }
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        assigned = {
+            target.id: node.value
+            for node in ast.walk(function)
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        for branch in ast.walk(function):
+            if not isinstance(branch, ast.If) or not any(
+                id(node) in wired for part in branch.body for node in ast.walk(part)
+            ):
+                continue
+            test = branch.test
+            control = assigned.get(test.id) if isinstance(test, ast.Name) else test
+            if isinstance(control, ast.Call):
+                found[id(control)] = control
+    return list(found.values())
+
+
+def test_every_approval_control_is_rendered_by_the_one_helper() -> None:
+    """**GB-67, guard 1b: one place wires an approval, and every surface goes through it.**
+
+    Guard 7 pins the *shape* of a call to `answer_pending`; this pins *where* the calls
+    are and *how many*. Exactly one approve and one reject in the module, both inside
+    `_approval_controls`; every approval control inside it too, found structurally - keyed
+    by a decision id, or wired to the approval path - because a guard that looked for the
+    word APPROVE would pass a button captioned CONFIRM; and `_copilot_panel` reaching its
+    controls by calling the helper.
+
+    **The key prefix is what lets a second surface exist.** It is required, every control
+    key starts with it, and no two call sites pass the same one, so two surfaces rendering
+    the pair in one run cannot collide on a widget key.
+    """
+    tree = ast.parse(Path(app.__file__).read_text(encoding="utf-8"))
+    helper = _function(tree, "_approval_controls")
+    inside = {id(node) for node in ast.walk(helper)}
+    answers = _calls_to(
+        tree, _bindings(tree, "glassbox.live_loop", "answer_pending"), "answer_pending"
+    )
+
+    controls = _approval_controls_in(tree, answers)
+    stray = [
+        f"line {c.lineno}: {ast.unparse(c)}" for c in controls if id(c) not in inside
+    ]
+    assert not stray, f"an approval control outside _approval_controls: {stray}"
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_approval_controls"
+        for node in ast.walk(_function(tree, "_copilot_panel"))
+    ), "_copilot_panel no longer reaches its controls through _approval_controls"
+
+    outside = [f"line {a.lineno}" for a in answers if id(a) not in inside]
+    assert not outside, f"answer_pending called outside _approval_controls: {outside}"
+    literals = [
+        call.args[-1].value
+        for call in answers
+        if call.args and isinstance(call.args[-1], ast.Constant)
+    ]
+    assert (
+        len(answers) == 2 and literals.count(True) == 1 and literals.count(False) == 1
+    ), f"{len(answers)} call(s) to answer_pending, answers {literals}: one of each"
+
+    parameters = helper.args
+    optional = dict(
+        zip([a.arg for a in parameters.kwonlyargs], parameters.kw_defaults, strict=True)
+    )
+    positional = [a.arg for a in parameters.posonlyargs + parameters.args]
+    defaulted = positional[len(positional) - len(parameters.defaults) :]
+    assert (
+        "key_prefix" in optional or "key_prefix" in positional
+    ), "_approval_controls takes no key_prefix"
+    assert (
+        optional.get("key_prefix") is None and "key_prefix" not in defaulted
+    ), "key_prefix has a default, so a surface that forgets it collides silently"
+    for control in controls:
+        key = _keyed_by_a_decision(control)
+        first = key.values[0] if key is not None else None
+        assert (
+            isinstance(first, ast.FormattedValue)
+            and isinstance(first.value, ast.Name)
+            and first.value.id == "key_prefix"
+        ), f"line {control.lineno}: a control key that does not start with key_prefix"
+
+    prefixes = []
+    for site in ast.walk(tree):
+        if not (
+            isinstance(site, ast.Call)
+            and isinstance(site.func, ast.Name)
+            and site.func.id == "_approval_controls"
+        ):
+            continue
+        given = [k.value for k in site.keywords if k.arg == "key_prefix"]
+        if not given and "key_prefix" in positional:
+            index = positional.index("key_prefix")
+            given = site.args[index : index + 1]
+        assert (
+            given
+            and isinstance(given[0], ast.Constant)
+            and isinstance(given[0].value, str)
+        ), f"line {site.lineno}: key_prefix is not a literal string"
+        prefixes.append(given[0].value)
+    assert len(prefixes) == len(
+        set(prefixes)
+    ), f"two surfaces share a key_prefix and would collide: {prefixes}"
 
 
 def test_card_is_gone_and_nothing_calls_it() -> None:
