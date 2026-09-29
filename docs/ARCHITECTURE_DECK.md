@@ -30,15 +30,15 @@ line in the repository.
 **On the slide:**
 
 > An explainable algorithmic paper-trading system.
-> 51 modules, 22,450 lines of package code, 26,050 lines of test.
+> 51 modules, 22,450 lines of package code, 26,281 lines of test.
 > Trades a real broker. Every decision decomposed exactly.
 
 | | |
 |---|---|
 | Language | Python 3.12 |
-| Runtime dependencies | 13 declared, 96 pinned in the lock |
+| Runtime dependencies | 13 declared, 99 pinned in the lock |
 | Dev and test dependencies | 5 |
-| Tests | 1,548 collected across 59 files |
+| Tests | 1,565 collected across 60 files |
 | Test to code ratio | 1.16 : 1 |
 
 **Notes.** Open with scale so the rest is read as a system rather than a script. The
@@ -122,8 +122,8 @@ comparison possible**, and the result of that is in the report.
 
 ## Slide 5 — Runtime dependencies
 
-**On the slide:** 13 declared in `pyproject.toml`. 96 distributions pinned in
-`requirements.lock` — the declared set plus 78 transitive. CI installs the lock, then the
+**On the slide:** 13 declared in `pyproject.toml`. 99 distributions pinned in
+`requirements.lock` — the declared set plus 80 transitive. CI installs the lock, then the
 package with `--no-deps`.
 
 | package | version | what this project uses it for |
@@ -163,7 +163,7 @@ rather than derived by hand from the wavelet definition.
 
 ## Slide 6 — Development and test dependencies
 
-**On the slide:** 5 declared.
+**On the slide:** 6 declared.
 
 | package | version | what it does here |
 |---|---|---|
@@ -172,6 +172,7 @@ rather than derived by hand from the wavelet definition.
 | import-linter | 2.13 | machine-enforces the layer rule. Two contracts |
 | ruff | 0.16.3 | lint, `target-version = py312`, `reference/` excluded |
 | black | 26.5.1 | format check, `reference/` excluded |
+| playwright | 1.61.0 | drives the console headless for the screenshot captures; pinned exactly at 1.61.0 |
 
 > Shared test infrastructure written here, not imported:
 > `tests/causality.py` (271 lines) · `tests/sweep.py` (239) · `tests/fake_broker.py` (212)
@@ -462,7 +463,7 @@ shows.
 | no secret in any tracked file | plus three tests that the scanner detects real keys and does not cry wolf |
 | the grid is deterministic | `test_the_same_grid_twice_gives_the_same_numbers` |
 
-> **1,548 tests collected. 59 files. 26,050 lines of test against 22,450 of package.**
+> **1,565 tests collected. 60 files. 26,281 lines of test against 22,450 of package.**
 
 **Notes.** The pattern worth naming: several of these test the guard rather than the code. A
 causality harness that cannot detect a leak is worse than none, so four tests deliberately
@@ -480,7 +481,7 @@ than discouraged.
 
 > **Everything external, in one place.**
 >
-> **13 runtime and 5 development dependencies**, each pinned, each with a dated entry
+> **13 runtime and 6 development dependencies**, each pinned, each with a dated entry
 > recording why it was added.
 >
 > **One reference project**, `reference/algotrading_project-main/`, read-only and excluded

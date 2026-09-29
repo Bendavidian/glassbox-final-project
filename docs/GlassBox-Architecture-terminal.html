@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GlassBox Trader — Architecture and External Components</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  /* Terminal on slate. Names kept from the previous sheet so inline var() uses still resolve. */
+  --paper:#0E1116;      /* stage ground */
+  --ink:#DCE3EA;        /* primary text */
+  --soft:#93A0AD;       /* secondary text */
+  --body:#B9C4CF;       /* table and paragraph body */
+  --line:#1C232B;       /* hairline between rows */
+  --rule:#2A323C;       /* dashed structure */
+  --grid:#151B23;       /* background grid */
+  --blue:#7FD4A0;       /* measured values */
+  --flag:#FF9E3D;       /* accent: headings, chrome */
+  --faint:#5E6B7A;      /* prompts, brackets, labels */
+  --panel:#141A22;      /* inset block ground */
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{
+  margin:0;background:#07090C;color:var(--ink);
+  font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  padding:clamp(14px,2.5vw,40px);
+}
+.deck{max-width:1240px;margin:0 auto;display:flex;flex-direction:column;gap:clamp(14px,2.2vw,32px)}
+
+/* ---- stage ---- */
+.stage{width:100%;aspect-ratio:16/9;container-type:size;background:var(--paper);
+  box-shadow:0 12px 34px rgba(0,0,0,.55);position:relative;overflow:hidden;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact}
+.stage::before{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(var(--grid) .5px,transparent .5px),
+                   linear-gradient(90deg,var(--grid) .5px,transparent .5px);
+  background-size:3cqw 3cqw;opacity:.5}
+.frame{position:absolute;inset:2cqw;border:1px solid var(--rule);pointer-events:none;z-index:1}
+.frame::before{content:"┌";position:absolute;top:-1cqw;left:-.5cqw;color:var(--flag);
+  font-size:1.9cqw;line-height:1}
+.frame::after{content:"┘";position:absolute;bottom:-1cqw;right:-.5cqw;color:var(--flag);
+  font-size:1.9cqw;line-height:1}
+.pg{position:absolute;bottom:2.9cqw;right:3.1cqw;font-size:1.05cqw;color:var(--faint);z-index:3;
+  letter-spacing:.06em}
+.pg::before{content:"["}
+.pg::after{content:"]"}
+.s{position:absolute;inset:2cqw;padding:2.6cqw 3cqw;display:flex;flex-direction:column;z-index:2}
+
+h2{font-size:2.28cqw;font-weight:700;letter-spacing:-.005em;margin:0 0 1.5cqh;line-height:1.12;
+  color:var(--flag)}
+h2::before{content:"// ";color:var(--faint);font-weight:400}
+h2 .sub{display:block;font-size:1.28cqw;font-weight:400;color:var(--soft);letter-spacing:0;
+  margin-top:1cqh;line-height:1.45;max-width:92%}
+h2 .sub::before{content:none}
+.lede{font-size:1.4cqw;color:var(--soft);line-height:1.5;margin:0 0 2.6cqh;max-width:80%}
+.lede strong{color:var(--ink);font-weight:700}
+.mono{font-family:inherit}
+.num{font-variant-numeric:tabular-nums;color:var(--blue)}
+
+/* ---- tables ---- */
+table{width:100%;border-collapse:collapse;font-size:1.14cqw;position:relative;background:var(--paper)}
+th{text-align:left;font-size:.98cqw;font-weight:700;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--faint);padding:0 1.4cqw .85cqh 0;border-bottom:1px dashed var(--rule)}
+td{padding:.8cqh 1.4cqw .8cqh 0;border-bottom:1px dotted var(--line);vertical-align:top;
+  color:var(--body);line-height:1.42}
+td:last-child,th:last-child{padding-right:0}
+td b,td strong{color:var(--ink);font-weight:700}
+td.k{font-weight:700;color:var(--ink);white-space:nowrap;font-size:1.14cqw}
+td.k::before{content:"› ";color:var(--faint);font-weight:400}
+td.v{color:var(--blue);white-space:nowrap;font-variant-numeric:tabular-nums;font-size:1.14cqw}
+table.dense{font-size:1.02cqw}
+table.dense td{padding:.62cqh 1.2cqw .62cqh 0}
+table.dense th{font-size:.92cqw;padding-bottom:.6cqh}
+table.dense td.k,table.dense td.v{font-size:1.02cqw}
+
+/* ---- blocks ---- */
+.note{margin-top:auto;padding-top:1.8cqh;border-top:1px dashed var(--rule);
+  font-size:1.1cqw;color:var(--soft);line-height:1.55;max-width:92%;background:var(--paper)}
+.note::before{content:"# ";color:var(--faint)}
+.note strong{color:var(--ink);font-weight:700}
+.flag{color:var(--flag);font-weight:700}
+.panel{background:var(--panel);border:1px dashed var(--rule);border-left:2px solid var(--flag);
+  padding:1.4cqh 1.5cqw;font-size:1.18cqw;line-height:1.55;color:var(--body);margin:0 0 2.2cqh}
+.panel strong{color:var(--flag);font-weight:700}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:2.6cqw}
+.cols.wide{grid-template-columns:1.15fr 1fr}
+.sec{font-size:.98cqw;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--flag);
+  margin:0 0 1cqh;padding-bottom:.55cqh;border-bottom:1px dashed var(--rule)}
+.sec::before{content:"[ ";color:var(--faint);font-weight:400}
+.sec::after{content:" ]";color:var(--faint);font-weight:400}
+ol.steps{margin:0;padding-left:1.6cqw;font-size:1.12cqw;line-height:1.55;color:var(--body)}
+ol.steps li{margin-bottom:.8cqh}
+ol.steps b{color:var(--ink);font-weight:700}
+ol.steps::marker,ol.steps li::marker{color:var(--faint)}
+ul.plain{margin:0;padding-left:1.5cqw;font-size:1.12cqw;line-height:1.6;color:var(--body);
+  list-style:none}
+ul.plain li{margin-bottom:.7cqh;position:relative}
+ul.plain li::before{content:"·";position:absolute;left:-1.5cqw;color:var(--flag)}
+ul.plain b{color:var(--ink);font-weight:700}
+pre{font-family:inherit;font-size:1.06cqw;line-height:1.7;margin:0;
+  color:var(--blue);background:var(--panel);padding:1.2cqh 1.4cqw;white-space:pre;overflow:hidden;
+  border-left:2px solid var(--rule)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:1cqh 2.2cqw;font-size:1.22cqw;
+  align-items:baseline}
+.kv dt{color:var(--faint);text-transform:uppercase;letter-spacing:.09em;font-size:1cqw}
+.kv dt::after{content:" :"}
+.kv dd{margin:0;color:var(--ink);font-weight:700;font-variant-numeric:tabular-nums}
+
+/* ---- slide 1 ---- */
+.hero h1{font-size:3.4cqw;font-weight:700;letter-spacing:-.015em;line-height:1;margin:0 0 1.5cqh;
+  color:var(--flag)}
+.hero h1::before{content:"$ ";color:var(--faint);font-weight:400}
+.hero .tag{font-size:1.32cqw;color:var(--soft);line-height:1.5;max-width:72%;margin:0 0 2.8cqh}
+.hero .authors{margin-top:auto;padding-top:1.9cqh;border-top:1px dashed var(--rule);
+  display:flex;gap:4cqw;font-size:1.06cqw;color:var(--soft);background:var(--paper)}
+.hero .authors b{color:var(--flag);font-weight:700;display:block;letter-spacing:.04em}
+
+/* ---- flow ---- */
+.flow{font-family:inherit;font-size:1.06cqw;line-height:1.8;color:var(--blue);
+  background:var(--panel);border:1px dashed var(--rule);padding:1.4cqh 1.6cqw;margin:0 0 2.2cqh;
+  white-space:pre}
+
+/* ---- print ---- */
+@media print{
+  body{background:#fff;padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .deck{gap:0;max-width:none}
+  .stage{box-shadow:none;page-break-after:always;break-after:page;width:100%;aspect-ratio:16/9}
+  .toolbar{display:none}
+  @page{size:landscape;margin:0}
+}
+/* ---- toolbar ---- */
+.toolbar{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:50;
+  display:flex;gap:8px;background:rgba(20,26,34,.96);border:1px solid #2A323C;padding:8px 10px;
+  border-radius:3px}
+.toolbar button{font:inherit;font-size:12px;letter-spacing:.06em;text-transform:uppercase;
+  background:none;border:1px solid #3A4552;color:#DCE3EA;padding:6px 12px;cursor:pointer;
+  border-radius:2px}
+.toolbar button:hover,.toolbar button:focus-visible{background:#20283242;border-color:#FF9E3D;
+  color:#FF9E3D;outline:2px solid #FF9E3D;outline-offset:1px}
+body.present{padding:0;background:#000;display:flex;align-items:center;justify-content:center;
+  min-height:100vh}
+body.present .deck{gap:0;max-width:none;width:100vw}
+body.present .stage{display:none;box-shadow:none}
+body.present .stage.on{display:block;width:min(100vw,177.78vh);margin:0 auto}
+@media (max-width:640px){ .lede{max-width:100%} }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+<!-- 1 -->
+<div class="stage"><div class="frame"></div><div class="s hero">
+  <h1>GlassBox Trader</h1>
+  <p class="tag">An explainable algorithmic paper-trading system, and a study run on it.
+     This deck is the architecture and every external component it uses.</p>
+  <div class="panel" style="margin:0 0 2.6cqh">The study's result is a
+    <strong>measured null</strong>: three published forecasting architectures extract nothing
+    from daily closing prices that they do not also extract from white noise. The finding rests
+    on a control that <strong>degrades exactly where its mechanism predicts it must</strong>,
+    which is what distinguishes a null result from a disconnected pipeline.</div>
+  <dl class="kv">
+    <dt>Stack</dt><dd>Python 3.12 · NumPy · PyTorch · pandas · PyWavelets · SciPy · Streamlit · Alpaca</dd>
+    <dt>Package code</dt><dd>51 modules · 22,450 lines</dd>
+    <dt>Tests</dt><dd>1,565 collected · 60 files · 1.17 : 1</dd>
+    <dt>Dependencies</dt><dd>13 runtime declared · 99 pinned · 6 development</dd>
+  </dl>
+  <div class="authors">
+    <span><b>Ben Davidian</b></span>
+    <span><b>Noy Shani</b></span>
+    <span><b>Repository</b>github.com/Bendavidian/glassbox-final-project</span>
+  </div>
+</div><div class="pg">01 / 14</div></div>
+
+<!-- 2 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>Seven layers<span class="sub">Each has one responsibility, one direction of dependency, and one failure it exists to prevent.</span></h2>
+  <table class="dense">
+    <tr><th>layer</th><th>responsibility</th><th>lines</th></tr>
+    <tr><td class="k">L0 config, contracts</td><td>the only reader of settings; the frozen schemas</td><td class="v">1,433</td></tr>
+    <tr><td class="k">L1 data</td><td>two sources, one shape</td><td class="v">748</td></tr>
+    <tr><td class="k">L2 features</td><td>the only place a model input window is assembled</td><td class="v">873</td></tr>
+    <tr><td class="k">L3 models</td><td>four forecasters, one protocol</td><td class="v">2,270</td></tr>
+    <tr><td class="k">L4/L5 engine</td><td>sizing, risk, orders, reconciliation</td><td class="v">1,730</td></tr>
+    <tr><td class="k">L6 explain</td><td>exact attribution and narration</td><td class="v">1,002</td></tr>
+    <tr><td class="k">L7 console</td><td>operator surface; computes nothing</td><td class="v">4,308</td></tr>
+    <tr><td class="k">harness</td><td>the grid, the report, the statistics</td><td class="v">3,215</td></tr>
+    <tr><td class="k">top level</td><td>live loop, replay, records, lock</td><td class="v">4,292</td></tr>
+  </table>
+  <div class="note">The harness sits <strong>above</strong> the live path rather than inside it:
+    the constraint that matters is that the live path never imports it. The console is large
+    because every chart is hand-built SVG rather than a chart library, which is what makes
+    chart geometry testable without a browser.</div>
+</div><div class="pg">02 / 14</div></div>
+
+<!-- 3 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>Layer boundaries, enforced<span class="sub">Two import-linter contracts, root package <span class="mono">glassbox</span>.</span></h2>
+  <div class="cols">
+    <div>
+      <p class="sec">Contract 1 — data flows strictly upward</p>
+      <pre>experiments → backtest → dashboard
+   → explain → engine → model
+   → features → data
+   → contracts → config</pre>
+    </div>
+    <div>
+      <p class="sec">Contract 2 — the live path never imports the harness</p>
+      <pre>source     live_loop, replay, records
+forbidden  backtest, experiments</pre>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:2.4cqh">Enforcement is doubled: the tool runs in CI, and
+    <strong>tests/contracts/test_layers.py</strong> runs it in-process and asserts both contracts
+    are still configured. Deleting a contract from the config turns the suite red rather than
+    silently reducing coverage.</div>
+  <div class="note">The second contract exists because of <strong>records.py</strong>
+    specifically. It holds the live trade log, so it is the module most tempted to import
+    <strong>backtest.engine.Trade</strong> — that type moved to contracts/schemas.py instead.</div>
+</div><div class="pg">03 / 14</div></div>
+
+<!-- 4 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>Frozen interfaces<span class="sub">A model is not integrated until it passes the contract test unchanged.</span></h2>
+  <div class="cols wide">
+    <div>
+      <p class="sec">Forecaster protocol — five members</p>
+      <pre>name  input_len  horizon  fitted
+fit(batch, val=None)
+predict(X)      → (B, H)
+explain(x, channels)
+save(path) / load(path)</pre>
+      <p style="font-size:1.12cqw;color:var(--soft);line-height:1.5;margin:1.4cqh 0 0">
+        Implemented by four forecasters.
+        <strong style="color:var(--ink)">FITS was added with no edit to the contract test.</strong></p>
+    </div>
+    <div>
+      <p class="sec">Eight frozen schemas</p>
+      <p style="font-size:1.10cqw;line-height:1.7;color:var(--body);margin:0" class="mono">
+        WindowBatch · ChannelStats · FitProvenance · Trade · Forecast · Attribution · Signal ·
+        DecisionRecord</p>
+      <p class="sec" style="margin-top:2.2cqh">Broker protocol — seven calls</p>
+      <p style="font-size:1.12cqw;color:var(--soft);line-height:1.5;margin:0">
+        Four implementations: Alpaca, replay, dry-run, and the test double.</p>
+    </div>
+  </div>
+  <div class="note">The cost of freezing was paid once. GB-66's acceptance criterion could not be
+    satisfied because WITS has no per-bin frequency response.
+    <strong>The protocol did not bend to make the comparison possible</strong>, and the result
+    of that refusal is reported as a finding.</div>
+</div><div class="pg">04 / 14</div></div>
+
+<!-- 5 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>Runtime dependencies<span class="sub">13 declared in pyproject.toml. 99 distributions pinned in requirements.lock — the declared set plus 80 transitive.</span></h2>
+  <table class="dense">
+    <tr><th>package</th><th>version</th><th>what this project uses it for</th></tr>
+    <tr><td class="k">pandas</td><td class="v">3.0.5</td><td>every bar frame, feature frame and results table</td></tr>
+    <tr><td class="k">numpy</td><td class="v">2.5.2</td><td>all inference; weights held as arrays after fitting, so inference carries no torch state</td></tr>
+    <tr><td class="k">torch</td><td class="v">2.13.0</td><td>training only, imported inside fit and never at module scope</td></tr>
+    <tr><td class="k">yfinance</td><td class="v">1.6.0</td><td>the historical price source, adjusted, cached to parquet</td></tr>
+    <tr><td class="k">alpaca-py</td><td class="v">0.44.0</td><td>live daily bars, and paper order submission</td></tr>
+    <tr><td class="k">PyWavelets</td><td class="v">1.9.0</td><td>causal DWT channels; WITS matrices measured from pywt; the level ceiling asked rather than reimplemented</td></tr>
+    <tr><td class="k">scipy</td><td class="v">1.18.0</td><td>two call sites: paired Wilcoxon, and the Spearman pairing error with flatness</td></tr>
+    <tr><td class="k">streamlit</td><td class="v">1.61.1</td><td>hosts the console; imported inside main()</td></tr>
+    <tr><td class="k">pandas-market-calendars</td><td class="v">5.4.0</td><td>fold boundaries, gap reports, the live session window</td></tr>
+    <tr><td class="k">pyyaml</td><td class="v">6.0.3</td><td>parses settings.yaml, in exactly one module</td></tr>
+    <tr><td class="k">python-dotenv</td><td class="v">1.2.2</td><td>loads credentials, in the config layer only</td></tr>
+    <tr><td class="k">pyarrow</td><td class="v">24.0.0</td><td>parquet engine for the committed data snapshot</td></tr>
+    <tr><td class="k">matplotlib</td><td class="v">3.11.1</td><td>three report figures, imported inside the render functions</td></tr>
+  </table>
+  <div class="note">Every one of the 13 carries a dated entry in DECISIONS.md recording why it was
+    added, and <strong>a test asserts the declared set is a subset of the lock</strong> — written
+    after matplotlib was added to pyproject.toml alone: green locally, red in CI.</div>
+</div><div class="pg">05 / 14</div></div>
+
+<!-- 6 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>Development and test dependencies<span class="sub">Six declared. The harnesses below are written here, not imported.</span></h2>
+  <table>
+    <tr><th>package</th><th>version</th><th>what it does here</th></tr>
+    <tr><td class="k">pytest</td><td class="v">9.1.1</td><td>the suite; pythonpath set so bare pytest works</td></tr>
+    <tr><td class="k">hypothesis</td><td class="v">6.165.5</td><td>property tests in exactly three files: the risk layer's exposure bound, room_detail, and attribution exactness</td></tr>
+    <tr><td class="k">import-linter</td><td class="v">2.13</td><td>machine-enforces the layer rule; two contracts</td></tr>
+    <tr><td class="k">ruff</td><td class="v">0.16.3</td><td>lint, reference/ excluded</td></tr>
+    <tr><td class="k">black</td><td class="v">26.5.1</td><td>format check, reference/ excluded</td></tr>
+    <tr><td class="k">playwright</td><td class="v">1.61.0</td><td>drives the console headless for the screenshot captures; pinned exactly at 1.61.0</td></tr>
+  </table>
+  <div class="panel" style="margin-top:2.4cqh"><strong>tests/sweep.py</strong> has two properties
+    that are <strong>refusals rather than features</strong>: a result cannot be read as a boolean,
+    and a single-cell sweep is refused. It exists because a parity floor recorded as verified had
+    been tested at one symbol and one timestamp — and held in <span class="num">32 of 125</span>
+    cases when swept.</div>
+  <div class="note"><strong>tests/fake_broker.py</strong> is the test double. Making it faithful to
+    Alpaca's actual refusals turned 26 tests red across three files — a measurement of what had
+    never been tested, not a regression. The rule it produced:
+    <strong>a test double may refuse more than the real thing, never less.</strong></div>
+</div><div class="pg">06 / 14</div></div>
+
+<!-- 7 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>The reference project: what was taken<span class="sub">reference/algotrading_project-main — 2.7 MB, an existing LTSF-Linear trading project, brought in for study. Read-only, never imported, not in the package.</span></h2>
+  <table>
+    <tr><th>source</th><th>target</th><th>what was taken</th></tr>
+    <tr><td class="k">models/DLinear.py</td><td class="v">GB-13</td><td>the series_decomp / moving_avg blocks and the two linear heads</td></tr>
+    <tr><td class="k">evaluation.py</td><td class="v">GB-19</td><td>six return and risk formulas, judged correct</td></tr>
+    <tr><td class="k">backtesting.py</td><td class="v">GB-18</td><td>event-loop structure and the Position / ActionType / PositionType enums — structure only</td></tr>
+    <tr><td class="k">utils/tools.py</td><td class="v">GB-15</td><td>EarlyStopping, adjust_learning_rate</td></tr>
+    <tr><td class="k">data_loader.py</td><td class="v">GB-9</td><td>reference only, not ported</td></tr>
+  </table>
+  <div class="panel" style="margin-top:2.2cqh">Three mechanisms keep it outside the build, none of
+    them a convention: <strong>excluded from packaging</strong>; <strong>excluded from ruff, black
+    and pytest</strong>; and the import-linter contract is rooted at glassbox, so reference/ is
+    outside the contract <strong>by construction rather than by an exclusion list</strong>.</div>
+  <div class="note"><strong>REFERENCE_AUDIT.md was written before the code was.</strong> It is not
+    a retrospective inventory of what happened to get used; it is a decision, taken first, about
+    what may be taken and what may not.</div>
+</div><div class="pg">07 / 14</div></div>
+
+<!-- 8 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>The reference project: what was refused<span class="sub">The audit records refusals as well as permissions, with the reason measured rather than asserted.</span></h2>
+  <p class="sec">utils/metrics.py — unusable. backtest/metrics.py was written from scratch.</p>
+  <table style="margin-bottom:2.2cqh">
+    <tr><td class="k">SHARP()</td><td>returns a hardcoded <span class="num">12</span></td></tr>
+    <tr><td class="k">SHARP2, SHARP5</td><td>each defined twice, the second shadowing the first</td></tr>
+    <tr><td class="k">one variant</td><td>contains <span class="mono">pred = true + 0.01</span> — the prediction is overwritten with ground truth</td></tr>
+  </table>
+  <div class="cols">
+    <div>
+      <p class="sec">strategies.py</p>
+      <p style="font-size:1.12cqw;color:var(--body);line-height:1.5;margin:0">All four stop and target
+        comparisons inverted. The audit lists each correct form; backtest/engine.py cites it, and
+        the four cases each carry an explicit test.</p>
+    </div>
+    <div>
+      <p class="sec">Explicitly not a bug</p>
+      <p style="font-size:1.12cqw;color:var(--body);line-height:1.5;margin:0">moving_avg pads both ends,
+        making the trend a centred average. That is correct inside the input window, all of which
+        precedes the forecast. Centring remains forbidden in the feature layer.</p>
+    </div>
+  </div>
+  <div class="note">Anyone can list what they used. <strong>A reasoned refusal to use broken code —
+    with the defect named, the correct form derived independently, and a test pinning each case —
+    is evidence that the reference was read rather than copied.</strong>
+    <span class="mono">pred = true + 0.01</span> would have produced a backtest that looked
+    extraordinary and meant nothing.</div>
+</div><div class="pg">08 / 14</div></div>
+
+<!-- 9 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>The three models<span class="sub">Three different lineages, stated separately rather than in one word.</span></h2>
+  <table style="margin-bottom:2cqh">
+    <tr><th>model</th><th>parameters</th><th>lineage</th></tr>
+    <tr><td class="k">DLinear</td><td class="v">4,800</td><td>LTSF-Linear (Zeng et al., AAAI 2023). <b>Two lineages:</b> the decomposition is adapted from the reference implementation; the two linear heads are reimplemented and depart from the paper as well</td></tr>
+    <tr><td class="k">FITS</td><td class="v">1,200</td><td>FITS (Xu, Zeng &amp; Xu, ICLR 2024). <b>Original implementation from the paper's description.</b> No reference source exists in this repository</td></tr>
+    <tr><td class="k">WITS</td><td class="v">882</td><td><b>Original. No paper, no reference.</b> Built to test whether FITS's data-independence is a property of extending a global basis or of FITS specifically</td></tr>
+    <tr><td class="k">persistence</td><td class="v">0</td><td>the zero-return baseline</td></tr>
+  </table>
+  <div class="cols wide">
+    <div>
+      <p class="sec">The decomposition — adapted</p>
+      <p style="font-size:1.10cqw;color:var(--body);line-height:1.5;margin:0">A centred moving average
+        with edge replication, kernel 25: same algorithm, same constant, rewritten from torch to
+        numpy. <b>Edge replication is an implementation choice rather than a mathematical one</b>
+        — the paper does not say which padding to use — so this is code-first provenance and is
+        recorded as such. One identifier survives the rewrite.</p>
+    </div>
+    <div>
+      <p class="sec">The two heads — reimplemented</p>
+      <ol class="steps" style="font-size:1.07cqw">
+        <li><b>Per-channel weights</b>, not shared</li>
+        <li><b>No intercept</b> — a bias would break exact attribution</li>
+        <li><b>Zero initialisation</b> — the default bound is wrong for C×2 summed maps</li>
+        <li><b>One summed output series</b>; torch fits, numpy predicts</li>
+      </ol>
+    </div>
+  </div>
+  <div class="note">The decomposition block predates the reference project: the same
+    moving_avg / series_decomp pair appears in LTSF-Linear's released source and, to our
+    knowledge, in Autoformer before it. <strong>The audit records our proximate source, which is
+    the reference project.</strong> <strong>WITS's prediction was pre-registered</strong>,
+    written into the expansion plan before a line of the model existed.</div>
+</div><div class="pg">09 / 14</div></div>
+
+<!-- 10 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>External services<span class="sub">Four. Each with its constraint encoded in code rather than in documentation.</span></h2>
+  <table class="dense">
+    <tr><th>service</th><th>provides</th><th>constraint, as enforced</th></tr>
+    <tr><td class="k">yfinance</td><td>historical daily bars, adjusted</td><td>per-symbol, never bulk. The cache is authoritative: a stale file is returned unchanged unless forced, so the study runs against a fixed snapshot</td></tr>
+    <tr><td class="k">Alpaca Data</td><td>live daily bars, identical schema</td><td>feed hardcoded to SIP <b>with no fallback</b> — IEX measured wrong by up to 193 bps against a 1 bp tolerance. <b>No cache:</b> a cached bar in a trading decision is a stale price</td></tr>
+    <tr><td class="k">Alpaca Trading</td><td>orders, positions, account</td><td><b>paper only.</b> A guard refuses any non-paper base URL <b>before any call is made</b>. Both clients share a 45 s read timeout</td></tr>
+    <tr><td class="k">GitHub REST</td><td>CI run status</td><td>development tooling only, not inside the package</td></tr>
+  </table>
+  <div class="note">Credentials live in a gitignored .env with a committed template, and a test scans
+    every tracked file for credential-shaped strings — <strong>written after a real paper key
+    reached a local commit</strong>. The 45 s timeout exists because of a 90-minute stall: no HTTP
+    read had one, since the SDK takes no timeout parameter, and the retry policy bounds the number
+    of attempts and not their duration.</div>
+</div><div class="pg">10 / 14</div></div>
+
+<!-- 11 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>AI-assisted development<span class="sub">This project was built with Claude Code. It is disclosed here in full, and recorded in four independent places in the repository.</span></h2>
+  <table style="margin-bottom:2.2cqh">
+    <tr><th>record</th><th>what it holds</th></tr>
+    <tr><td class="k">commit trailers</td><td><b>130 of 132 commits</b> carry Co-Authored-By: Claude. The two without are the document-only commits that bootstrap the project</td></tr>
+    <tr><td class="k">CLAUDE.md</td><td>~250 lines, checked in. The operating contract: six rules, a definition of done, and <b>nine numbered instances of one failure class, each dated with what it cost</b></td></tr>
+    <tr><td class="k">prompts/</td><td>four sprint files, 1,572 lines. The actual session prompts, one task per session</td></tr>
+    <tr><td class="k">START_HERE.md</td><td>states the division: what is submitted, and what the assistant reads on every session</td></tr>
+  </table>
+  <div class="panel">And the method itself is in the record. <strong>DECISIONS.md — 5,425 lines,
+    121 entries — repeatedly records where the assistant was wrong and was corrected</strong>, by
+    the supervisor or by measurement: the parity floor derivation, corrected by the author; the
+    scaler hypothesis, supplied by the author, confirmed for DLinear and <strong>refuted for
+    FITS</strong>.</div>
+  <div class="note"><strong>glassbox/explain/ imports no perturbation-attribution library, and a
+    test asserts it.</strong> Attribution here is algebra, not a model's opinion.</div>
+</div><div class="pg">11 / 14</div></div>
+
+<!-- 12 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>Artefacts and data flow<span class="sub">Everything the system writes, and what reads it.</span></h2>
+  <div class="flow">data_cache/*.parquet ──► features ──► models ──► engine ──► executor ──► Alpaca
+   (20 symbols, committed)                          │
+                                                    └──► decisions · trades · book
+
+experiments/study ──► results.csv ──► report · statistics · exposure ──► the report
+                  └─► daily_equity.csv ──┐
+                                          └──► the console (reads, computes nothing)</div>
+  <div class="cols">
+    <div>
+      <p class="sec">Written by the harness</p>
+      <ul class="plain" style="font-size:1.07cqw">
+        <li><b>results.csv</b> — 1,110 rows, read by the report, the statistics and the console</li>
+        <li><b>gross_exposure.csv</b> — 963 sizing calls</li>
+        <li><b>null_control.csv</b>, <b>momentum_probe.csv</b> — acceptance measurements</li>
+      </ul>
+    </div>
+    <div>
+      <p class="sec">Written by the live path</p>
+      <ul class="plain" style="font-size:1.07cqw">
+        <li><b>decisions/*.jsonl</b>, <b>trades.jsonl</b>, <b>book.json</b></li>
+        <li><b>checkpoint</b>, <b>thresholds.json</b>, <b>reliability.json</b></li>
+        <li><b>live.lock</b>, <b>heartbeat.json</b> — the console's liveness</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note">The data cache is committed deliberately and a test asserts it stays tracked: a
+    clone with no data can run nothing, and <strong>a result that cannot be reproduced from a clone
+    is a claim rather than a measurement</strong>. Note the direction at the end — the console
+    reads files and computes nothing.</div>
+</div><div class="pg">12 / 14</div></div>
+
+<!-- 13 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>What is enforced rather than intended<span class="sub">The project's own rules, each as a test that fails when the rule is broken.</span></h2>
+  <table class="dense">
+    <tr><th>rule</th><th>enforced by</th></tr>
+    <tr><td>layers, and the live-path boundary</td><td class="k">test_no_layer_violations + two contract-configured tests</td></tr>
+    <tr><td>the package tree matches the spec, both directions</td><td class="k">test_tree_has_no_extra_modules</td></tr>
+    <tr><td>only the config layer reads settings or the environment</td><td class="k">AST-based, plus a test that the guard catches a real read</td></tr>
+    <tr><td>no numeric threshold in the signal module's source</td><td class="k">test_the_module_source_contains_no_numeric_threshold</td></tr>
+    <tr><td>every feature is causal</td><td class="k">four causality tests + four that the harness detects a leak</td></tr>
+    <tr><td>no timestamp appears in two splits of one fold</td><td class="k">three leak-boundary tests</td></tr>
+    <tr><td>the explain layer imports no perturbation library</td><td class="k">test_the_explain_layer_imports_no_perturbation_library</td></tr>
+    <tr><td>every registered forecaster is exact</td><td class="k">iterates ALL_FORECASTERS, so a new model cannot skip it</td></tr>
+    <tr><td>declared dependencies are in the lock</td><td class="k">test_every_declared_dependency_is_pinned_in_the_lock</td></tr>
+    <tr><td>MAE never appears without flatness beside it</td><td class="k">test_mae_never_appears_in_a_summary_without_flatness</td></tr>
+    <tr><td>no secret in any tracked file</td><td class="k">plus three tests that the scanner does not cry wolf</td></tr>
+    <tr><td>the grid is deterministic</td><td class="k">test_the_same_grid_twice_gives_the_same_numbers</td></tr>
+  </table>
+  <div class="note"><strong>Several of these test the guard rather than the code.</strong> A
+    causality harness that cannot detect a leak is worse than none, so four tests deliberately
+    introduce leaks and assert the harness fails.
+    <span class="num">1,565</span> tests collected across 60 files.</div>
+</div><div class="pg">13 / 14</div></div>
+
+<!-- 14 -->
+<div class="stage"><div class="frame"></div><div class="s">
+  <h2>Disclosure statement<span class="sub">Everything external, in one place.</span></h2>
+  <ul class="plain" style="font-size:1.16cqw">
+    <li><b>13 runtime and 6 development dependencies</b>, each pinned, each with a dated entry
+      recording why it was added.</li>
+    <li><b>One reference project</b>, read-only and excluded from the build by three independent
+      mechanisms. What was taken and what was refused is recorded in REFERENCE_AUDIT.md,
+      <b>written before the code</b>.</li>
+    <li><b>Two published architectures.</b> DLinear's decomposition adapted from the reference and
+      its heads reimplemented with four documented departures; FITS written from the paper's
+      description with no source implementation available. <b>WITS is original.</b></li>
+    <li><b>Four external services.</b> Alpaca paper only, enforced before any call. No service is
+      called from inside the package without its constraint encoded beside it.</li>
+    <li><b>Built with Claude Code</b>, recorded in 130 of 132 commit trailers, an operating
+      contract in the repository root, and 1,572 lines of session prompts.</li>
+  </ul>
+  <div class="panel" style="margin-top:2.4cqh"><strong>Nothing else external is used.</strong> No
+    file in glassbox/ carries a "copied from" or "adapted from" header. Persistence, the feature
+    builder, the causality harness, the sweep harness, the executor, the reconciler, the live loop,
+    the console and the explain layer are original.</div>
+  <div class="note">Full detail with file and line citations:
+    <span class="mono">docs/ARCHITECTURE_INVENTORY.md</span>. The claim above is stated about the
+    repository rather than about intent, so it can be checked against the tree.</div>
+</div><div class="pg">14 / 14</div></div>
+
+</div>
+
+<div class="toolbar">
+  <button id="present">Present</button>
+  <button onclick="window.print()">Print to PDF</button>
+</div>
+
+<script>
+(function(){
+  var deck=document.getElementById('deck');
+  var slides=Array.prototype.slice.call(deck.querySelectorAll('.stage'));
+  var i=0, on=false;
+  function show(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach(function(s,k){s.classList.toggle('on',k===i)});
+  }
+  function enter(){on=true;document.body.classList.add('present');show(i);}
+  function exit(){on=false;document.body.classList.remove('present');
+    slides.forEach(function(s){s.classList.remove('on')});
+    slides[i].scrollIntoView({block:'center'});}
+  document.getElementById('present').addEventListener('click',function(){on?exit():enter();});
+  document.addEventListener('keydown',function(e){
+    if(!on){if(e.key==='f'||e.key==='F'){enter();}return;}
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){e.preventDefault();show(i+1);}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();show(i-1);}
+    else if(e.key==='Escape'){exit();}
+  });
+})();
+</script>
+</body>
+</html>

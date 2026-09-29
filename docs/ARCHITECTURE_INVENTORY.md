@@ -20,8 +20,8 @@
 
 ## A.1 Runtime dependencies
 
-13 declared in `pyproject.toml:17-31`. `requirements.lock` pins **96** distributions — the
-18 declared plus **78 transitive**. CI installs the lock, then the package with `--no-deps`
+13 declared in `pyproject.toml:17-31`. `requirements.lock` pins **99** distributions — the
+19 declared plus **80 transitive**. CI installs the lock, then the package with `--no-deps`
 (`.github/workflows/ci.yml`).
 
 | Package | Pinned | What **this** project uses it for | Cite |
@@ -493,7 +493,7 @@ cache without a traceback.
 | `live.lock` | `live_lock.py:198` | `live_lock.py:127`, `dashboard/app.py` liveness |
 | `quality_report.json` | `data/quality.py:123` | humans |
 | `logs/live-YYYY-MM-DD.log` | `live_loop` logging, one per calendar day, appended across restarts | humans |
-| `report/screenshots/*.png` + `CAPTIONS.md` | captured by hand | the architecture report |
+| `report/screenshots/*.png` + `CAPTIONS.md` | a headless Playwright script, `scripts/capture_screenshots.py` — the 1 Sep 2026 frames by an uncommitted original, reconstructed and committed 28 Sep 2026; `CAPTIONS.md` by hand | the architecture report |
 
 Live state directories on disk: `checkpoints/live`, `live-next`, `replay`, `fits-demo`,
 `rehearsal`, `screenshots`, plus two dated backups.
