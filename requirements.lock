@@ -18,6 +18,7 @@ exchange_calendars==4.13.2
 filelock==3.32.3
 fonttools==4.63.0
 fsspec==2026.7.0
+greenlet==3.5.4
 grimp==3.15
 h11==0.16.0
 httptools==0.8.0
@@ -50,6 +51,7 @@ pathspec==1.1.1
 peewee==4.3.0
 pillow==12.3.0
 platformdirs==4.11.3
+playwright==1.61.0
 pluggy==1.6.0
 protobuf==7.35.1
 pyarrow==24.0.0
@@ -57,6 +59,7 @@ pycparser==3.0
 pydantic==2.13.4
 pydantic_core==2.46.4
 pydeck==0.9.3
+pyee==13.0.1
 Pygments==2.20.0
 pyluach==2.3.0
 pyparsing==3.3.2
