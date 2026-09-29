@@ -150,9 +150,11 @@ assembled. Training calls it; the live loop calls it; the replay calls it. No se
 implementation exists, and the rule is a standing ruling rather than a convention.
 
 That removes the failure by construction rather than by testing for it. But "there is only
-one implementation" is itself a claim, so it has a mechanism too: the import linter forbids
-any other module from constructing a window, and the parity sweep below tests the outcome
-rather than the structure.
+one implementation" is itself a claim, and its mechanism is not structural: neither
+import-linter contract constrains where a window is built, so nothing prevents a second
+builder from being written. What would catch one is the parity sweep below, which tests the
+outcome rather than the structure — a second path that assembled a different window would
+fail its byte-identical assertion.
 
 ### The parity sweep
 

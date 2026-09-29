@@ -191,8 +191,11 @@ causal and a feature that is asserted causal by something that fails when it is 
 ### One function, three callers
 
 `features/builder.py` is called by the training path, the live loop and the replay. No second
-implementation exists, the import linter forbids one, and the parity sweep asserts
-byte-identical output across 500 comparisons at the 445-bar floor on every suite run.
+implementation exists. That is a standing ruling, not an import contract — neither
+import-linter contract constrains where a window is built — and what holds it is the outcome
+rather than the structure: the parity sweep asserts byte-identical output across 500
+comparisons at the 445-bar floor on every suite run, so a second builder that disagreed with
+the first would fail it.
 
 GB-56 §56.4 treats why byte-identical rather than close, and records that the sweep's own count
 is derived from `SWEEP_TIMESTAMPS * len(cfg.universe)` rather than written as a literal — a
