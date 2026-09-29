@@ -1,373 +1,486 @@
 # GlassBox Trader
 
-GlassBox Trader is an autonomous algorithmic trading system that trades five US equities
-on an **Alpaca paper-trading account** — real market data, virtual money, never a live
-account. Unlike a conventional trading bot it explains every decision it makes, in real
-time, with attribution that is exact algebra rather than a post-hoc approximation: the
-per-channel contributions sum to the forecast, and that identity is asserted in the test
-suite. It is a final-year B.Sc. project at Bar-Ilan University, and its deliverable is the
-system and its methodology, not a profit — a result showing that nothing beats a
-persistence baseline is a valid and expected outcome.
+An explainable algorithmic trading system for US equities. It trades an Alpaca **paper**
+account, and every decision it makes decomposes exactly into the inputs that produced it.
 
-- **Specification** — [`docs/GLASSBOX_PROJECT_SPEC.md`](docs/GLASSBOX_PROJECT_SPEC.md) is the single source of truth
-- **Architecture** — [`ARCHITECTURE.md`](ARCHITECTURE.md)
-- **Progress and decisions** — [`PROGRESS.md`](PROGRESS.md), [`DECISIONS.md`](DECISIONS.md)
+[![CI](https://github.com/Bendavidian/glassbox-final-project/actions/workflows/ci.yml/badge.svg)](https://github.com/Bendavidian/glassbox-final-project/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.12%2B-2F5D8A)
+![Tests](https://img.shields.io/badge/tests-1%2C565%20collected-2F5D8A)
+
+Final-year B.Sc. project in Computer Science, Bar-Ilan University, 2026.
 
 ---
 
-## Prerequisites
+## The result
 
-| Requirement | Notes |
-|---|---|
-| **Python 3.12 or newer** | Not 3.11. The pinned `numpy` and `scipy` both require 3.12+, so the dependency set has never been installable on 3.11. Check with `python --version`. |
-| **git** | Also used by the test suite, which scans tracked files for credential-shaped strings. |
-| **An Alpaca paper-trading account** | Free, at [app.alpaca.markets](https://app.alpaca.markets). Only needed for the live path; the offline path and the full test suite run without one. |
+> **These models extract nothing from this market that they do not also extract from white
+> noise.**
 
-No GPU is required. Every model in the system is linear by design.
+The study tested three linear forecasters: DLinear and FITS, both from the published
+literature, and WITS, a wavelet variant built for this study. It ran them over twenty US
+large caps, sixteen walk-forward folds and a four-day horizon on daily closes. Two null
+controls rebuilt the market's return series, one from Gaussian noise of matched variance
+and one by shuffling. **When the real series was replaced with Gaussian noise, no model's
+directional accuracy fell. Only buy-and-hold's did**, and buy-and-hold is the only arm
+whose mechanism says it must. Its entire content is upward drift, and the noise control
+removes drift.
+
+| arm | direction, real | direction, white noise | noise − real |
+|---|---|---|---|
+| buy-and-hold (the control) | 0.5528 | 0.5011 | **−0.0517** (p_holm 0.0134) |
+| DLinear | 0.4981 | 0.5156 | +0.0175 |
+| FITS | 0.4948 | 0.5015 | +0.0067 |
+| WITS | 0.4976 | 0.5001 | +0.0025 |
+
+*Anchor 0, averaged over sixteen folds. Source: [`docs/GB57_RESULTS.md`](docs/GB57_RESULTS.md)
+§57.2–57.3, from `results.csv`. The Holm correction on the control row is over these four
+arms only.*
+
+This is a finding, not a failure. A null result and a disconnected pipeline produce the same
+table. The buy-and-hold row is what tells them apart: the instrument detects an effect where
+one is known to exist, and detects none in the models.
+
+**The system does not beat buy-and-hold, and that is the same finding.** Over the 938
+trading days in `report/daily_equity.csv`, buy-and-hold compounds to +125.19% and DLinear to
++45.51%. The market's structure is real: an always-long rule beats a coin flip by about five
+points. It is not reachable by explicit or implicit frequency decomposition at this horizon.
+That claim is narrower than market efficiency, and it is the one this study supports.
+
+Of 117 paired Wilcoxon tests, Holm-corrected in one pass, 29 survive at α = 0.05, and **every
+one has the model worse than its reference.**
 
 ---
 
-## Install
+![One decision expanded: the narration, then each input channel's signed share of the forecast](report/screenshots/04-attribution.png)
 
-### 1. Clone and create a virtual environment
+*1 September 2026, five-symbol universe.*
+
+---
+
+## What it does
+
+- Keeps a fixed universe of twenty US large caps, selected by a rule written before the
+  names were chosen ([spec §2.4](docs/GLASSBOX_PROJECT_SPEC.md)).
+- Builds five causal feature channels from daily bars (close log-return, RSI-14, volatility
+  z-score, 10-bar momentum, distance from a 20-bar mean), plus three optional causal wavelet
+  bands.
+- Forecasts the next four days' log-return path with one of four linear models behind a
+  frozen `Forecaster` protocol: persistence, DLinear, FITS and WITS.
+- Turns the forecast into `enter_long`, `hold` or `exit` against a threshold calibrated per
+  fold on validation data only, then ranks, sizes and applies risk limits.
+- Places orders on Alpaca's paper API in Co-Pilot mode: exits and protection run on their
+  own, and every new entry waits for a human to approve it.
+- Explains every decision exactly, per input channel (and per frequency bin under FITS), in
+  English or Hebrew.
+- Runs the same code offline as a walk-forward study, as a replay of a recorded fold, and
+  live once per completed daily bar.
+- Shows all of it on a Streamlit console that reads files and computes nothing itself.
+
+---
+
+## Architecture
+
+Data flows strictly upward: no layer imports from a layer above it. Two
+[import-linter](https://github.com/seddonym/import-linter) contracts in `pyproject.toml`
+enforce this. CI runs them, and so does `tests/contracts/test_layers.py`. The validation
+harness sits *above* the live path, so nothing on the live path can import it.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'monospace', 'lineColor': '#8A94A0'}}}%%
+flowchart BT
+    L0["L0 · config + contracts<br/>settings.yaml · frozen schemas · Forecaster"]
+    L1["L1 · data<br/>yfinance cache · Alpaca bars · one shape"]
+    L2["L2 · features<br/>indicators · wavelets · builder.py"]
+    L3["L3 · model<br/>persistence · DLinear · FITS · WITS"]
+    L45["L4–L5 · engine<br/>signal · rank · risk · executor · reconcile"]
+    L6["L6 · explain<br/>channel · spectral · narrate"]
+    L7["L7 · dashboard<br/>the console"]
+    LIVE["live path<br/>live_loop · replay · records"]
+    X["X · harness<br/>backtest · experiments"]
+
+    L1 --> L0
+    L2 --> L1
+    L3 --> L2
+    L45 --> L3
+    L6 --> L45
+    L7 --> L6
+    LIVE --> L6
+    X --> L45
+    LIVE -.-x|never imports| X
+
+    classDef base fill:#E6E9ED,stroke:#5B6470,color:#161A1F
+    classDef path fill:#2F5D8A,stroke:#1D3C5A,color:#FFFFFF
+    classDef harness fill:#E8542A,stroke:#9C3316,color:#FFFFFF
+    class L0 base
+    class L1,L2,L3,L45,L6,L7,LIVE path
+    class X harness
+```
+
+Arrows point from a layer to what it may import. The live-path layers are blue and the
+offline harness is orange. The dashed edge is the second import contract: `live_loop`,
+`replay` and `records` may never import `backtest` or `experiments`.
+
+| layer | package | owns | must not | lines |
+|---|---|---|---|---|
+| L0 | `config/`, `contracts/` | `settings.yaml`, typed config, frozen schemas | contain logic | 1,433 |
+| L1 | `data/` | fetching, caching, quality checks, UTC normalisation | compute features | 748 |
+| L2 | `features/` | indicators, wavelets, **window assembly** | know which model consumes it | 873 |
+| L3 | `model/` | fit, predict, expose weights | know about orders, money or brokers | 2,270 |
+| L4–L5 | `engine/` | signal, rank, size, risk; orders and reconciliation | decision code talks to no broker; execution code makes no decision | 1,730 |
+| L6 | `explain/` | exact attributions and prose | alter a decision | 1,002 |
+| L7 | `dashboard/` | render state | compute anything | 4,308 |
+| X | `backtest/`, `experiments/` | walk-forward, backtest, metrics, the study grid | touch the live broker | 3,215 |
+| — | `live_loop.py`, `replay.py`, `records.py`, `live_lock.py`, `smoke_offline.py` | entry points and the live record | — | 4,292 |
+
+*Responsibilities from [spec §3.2](docs/GLASSBOX_PROJECT_SPEC.md). Line counts from
+[`docs/ARCHITECTURE_INVENTORY.md`](docs/ARCHITECTURE_INVENTORY.md) §B.7 (22,450 lines in
+total). The full design is in [`docs/GB55_ARCHITECTURE.md`](docs/GB55_ARCHITECTURE.md).*
+
+`features/builder.py` is the only place a model input window is assembled. Training, the
+live loop and the replay all call it. That rests on a standing ruling rather than an import
+contract, and the parity sweep below is what would catch a second builder.
+
+---
+
+## Key features
+
+### Unusual ones
+
+| feature | where | what makes it non-obvious |
+|---|---|---|
+| **Exact attribution** | `explain/channel.py`, `contracts/schemas.py` | The per-channel contributions sum to the forecast within `EXACTNESS_TOLERANCE = 1e-5`; the worst case measured was 5.005e-08 over 1,000 windows (`DECISIONS.md`). It is the model's own arithmetic rearranged, not an estimate. DLinear drops the intercept and uses per-channel weights so this holds. A test forbids SHAP, LIME and captum in `explain/`. |
+| **Causality harness** | `tests/causality.py` | Perturbs every bar after a split point, by scaling and by shuffling, at three split points. Asserts nothing before the split moves. Applied to every feature channel, with tests that the harness itself rejects deliberate leaks. Its blind spots (calendar rules, cross-sectional features) are documented in GB56 §56.3. |
+| **Parity sweep** | `tests/features/test_train_live_parity.py`, `tests/sweep.py` | Training and live windows must be **byte-identical**, not close: 25 timestamps × 20 symbols = 500 comparisons at a derived 445-bar history floor. At an earlier 352-bar floor only 32 of 125 pairs matched. `SweepResult` refuses to be used as a boolean, and a one-cell sweep is refused. |
+| **Bit-identical determinism** | `tests/experiments/test_study.py` | Re-running the grid gives the same bytes on the same machine. Seeds, thread counts and BLAS threads are pinned, and inference is pure numpy. Cross-architecture reproducibility is untested and not claimed. |
+| **Guards that test rules, not functions** | `tests/test_scaffold.py`, `tests/config/test_config.py`, `tests/backtest/test_metrics.py`, `tests/test_phase2_ledger.py` | The spec's module tree must match the package in both directions. The universe written in the spec must match `settings.yaml`. Every declared dependency must be pinned in the lockfile. MAE may never appear without flatness beside it. Only the config layer may read the environment. |
+
+### The live system
+
+| feature | where | what makes it non-obvious |
+|---|---|---|
+| **Co-Pilot gate** | `engine/executor.py` | Exits, reconciliation and protection are autonomous; a new entry becomes a pending approval, not an order. A fully autonomous mode exists in config and is not deployed. |
+| **The broker is the truth** | `engine/reconcile.py`, `live_loop.py` | Each cycle reconciles against Alpaca. A position with no decision behind it is quarantined. If it turns out to be the loop's own late fill, it is adopted under the decision that produced it. Both paths first ran unattended on 23 September 2026 (GB55 §55.9). |
+| **Protection before entry** | `live_loop.py` | Ten steps per cycle. Stops are verified and re-armed at step 4, before any entry at step 8. A second consecutive arming failure closes the position at market. |
+| **Once per completed bar** | `live_loop.py` | The bar in progress is dropped. Each symbol is decided once per completed bar, and later cycles skip it. |
+| **One loop per state directory** | `live_lock.py` | A second launch is refused with exit code 3. |
+| **Paper only** | `config/loader.py` | `require_paper_endpoint` refuses any non-paper URL before a connection opens. |
+
+### The console
+
+| feature | where | what makes it non-obvious |
+|---|---|---|
+| **Three colour roles** | `dashboard/tokens.py` | Orange is chrome and never a value, blue encodes data, and green/red mean gain/loss only. A test enumerates every chart builder, and every status colour must also carry a sign and a glyph. |
+| **Source pills** | `dashboard/app.py` | Every panel names its source (`LIVE`, `BACKTEST`, `REPLAY`), the artefact and its fold range. |
+| **References, not absolutes** | `dashboard/app.py` | Reliability leads the page as a delta against the always-long bar. |
+
+---
+
+## Results
+
+Every result is a delta against its own reference: MAE against persistence, direction against
+always-long, Sharpe and total return against buy-and-hold. There is no composite score.
+
+**Direction does not depend on where the folds are cut.** On real data, at three fold-grid
+anchors:
+
+| arm | anchor 0 | anchor 21 | anchor 42 |
+|---|---|---|---|
+| DLinear | 0.4981 | 0.5021 | 0.5044 |
+| FITS | 0.4948 | 0.4909 | 0.4934 |
+| WITS | 0.4976 | 0.4958 | 0.4976 |
+| always-long | 0.5530 | 0.5479 | 0.5565 |
+
+![Direction accuracy by arm across sixteen folds, against the always-long bar](report/direction_by_arm.png)
+
+*`report/direction_by_arm.png`, generated by `glassbox/experiments/report.py` from
+`results.csv` (twenty-symbol grid).*
+
+**MAE measures flatness.** Across the six arms, MAE and flatness rank identically (Spearman
++1.000; `report/report.md`). Persistence forecasts zero and has the lowest error, so every
+surviving MAE result, 22 of the 29, says only that a model forecasts larger moves than zero.
+
+| arm | mean MAE | mean flatness |
+|---|---|---|
+| persistence C0 | 0.0128 | 0.000 |
+| persistence C2 | 0.0128 | 0.000 |
+| WITS | 0.0130 | 0.157 |
+| FITS | 0.0131 | 0.188 |
+| DLinear C0 | 0.0134 | 0.249 |
+| DLinear C2 | 0.0136 | 0.295 |
+
+![FITS direction accuracy on real data and on white noise across four cutoff settings](report/cof_sweep.png)
+
+*`report/cof_sweep.png`, same source. FITS scores at or above its real-data accuracy on white
+noise at every cutoff tested.*
+
+Four further results, each in the chapter:
+
+- **Most of FITS is grid geometry.** Its learned gain response correlates with the same
+  architecture trained on white noise at r² = 0.957 (twenty symbols). WITS, which swaps the
+  Fourier transform for a wavelet transform in the same position, is less grid-determined:
+  paired p = 0.0042, lower in 13 of 16 folds. See §57.5.
+- **The textbook exit cannot be built at this venue.** Alpaca refuses bracket and OCO orders
+  on fractional quantities, and a working sell order holds the whole position. That leaves
+  one protective stop, and it must be a DAY order. The backtest models both constructions on
+  its `target_in_loop` axis. The buildable one trades 5–7% less and is not measurably worse.
+  See §57.6.
+- **The risk cap binds.** At twenty symbols the 50% gross-exposure cap binds in 13 of 16
+  folds, in 534 of 963 sizing calls. See §57.7 and `report/gross_exposure.csv`.
+- **Five symbols were underpowered.** The move from five symbols to twenty took Holm
+  survivors from 17 to 29. Effect sizes were the same or smaller in 23 of 29 cells; the
+  paired-difference spread fell. See §57.8.
+
+Limitations, stated rather than defended: survivorship is built into the universe rule, the
+null controls exist at one fold-grid anchor only, and the sixteen folds end at a snapshot
+of 2026-08-13 and appear to contain no severe market dislocation (§57.9).
+
+**Full chapter: [`docs/GB57_RESULTS.md`](docs/GB57_RESULTS.md).** The methodology behind it:
+[`docs/GB56_METHODOLOGY.md`](docs/GB56_METHODOLOGY.md).
+
+---
+
+## Quickstart
+
+Python **3.12 or newer**. No GPU is needed. Credentials are needed only for the live loop.
+
+### 1. Install
 
 ```powershell
 git clone https://github.com/Bendavidian/glassbox-final-project.git
 cd glassbox-final-project
 python -m venv .venv
-```
-
-### 2. Activate it — do not skip this
-
-**Every command in this README assumes an activated virtual environment.** Running
-`python` without activating it uses the system interpreter, which has none of this
-project's dependencies, and you get `ModuleNotFoundError` — for `pytest`, `pandas`,
-`yfinance`, whichever the command needed first. That error means "you forgot to activate",
-not "the install is broken".
-
-Note that `import glassbox` on its own may still succeed from the repository root even
-without activation, because Python puts the working directory on the path and finds the
-`glassbox/` folder directly. That is a coincidence of where you are standing, not a
-working install — the first dependency the code reaches for will fail.
-
-```powershell
-# Windows — PowerShell
-.\.venv\Scripts\Activate.ps1
-
-# Windows — Git Bash
-source .venv/Scripts/activate
-
-# macOS / Linux
-source .venv/bin/activate
-```
-
-Your prompt should now start with `(.venv)`. Confirm the right interpreter is in front:
-
-```powershell
-python -c "import sys; print(sys.executable)"
-```
-
-The path it prints must be inside `.venv`. If it is not, activation did not take.
-
-> If PowerShell refuses the activation script with an execution-policy error, run
-> `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` in that terminal and try
-> again. It applies to that terminal only.
-
-### 3. Install from the lockfile
-
-```powershell
+.\.venv\Scripts\Activate.ps1          # Git Bash: source .venv/Scripts/activate · macOS/Linux: source .venv/bin/activate
 .\scripts\setup.ps1
 ```
 
-**One command, because a procedure a reader must execute correctly is a note and a script
-is a mechanism.** It runs the three commands below in order, stops at the first failure,
-and then **verifies** rather than assumes: that `import glassbox` resolves, that the
-package is installed **editable** and resolving to this repository, and that every
-heavyweight dependency imports. It also refuses Python below 3.12 with a message naming
-the cause, which pip does not.
+`setup.ps1` installs `requirements.lock`, installs the package editable with `--no-deps`, and
+then checks that `import glassbox` resolves to this checkout. On another shell, run:
 
-It exists because on 23 Aug 2026 the third command was skipped while running this
-project's own reproducibility audit — a non-editable install still imports correctly from
-the repository root, because Python puts the working directory on the path, and breaks
-only when something runs from elsewhere. That is the silent half the verification closes.
-
-<details>
-<summary>What the script runs, for a reader on a different shell</summary>
-
-```powershell
-python -m pip install --upgrade pip
+```bash
 python -m pip install -r requirements.lock
 python -m pip install -e ".[dev]" --no-deps
 ```
 
-Then check `python -c "import glassbox, pathlib; print(pathlib.Path(glassbox.__file__).resolve().parent.parent)"`
-prints this repository's path and not a `site-packages` directory.
+Install from the lockfile, not `pyproject.toml`. The lockfile pins the versions every
+reported number was produced with, and CI installs the same set.
 
-</details>
+### 2. The offline path: no network, no credentials
 
-**Install from `requirements.lock`, not from `pyproject.toml`.** The lockfile pins the
-exact versions every reported result was produced with. `pyproject.toml` carries lower
-bounds, which are correct for development and will not reproduce a number in the report.
-CI installs the lockfile too, so a green CI run is evidence about the same dependency set
-you have.
-
-The `--no-deps` on the last line is deliberate: it installs this package without letting
-pip re-resolve and quietly upgrade anything the lockfile just pinned.
-
-### 4. Verify
+The twenty-symbol data snapshot is committed in `data_cache/`, so this runs from a clean
+clone.
 
 ```powershell
-pytest
+python -m glassbox.smoke_offline                          # data → features → train → calibrate → backtest, beside persistence
+python -m glassbox.smoke_offline --folds 16 --model fits  # more folds, another arm
 ```
 
-Everything should pass. This needs no credentials and no network.
-
----
-
-## Credentials
-
-Only needed for the live Alpaca path. Skip this section if you are running the offline
-path or the tests.
-
-1. Create a **paper** account at [app.alpaca.markets](https://app.alpaca.markets) and
-   generate an API key under the Paper Trading tab.
-2. Copy the template and fill in your own values:
-
-   ```powershell
-   copy .env.example .env      # PowerShell
-   cp .env.example .env        # Git Bash / macOS / Linux
-   ```
-
-3. Edit `.env` and replace the two placeholder values.
-
-**Rules, enforced rather than advised:**
-
-- `.env` is git-ignored. `.env.example` is committed and must contain **placeholders
-  only** — `tests/test_no_secrets.py` fails the suite if any tracked file contains a
-  credential-shaped string. That test exists because a real key once reached a local
-  commit; see `DECISIONS.md`.
-- This project never trades real money. `require_paper_endpoint()` refuses any endpoint
-  other than `https://paper-api.alpaca.markets`, and refuses before opening a connection.
-- Nothing in the codebase prints a key, not even partially masked.
-
-Check the connection:
+The full study, then the report generated from its output:
 
 ```powershell
-python scripts/smoke_alpaca.py
+python -m glassbox.experiments.study --plan-only    # cell count and time estimate, runs nothing
+python -m glassbox.experiments.study                # writes results.csv and report/daily_equity.csv
+python -m glassbox.experiments.report               # writes report/report.md and the two figures
 ```
 
-It prints the account status, equity and buying power. It exits non-zero without printing
-anything if the resolved endpoint is not the paper endpoint.
+The grid is single-threaded by design, for bit-identical output. Its last full run took
+100 minutes 56 seconds (GB57 §57.8).
 
----
-
-## Running
-
-### The offline path
+### 3. Replay a fold and open the console, still offline
 
 ```powershell
-python -m glassbox.smoke_offline
+python -m glassbox.smoke_offline --prepare-replay 13 checkpoints/replay
+python -m glassbox.replay --state-dir checkpoints/replay
+streamlit run glassbox/dashboard/app.py -- --state-dir checkpoints/replay --source replay:fold-13
 ```
 
-Data → features → model → backtest → metrics, in one command, with the persistence
-baseline on the same folds. This is GATE 1's acceptance criterion.
+The replay drives the live loop's own cycle over one fold's test range, with no broker and
+no feed. The console's arguments go after `--`, because only the config layer may read the
+environment.
 
-> **Not yet implemented.** `smoke_offline` is `GB-24`, in Sprint 2. The module exists as a
-> docstring-only stub so this command's shape is fixed and the scaffold test can hold it —
-> today it prints nothing and exits 0. That is the stub, not a successful run. Until GB-24
-> lands, the data and feature snippets below are the runnable parts.
-
-### The live loop
+### 4. The live loop: Alpaca paper only
 
 ```powershell
+copy .env.example .env                    # then fill in a PAPER key from app.alpaca.markets
+python scripts/smoke_alpaca.py            # prints account status; exits non-zero on a non-paper endpoint
+python -m glassbox.smoke_offline --prepare-live checkpoints/live
 python -m glassbox.live_loop --sessions 3
+streamlit run glassbox/dashboard/app.py -- --state-dir checkpoints/live --source live
 ```
 
-Runs in Co-Pilot mode by default (`live.mode` in `glassbox/config/settings.yaml`), where
-every order is proposed and waits for your approval. `--sessions N` keeps one process
-across N exchange sessions, idling between them, which is what bounds the overnight
-protection residual — see §8 of the spec.
-
-#### The GATE 2 launch sequence — run these, do not reconstruct them
-
-**Both commands live here because a launch command that must be remembered is not a
-mechanism** (CLAUDE.md §3, instance 4). On 24 Aug 2026 the loop was started without
-`--sessions`, whose default is **1**; it ran one session, stopped at the close, and looked
-exactly like a completed run. Nothing failed. The multi-day run simply did not happen, and
-the overnight re-arming policy — one of the five protection rules the gate depends on —
-went another day without ever executing outside `FakeBroker`.
+`checkpoints/` is not tracked, so `--prepare-live` must run once before the loop. Pass
+`--sessions N` to keep one process across N exchange sessions. The default is one, which
+stops at the first close. A dry run must use its own copy of the state directory:
 
 ```powershell
-# 16:30 — criterion 2, the execution path, under a DELIBERATELY PERMISSIVE band.
-# Order, fill, adopt, arm the STOP, verify it, flatten, clean stop.
-# Provenance is never 'live'; nothing this run records is reportable.
-python -m glassbox.live_loop --rehearsal gate2-execution-path
-
-# ~17:30 — criterion 6, under the DEPLOYED band. Tuesday into Wednesday into Thursday.
-# This is the run that finally exercises the overnight path. The flag is the whole point:
-# without it this is one session and the re-arming rule is never tested.
-python -m glassbox.live_loop --sessions 3
-```
-
-The second command is the only way criterion 6 reaches three sessions. Do not replace it
-with three separate one-session runs: a session the loop **misses** because nobody was
-there to start it is exactly the half of the overnight residual that one process across
-all three removes.
-
-**These two commands cannot both be running.** Since 26 Aug 2026 the loop takes an
-exclusive lock on its state directory, so the second launch is refused by name:
-
-```
-live_loop: PID 40040 (mode 'deployed') since 2026-08-25T21:49:07Z already holds
-checkpoints\live. Two loops on one state directory is two orders from one approval.
-Stop it first, or run against a different --state-dir.
-```
-
-Exit code **3**, distinct from `2`, so a script can tell "somebody is already running it"
-from "the config is wrong". Stop the running loop, or give the new one its own
-`--state-dir`. A lock whose process is gone is reclaimed automatically and the reclaim is
-logged — a hard kill never needs a file deleted by hand.
-
-This exists because on 25 Aug a stale terminal relaunched a rehearsal against the deployed
-session's state directory. It happened to be harmless: the bar it would have decided had
-already been decided, so the "one decision per completed bar" rule refused it. That was an
-accident, and it expires the moment a new bar completes.
-
-#### A dry run must never share the deployed state directory
-
-```powershell
-# Copy the state first. The loop REFUSES a dry run against checkpoints/live.
 Copy-Item -Recurse checkpoints/live $env:TEMP/dryrun_state
 python -m glassbox.live_loop --dry-run --state-dir $env:TEMP/dryrun_state --max-cycles 12
 ```
 
-**Two reasons, and the first one nearly bit on 24 Aug 2026.** A dry run alongside a live
-loop is two processes writing one book and one decision log, so a check meant to protect
-the session would corrupt it. And `--dry-run` refuses broker *writes* but **does not change
-provenance**: a decision it records is written as `live`, so it would be indistinguishable
-from a real one in the study's inputs.
+<details>
+<summary>Troubleshooting</summary>
 
-`run_session` refuses the deployed directory rather than relying on this paragraph — the
-instruction is here for the reader, the refusal is what makes it true.
+| symptom | cause |
+|---|---|
+| `ModuleNotFoundError` for `pytest`, `pandas` or `yfinance` | The virtual environment is not active. `python -c "import sys; print(sys.executable)"` must print a path inside `.venv`. |
+| `import glassbox` works but something else fails | Python finds `glassbox/` from the repository root even without the install. Run `setup.ps1`, which verifies the editable install. |
+| PowerShell refuses `Activate.ps1` | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, for that terminal only. |
+| `pytest` collects nothing and exits 5 | You are not in the repository root; `pyproject.toml` holds the test configuration. |
+| Clone reports success but files are missing, or `python -m venv` fails at `ensurepip` | Windows `MAX_PATH`. The longest tracked path is 66 characters, so keep the clone root under 193. `git config core.longpaths true` fixes git only; Python needs `LongPathsEnabled` or a shallower root. Simplest: clone near the drive root. |
+| `unauthorized` from `smoke_alpaca.py` | `.env` still holds placeholders, or the key is from a live account rather than a paper one. |
+| `smoke_alpaca.py` exits 2 without output | `ALPACA_BASE_URL` is not the paper endpoint. This is a refusal, not a bug. |
+| `live_loop` exits 3 | Another loop holds that state directory. Stop it, or use a different `--state-dir`. |
+| A test fails naming a credential-shaped string | A secret has reached a tracked file. Rotate the key first, then remove it. |
 
-### The dashboard
+</details>
+
+---
+
+## Project structure
+
+```
+glassbox/                 the package: seven layers plus the harness (see Architecture)
+  config/settings.yaml    every runtime value in the system
+  live_loop.py            the live decision loop, ten steps per cycle
+  replay.py               a recorded fold, driven through the live loop's cycle, offline
+  smoke_offline.py        the one-command offline path and the prepare commands
+tests/                    mirrors the package; causality.py, sweep.py and fake_broker.py are shared harnesses
+docs/                     the specification, the report chapters, the deck, Hebrew study guides
+report/                   generated study output: report.md, figures, CSVs, console screenshots
+figures/                  the GB-46 frequency-response figure
+scripts/                  setup, Alpaca connectivity, probes and one-off measurements
+data_cache/               the committed twenty-symbol parquet snapshot
+results.csv               the study grid's output, one row per condition, arm and fold
+reference/                a third-party project kept for study; read-only, never imported
+prompts/                  the Claude Code session prompts, one file per sprint
+requirements.lock         the exact dependency set CI installs
+.github/workflows/ci.yml  lint, format check and the full test suite, on Windows
+```
+
+At the root: `CLAUDE.md` (the working rules), `PROGRESS.md` (what was built, by task),
+`DECISIONS.md` (why), `IDEAS_PARKED.md` (what was deliberately not built),
+`SOLO_BUILD_PLAN.md` (build order), `GLASSBOX_PHASE2_EXPANSION.md` (post-GATE 2 scope).
+`checkpoints/` and `logs/` are written by runs and are not tracked.
+
+---
+
+## Testing
 
 ```powershell
-streamlit run glassbox/dashboard/app.py
+pytest                  # the suite, bare: no path, no -k, no marker
+ruff check .
+black --check .
+lint-imports            # the two layer contracts
 ```
 
-> **Not yet implemented** — `GB-34`, Sprint 3.
+**1,565 tests collected**: 1,548 at the last full run (commit `b866cc4`, 23 September 2026),
+plus GB-67's guard 7 in `tests/dashboard/test_app.py`, plus the 16 cases in
+`tests/test_capture_screenshots.py`, which guard the screenshot capture script. That is 60
+files, with 26,281 lines of test against 22,450 lines of package. These
+are collected tests, not a pass count. The authority on whether they pass is the CI badge
+above. The suite needs no credentials and no network. CI runs bare `pytest` on
+Windows against the locked dependency set.
 
-### Fetching data
+A test runs against whatever the tree holds now. A number in this README is a record of one
+run, so check CI rather than trusting the number.
 
-The historical loader caches to `data_cache/` as parquet. The first call per symbol hits
-yfinance; every call after that reads the cache and never touches the network.
+Beyond the usual unit tests, several guards test the project's own rules:
 
-```python
-from glassbox.config.loader import load_config
-from glassbox.data import historical, quality
+- **Leak-freedom:** every feature is asserted causal, and the harness is tested against
+  planted leaks. No timestamp may appear in two splits of one fold.
+- **Exactness:** every registered forecaster must be exact. The check iterates the registry,
+  so a new model cannot skip it. A contract test runs every model through the same
+  properties, with meta-tests that it fails a broken one.
+- **Two copies of one fact:** spec against package tree, spec universe against config,
+  `pyproject.toml` against the lockfile, the model registry against the CLI choices.
+- **Reporting honesty:** MAE never without flatness; every delta names its reference; every
+  claim is shown at all three anchors and against both null controls.
+- **Secrets:** no tracked file may contain a credential-shaped string, `.env` must stay
+  untracked, and the scanner is tested against real key shapes.
+- **Determinism:** the same grid twice gives the same numbers.
 
-cfg = load_config()
-bars = historical.load_history(cfg.universe, cfg)     # {symbol: DataFrame}
-quality.report_all(bars, cfg)                         # gaps, NaNs, large moves
-```
-
-**The cache is a snapshot and does not refresh itself.** Delete
-`data_cache/<SYMBOL>.parquet` to re-fetch. The study (`GB-49`) records the snapshot's last
-bar date in every results row so a stale run says so on its own face.
-
-### Building a model input window
-
-```python
-from glassbox.features import builder
-
-frame = builder.build_feature_frame(bars["AAPL"], cfg)   # one column per channel
-stats = builder.fit_stats(frame.iloc[:split], cfg)       # fit on TRAINING rows only
-batch = builder.build_windows(frame, cfg, "AAPL", stats=stats)
-```
-
-`builder.min_history_bars(cfg)` is the fewest bars a caller must supply — 445 for the
-default channel set, not 120. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for why.
+The full list is in [`docs/ARCHITECTURE_INVENTORY.md`](docs/ARCHITECTURE_INVENTORY.md) §B.12.
 
 ---
 
-## Tests
+## External components and disclosure
 
-```powershell
-pytest                       # everything
-pytest -q                    # quiet
-pytest tests/features        # one area
-ruff check .                 # lint
-black --check .              # formatting
-lint-imports                 # the layer contract: no module imports from a layer above it
-```
+Everything external is listed with its version, its use and a file citation in
+[`docs/ARCHITECTURE_INVENTORY.md`](docs/ARCHITECTURE_INVENTORY.md).
 
-The suite is offline and deterministic. It needs no credentials, no network and no cached
-data — every test builds its own fixtures.
+**Dependencies.** Thirteen runtime packages: pandas, numpy, pyyaml, torch, yfinance,
+alpaca-py, PyWavelets, scipy, streamlit, pandas-market-calendars, python-dotenv, pyarrow and
+matplotlib. Six for development: pytest, hypothesis, import-linter, ruff, black, and
+playwright, which drives the console headless for the screenshot captures. Each runtime
+package has a dated entry in `DECISIONS.md` recording why it was added.
+`requirements.lock` pins 99 distributions. Torch is imported only inside training; all
+inference is numpy.
 
-Four suites carry most of the project's correctness argument, and are worth knowing by
-name:
+**The reference project.** `reference/algotrading_project-main/` is an existing
+LTSF-Linear trading project, kept read-only for study. It is excluded from packaging,
+linting and test collection, and sits outside the import contract's root package.
+[`reference/REFERENCE_AUDIT.md`](reference/REFERENCE_AUDIT.md), written before the code,
+records what could be taken and what was refused.
 
-| Suite | What it proves |
+- **Taken:** the DLinear decomposition blocks, six return and risk formulas, the backtest
+  event-loop structure and enums, `EarlyStopping` and `adjust_learning_rate`.
+- **Refused:** its metrics module (one Sharpe function returns a hardcoded `12`; one variant
+  overwrites the prediction with ground truth) and its strategy module (all four stop and
+  target comparisons inverted). Both were rewritten, and the four comparisons are each
+  tested.
+
+**The models, and their true lineage.**
+
+| model | lineage |
 |---|---|
-| `tests/features/test_no_lookahead.py` | No feature value at `t` moves when bars after `t` change. Perturbs the future in two modes at three split points, and rejects a deliberately leaky function. |
-| `tests/model/test_forecaster_contract.py` | Every forecaster satisfies the same seven properties, including exact attribution. Runs against seven deliberately broken models to prove each property can fail. |
-| `tests/contracts/test_layers.py` | The layer stack holds and the validation harness never enters the live path. |
-| `tests/test_no_secrets.py` | No tracked file contains a credential-shaped string. |
+| **DLinear** | LTSF-Linear (Zeng et al., AAAI 2023). The trend/remainder decomposition is **adapted from the reference implementation**; that code traces back through LTSF-Linear to Autoformer. The linear heads are **reimplemented**, with four recorded departures: per-channel weights, no intercept, zero initialisation, and one summed output. |
+| **FITS** | FITS (Xu, Zeng & Xu, ICLR 2024, arXiv:2307.03756). **Written from the paper's description.** No FITS source code exists in this repository. |
+| **WITS** | **Original to this project.** It puts a wavelet transform where FITS puts an FFT, to test whether FITS's grid-dependence is specific to Fourier. The prediction was written down before the model was. |
+| persistence | The zero-change baseline. |
+
+**External services.** yfinance for historical bars. Alpaca's data API (SIP feed, no
+fallback) for live bars. Alpaca's trading API, paper endpoint only, enforced before any call.
+The GitHub REST API from a development script only.
+
+**AI-assisted development.** This project was built with Claude Code, and that is recorded
+in the repository rather than stated here:
+
+- 135 of 137 commits (as of `f3f79aa`) carry a `Co-Authored-By: Claude` trailer. The two
+  without are the documents that bootstrapped the project.
+- [`CLAUDE.md`](CLAUDE.md) is the operating contract every session read.
+- `prompts/` holds the actual session prompts, 1,572 lines across four sprint files.
+- `DECISIONS.md` records where the assistant was wrong and was corrected by the authors or
+  by measurement.
+
+The explanation layer uses no perturbation-attribution library, and a test asserts it.
 
 ---
 
-## Repository map
+## Documentation
 
-```
-glassbox/                  the package — see ARCHITECTURE.md for the layer stack
-  config/                  settings.yaml and the typed, fail-loud loader
-  contracts/               frozen schemas and the Forecaster protocol
-  data/                    historical (yfinance) · live (Alpaca) · quality checks
-  features/                indicators · wavelets · builder  ← the keystone
-  model/                   persistence · DLinear · FITS · train · predict
-  engine/                  signal · rank · risk · executor
-  explain/                 channel attribution · spectral · narration
-  backtest/                engine · walk-forward · metrics
-  experiments/             the comparative study and its report
-  dashboard/               the Streamlit app
-  live_loop.py             the live trading loop
-  replay.py                offline replay of a recorded day
-  smoke_offline.py         the one-command offline path
-
-tests/                     mirrors the package, plus shared harnesses
-  causality.py             assert_causal / assert_fit_isolated — reusable, not a test
-docs/
-  GLASSBOX_PROJECT_SPEC.md the single source of truth
-scripts/
-  smoke_alpaca.py          paper-account connectivity check
-  compare_sources.py       yfinance vs Alpaca, field by field
-reference/                 read-only third-party material — excluded from lint, tests and packaging
-data_cache/                parquet bar cache and the data-quality report
-```
-
-Governance files at the root: `CLAUDE.md` (how the codebase is worked on),
-`PROGRESS.md` (what is built), `DECISIONS.md` (why, one entry per contract change),
-`IDEAS_PARKED.md` (what is deliberately not built), `SOLO_BUILD_PLAN.md` (the build
-order).
-
----
-
-## Troubleshooting
-
-| Symptom | Cause |
+| document | what it holds |
 |---|---|
-| `ModuleNotFoundError: No module named 'pytest'` / `'pandas'` / `'yfinance'` | The virtual environment is not activated, or `pip install` ran against a different interpreter. Check with `python -c "import sys; print(sys.executable)"` — the path must be inside `.venv`. See step 2. |
-| `ModuleNotFoundError: No module named 'glassbox'` | Same cause, seen from outside the repository root. From inside it, `glassbox` imports whether or not you activated — see the note in step 2. |
-| **Anything failing on a deeply nested clone** — a `git clone` that reports success but leaves files missing, `git status` claiming every file is deleted, `python -m venv` failing at `ensurepip`, or `OSError [Errno 2]` during `pip install` naming a path under `lxml` | **Windows `MAX_PATH` is 260 and the longest path this repository tracks is 66 characters**, so the clone root must stay under **193**. Measured 23 Aug 2026 from a 187-character root, in the order the failures actually occur: **(1)** `git clone` dropped one tracked file, reported *every* file as deleted because git's own `stat` calls fail, and **exited 0** — success reported for data loss; **(2)** with `-c core.longpaths=true` the clone was complete, but **`python -m venv` then failed at `ensurepip`**, leaving `python.exe` with no `pip.exe`; **(3)** `pip install` was never reached, so the `lxml` error this row used to describe is not the first thing you hit. **Two different settings, fixing different steps:** `git config core.longpaths true` fixes **git only**; the Windows registry `LongPathsEnabled` (or a shallower root) is what **Python** needs. Running the git one alone makes the clone succeed and the venv still fail. **Simplest fix: clone nearer the drive root** — verified clean end to end from `C:\gb-audit`. |
-| `unauthorized` from the Alpaca smoke script | `.env` still holds placeholders, or the keys are from a live account rather than a paper one. |
-| The smoke script exits 2 without output | `ALPACA_BASE_URL` is not the paper endpoint. This is a refusal, not a bug. |
-| `pytest` reports `no tests collected` and exits **5** | You are not in the repository root. `testpaths` and `pythonpath` are read from `pyproject.toml`, which pytest locates by walking up from the working directory — from anywhere outside the repository there is no config to find and nothing to collect. Measured 2 Sep 2026: exit **5** both from an unrelated directory and from a subdirectory of the repository itself. |
-| A test fails naming a credential-shaped string | A secret has reached a tracked file. Rotate the key first, then remove it — `DECISIONS.md` records the procedure. |
+| [`docs/GLASSBOX_PROJECT_SPEC.md`](docs/GLASSBOX_PROJECT_SPEC.md) | The specification: architecture, frozen contracts, methodology, gate criteria |
+| [`GLASSBOX_PHASE2_EXPANSION.md`](GLASSBOX_PHASE2_EXPANSION.md) | Scope after GATE 2: the twenty-symbol universe, WITS, the schedule |
+| [`docs/GB55_ARCHITECTURE.md`](docs/GB55_ARCHITECTURE.md) | Report chapter: architecture and system design |
+| [`docs/GB56_METHODOLOGY.md`](docs/GB56_METHODOLOGY.md) | Report chapter: leak freedom, the robustness checks, statistics |
+| [`docs/GB57_RESULTS.md`](docs/GB57_RESULTS.md) | Report chapter: results, discussion, future work (the submitted version) |
+| [`docs/GB57_OUTLINE.md`](docs/GB57_OUTLINE.md) | The outline GB57 was written against |
+| [`docs/GB57_RESULTS_AND_DISCUSSION.md`](docs/GB57_RESULTS_AND_DISCUSSION.md) | Superseded five-symbol draft, kept for its argument, not its numbers |
+| [`docs/SUBMISSION_DOC_CORRECTIONS.md`](docs/SUBMISSION_DOC_CORRECTIONS.md) | Claims later measurement contradicted, with the corrected figures |
+| [`docs/ARCHITECTURE_INVENTORY.md`](docs/ARCHITECTURE_INVENTORY.md) | Every external component and every module, cited to file and line |
+| [`docs/ARCHITECTURE_DECK.md`](docs/ARCHITECTURE_DECK.md) | The architecture and disclosure deck |
+| [`docs/GB58_DECK.md`](docs/GB58_DECK.md) | The presentation deck and speaker notes |
+| [`docs/GB54_VIDEO_SCRIPT.md`](docs/GB54_VIDEO_SCRIPT.md) | The three-minute video script |
+| [`docs/he/`](docs/he/) | Hebrew study guides for the chapters and decks |
+| [`report/report.md`](report/report.md) | The generated study report, regenerated from `results.csv` |
+| [`report/screenshots/CAPTIONS.md`](report/screenshots/CAPTIONS.md) | What each console capture shows and the conditions it was taken under |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | How the package is put together, for a developer |
+| [`PROGRESS.md`](PROGRESS.md) · [`DECISIONS.md`](DECISIONS.md) | What was built, task by task, and why each decision was taken |
 
 ---
 
-## Licence and status
+## Authors
 
-Academic coursework, Bar-Ilan University, Aug–Oct 2026. Not investment advice, not a
-product, and never connected to a live brokerage account.
+Ben Davidian · Noy Shani
+
+Academic coursework. Not investment advice, and never connected to a live brokerage account.
