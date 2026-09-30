@@ -1,12 +1,15 @@
-"""GB-67 step 2a: the Approve and Reject fills, measured on the rendered page.
+"""GB-67 steps 2a and 2: the approval controls and dialog, measured on the rendered page.
 
-**The only browser test in the suite, and in its own file for that reason.** It starts a
-Streamlit server and drives Chromium against it, which no other dashboard test does - they
-read the stylesheet's text, and on 2026-09-29 both of them passed over fills that had never
-rendered: `.gb-approve button` matched nothing, because each `st.markdown` is its own
+**The only browser tests in the suite, and in their own file for that reason.** They start
+a Streamlit server and drive Chromium against it, which no other dashboard test does -
+those read the stylesheet's text, and on 2026-09-29 two of them passed over fills that had
+never rendered: `.gb-approve button` matched nothing, because each `st.markdown` is its own
 element and the wrapper div closed before the button existed.
 
-It is not skipped when Chromium is missing. A test an environment can switch off is a
+**One server and one browser for the whole module**, shared by every test here, so the
+cost is paid once per run however many page-level assertions are added.
+
+They are not skipped when Chromium is missing. A test an environment can switch off is a
 mechanism only where it runs, so CI installs the browser (`.github/workflows/ci.yml`).
 """
 
@@ -16,20 +19,23 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+import pytest
+from playwright.sync_api import Page, sync_playwright
 
 from glassbox import records
-from glassbox.dashboard import app
+from glassbox.dashboard import app, tokens
 
 DECISION_ID = "20260929-PAGE"
-#: A cold Streamlit start on a CI runner, not a sleep: the test waits for the button and
-#: stops waiting the moment it appears.
+#: A cold Streamlit start on a CI runner, not a sleep: every wait here ends the moment
+#: what it waits for appears.
 STARTUP_SECONDS = 90
 
-#: The real Co-Pilot panel under the real stylesheet, and nothing else of the page -
-#: `main` needs a broker and ends in a refresh loop, and neither is what is measured here.
+#: The dialog and the Co-Pilot panel under the real stylesheet, called as `main` calls
+#: them - `main` itself needs a broker and ends in a refresh loop, neither of which is
+#: what is measured here.
 PAGE = """
 import sys
 from pathlib import Path
@@ -40,6 +46,7 @@ from glassbox.config.loader import load_config
 from glassbox.dashboard import app
 
 cfg = load_config()
+root = Path(sys.argv[1])
 verdict = app.liveness(
     lock=app.LOCK_NONE,
     band_fires=True,
@@ -49,7 +56,8 @@ verdict = app.liveness(
     heartbeat=cfg.live.heartbeat_seconds,
 )
 st.markdown(app.stylesheet(), unsafe_allow_html=True)
-app._copilot_panel(Path(sys.argv[1]), cfg, verdict, st)
+app.approval_modal(root, cfg, verdict, st)
+app._copilot_panel(root, cfg, verdict, st)
 """
 
 
@@ -78,16 +86,12 @@ def _wait_for_port(port: int, server: subprocess.Popen, log: Path) -> None:
     raise AssertionError(f"streamlit never listened on {port}:\n{log.read_text()}")
 
 
-def test_approve_and_reject_are_filled_on_the_rendered_page(tmp_path: Path) -> None:
-    """**The fill is the warning, so it has to be on the page and not only in the CSS.**
-
-    One pending entry, the real panel, the real stylesheet: the Approve button's computed
-    background must be GAIN and the Reject button's LOSS. The buttons are found by their
-    own widget keys, not by the containers the fill is selected through, so removing the
-    containers fails this on the colour rather than on a missing element.
-    """
+@pytest.fixture(scope="module")
+def served(tmp_path_factory) -> Iterator[tuple[Page, str]]:
+    """One pending entry, one server, one browser: ``(page, url)`` for the module."""
+    root = tmp_path_factory.mktemp("page")
     records.save_pending(
-        tmp_path,
+        root,
         {
             "decision_id": DECISION_ID,
             "as_of": "2026-09-29T00:00:00+00:00",
@@ -99,11 +103,12 @@ def test_approve_and_reject_are_filled_on_the_rendered_page(tmp_path: Path) -> N
             "take_profit": 106.0,
             "narrative": "A recommendation rendered to measure its controls.",
             "provenance": records.LIVE,
+            "record": {"signal": {"action": "enter_long"}},
         },
     )
-    script = tmp_path / "page.py"
+    script = root / "page.py"
     script.write_text(PAGE, encoding="utf-8")
-    log = tmp_path / "streamlit.log"
+    log = root / "streamlit.log"
     port = _free_port()
 
     with log.open("w", encoding="utf-8") as sink:
@@ -123,7 +128,7 @@ def test_approve_and_reject_are_filled_on_the_rendered_page(tmp_path: Path) -> N
                 "--browser.gatherUsageStats",
                 "false",
                 "--",
-                str(tmp_path),
+                str(root),
             ],
             stdout=sink,
             stderr=subprocess.STDOUT,
@@ -133,24 +138,87 @@ def test_approve_and_reject_are_filled_on_the_rendered_page(tmp_path: Path) -> N
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch()
                 try:
-                    page = browser.new_page()
-                    page.goto(f"http://127.0.0.1:{port}")
-                    fills = {}
-                    for answer, prefix in (("APPROVE", "a"), ("REJECT", "r")):
-                        button = page.locator(f".st-key-{prefix}-{DECISION_ID} button")
-                        button.wait_for(timeout=STARTUP_SECONDS * 1000)
-                        fills[answer] = button.evaluate(
-                            "e => getComputedStyle(e).backgroundColor"
-                        )
+                    yield browser.new_page(), f"http://127.0.0.1:{port}"
                 finally:
                     browser.close()
         finally:
             server.terminate()
             server.wait(timeout=30)
 
-    assert fills["APPROVE"] == _rgb(
-        app.GAIN
-    ), f"APPROVE is {fills['APPROVE']} on the page, not GAIN {_rgb(app.GAIN)}"
-    assert fills["REJECT"] == _rgb(
-        app.LOSS
-    ), f"REJECT is {fills['REJECT']} on the page, not LOSS {_rgb(app.LOSS)}"
+
+def _open(page: Page, url: str) -> None:
+    page.goto(url)
+    page.locator('[data-testid="stDialog"] [role="dialog"]').wait_for(
+        timeout=STARTUP_SECONDS * 1000
+    )
+
+
+def _style(page: Page, selector: str, prop: str) -> str:
+    element = page.locator(selector).first
+    element.wait_for(state="attached", timeout=STARTUP_SECONDS * 1000)
+    return element.evaluate(f"e => getComputedStyle(e).{prop}")
+
+
+def test_approve_and_reject_are_filled_on_the_rendered_page(served) -> None:
+    """**The fill is the warning, so it has to be on the page and not only in the CSS.**
+
+    The panel's Approve must compute to GAIN and its Reject to LOSS. The buttons are found
+    by their own widget keys, not by the containers the fill is selected through, so
+    removing the containers fails this on the colour rather than on a missing element.
+    """
+    page, url = served
+    _open(page, url)
+    approve = _style(page, f".st-key-a-{DECISION_ID} button", "backgroundColor")
+    reject = _style(page, f".st-key-r-{DECISION_ID} button", "backgroundColor")
+
+    assert approve == _rgb(app.GAIN), f"APPROVE is {approve}, not GAIN {_rgb(app.GAIN)}"
+    assert reject == _rgb(app.LOSS), f"REJECT is {reject}, not LOSS {_rgb(app.LOSS)}"
+
+
+def test_the_modal_is_ground_square_and_filled_on_the_rendered_page(served) -> None:
+    """**Guard 7: the dialog obeys the fill rules on the page, not only in the CSS.**
+
+    Its overlay and its panel compute to GROUND with a zero radius, its title to a step of
+    the type scale, and its own Approve and Reject to GAIN and LOSS.
+    """
+    page, url = served
+    _open(page, url)
+    overlay = '[data-testid="stDialog"]'
+    panel = '[data-testid="stDialog"] > div'
+    measured = {
+        "overlay background": _style(page, overlay, "backgroundColor"),
+        "panel background": _style(page, panel, "backgroundColor"),
+        "panel radius": _style(page, panel, "borderRadius"),
+        "title size": _style(page, f"{overlay} h2", "fontSize"),
+        "APPROVE": _style(
+            page, f".st-key-modal-a-{DECISION_ID} button", "backgroundColor"
+        ),
+        "REJECT": _style(
+            page, f".st-key-modal-r-{DECISION_ID} button", "backgroundColor"
+        ),
+    }
+    expected = {
+        "overlay background": _rgb(tokens.GROUND),
+        "panel background": _rgb(tokens.GROUND),
+        "panel radius": "0px",
+        "title size": f"{tokens.TYPE_PROSE}px",
+        "APPROVE": _rgb(app.GAIN),
+        "REJECT": _rgb(app.LOSS),
+    }
+    wrong = {k: v for k, v in measured.items() if v != expected[k]}
+    assert not wrong, f"on the page {wrong}; expected {expected}"
+
+
+def test_opening_the_modal_focuses_neither_answer(served) -> None:
+    """**Guard 3 on the page: no answer is one keystroke away when the dialog opens.**
+
+    Focus lands on the dialog itself, and the first Tab reaches Close - dismissal, which
+    answers nothing - before either answer.
+    """
+    page, url = served
+    _open(page, url)
+    focused = page.evaluate("() => document.activeElement.getAttribute('role')")
+    assert focused == "dialog", f"on open, focus is on {focused!r}, not the dialog"
+    page.keyboard.press("Tab")
+    label = page.evaluate("() => document.activeElement.getAttribute('aria-label')")
+    assert label == "Close", f"the first Tab reaches {label!r}, not Close"

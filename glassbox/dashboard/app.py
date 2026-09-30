@@ -2577,6 +2577,94 @@ def pending_summary(entry: dict) -> str:
     )
 
 
+#: What a pending record must carry to be answered from the console. **GB-67.** Stricter
+#: than what the panel reads, deliberately: an Approve reaches `executor._submit`, which
+#: only ever buys, so a record is approvable when it is positively an entry and never by
+#: default. `record.signal.action` is read as a key; the record is never decoded here.
+ENTRY_KEYS = (
+    "decision_id",
+    "as_of",
+    "symbol",
+    "shares",
+    "price",
+    "notional",
+    "stop_loss",
+    "take_profit",
+    "narrative",
+    "record",
+)
+
+#: Shown in place of Approve and Reject for anything that is not an entry. Both answers
+#: are absent, not disabled: `answer_pending` builds an order from entry keys and amends a
+#: decoded record, so either answer on a non-entry would fail or corrupt.
+NOT_ANSWERABLE = "This decision cannot be answered from the console yet."
+
+#: The loop-down warning, in what the code guarantees: `executor.protect` arms only on a
+#: fill in the broker's first response, and otherwise `protect_book` arms it in the first
+#: `run_cycle` that reaches protection. It states no duration, because the code has none.
+LOOP_DOWN_WARNING = (
+    "An approval submits the order now. Its stop is armed at submission only if the "
+    "broker reports the fill in its first response; otherwise it is armed by the first "
+    "loop cycle that reaches protection after the fill, and no cycle runs while the loop "
+    "is down. Nothing bounds how long that takes."
+)
+
+#: The card's figures, each printed with `str()` exactly as the record holds it.
+CARD_FACTS = (
+    ("SHARES", "shares"),
+    ("PRICE", "price"),
+    ("NOTIONAL", "notional"),
+    ("STOP", "stop_loss"),
+    ("TARGET", "take_profit"),
+)
+
+
+def is_approvable_entry(entry: dict) -> bool:
+    """Whether a pending record may be answered from the console. **GB-67.**
+
+    Every key in :data:`ENTRY_KEYS`, no ``kind`` other than ``"entry"``, and
+    ``record.signal.action == "enter_long"``. Reading keys, never decoding the record.
+    """
+    if any(key not in entry for key in ENTRY_KEYS):
+        return False
+    if entry.get("kind", "entry") != "entry":
+        return False
+    record = entry["record"]
+    signal = record.get("signal") if isinstance(record, dict) else None
+    return isinstance(signal, dict) and signal.get("action") == ENTER_LONG
+
+
+def approval_record_html(entry: dict, *, loop_present: bool) -> str:
+    """One pending record in the approval dialog. **GB-67. It computes nothing.**
+
+    Every figure is the record's own value through ``str()``, the narrative goes through
+    :func:`narrative_html` exactly as the panel renders it, and a record that is not an
+    entry says it cannot be answered here rather than showing figures it may not have.
+    """
+    if not is_approvable_entry(entry):
+        return (
+            f'<div class="gb-meta">{escape(str(entry.get("decision_id", EM_DASH)))}</div>'
+            f'<div class="gb-stale">{escape(NOT_ANSWERABLE)}</div>'
+        )
+    action = entry["record"]["signal"]["action"]
+    facts = "".join(_stat(label, escape(str(entry[key]))) for label, key in CARD_FACTS)
+    warning = (
+        ""
+        if loop_present
+        else f'<div class="gb-not-responding">{escape(LOOP_DOWN_WARNING)}</div>'
+    )
+    return (
+        f'<div class="gb-meta">{escape(str(entry["decision_id"]))} &nbsp;·&nbsp; '
+        f'{escape(str(entry["as_of"]))}</div>'
+        f'<div class="gb-emph" style="padding:.4rem 0 .2rem">'
+        f'<span style="color:{GAIN}">{escape(str(action))}</span> &nbsp; '
+        f'{escape(str(entry["symbol"]))}</div>'
+        f'<div class="gb-strip">{facts}</div>'
+        + narrative_html(entry["narrative"])
+        + warning
+    )
+
+
 def provenance_label(provenance: str) -> str:
     """How a record's origin is shown. **A replayed decision says so on its own row.**
 
@@ -3344,6 +3432,17 @@ def stylesheet() -> str:
   [class*="gb-approve-"] button:hover, [class*="gb-reject-"] button:hover {{
       color: {GROUND} !important; filter: brightness(1.12);
   }}
+
+  /* ── the approval dialog (GB-67) ─────────────────────────────────────── */
+  /* The overlay is opaque ground on purpose: the console is hidden until the operator
+     answers or dismisses. Square, flat and still - no radius, no shadow, no motion. The
+     attribute selector outranks Streamlit's single-class rules without !important. */
+  div[data-testid="stDialog"],
+  div[data-testid="stDialog"] > div {{
+      background: {GROUND}; border: 1px solid {RULE}; border-radius: 0;
+      box-shadow: none; animation: none; transition: none;
+  }}
+  div[data-testid="stDialog"] h2 {{ font-family: {MONO}; font-size: {TYPE_PROSE}px; }}
 </style>
 """
 
@@ -3659,6 +3758,10 @@ def main(
         broker_age=broker_age,
         heartbeat=cfg.live.heartbeat_seconds,
     )
+
+    # Directly after the verdict and before anything else draws, so a failure further
+    # down the page cannot keep a pending decision from being asked (GB-67).
+    approval_modal(root, cfg, verdict, st)
 
     # ── row 1: now ───────────────────────────────────────────────────────────
     st.markdown(
@@ -4005,11 +4108,17 @@ def _copilot_panel(
 
     body = []
     for entry in queue:
+        # The gate before `pending_summary`, which subscripts entry keys and would raise
+        # on anything else (GB-67): a record that is not an entry says so instead.
+        summary = (
+            pending_summary(entry) if is_approvable_entry(entry) else NOT_ANSWERABLE
+        )
         body.append(
-            f'<div class="gb-meta">{escape(entry["decision_id"])} &nbsp;·&nbsp; '
+            f'<div class="gb-meta">{escape(str(entry.get("decision_id", EM_DASH)))} '
+            f"&nbsp;·&nbsp; "
             f"{escape(provenance_label(entry.get('provenance', records.LIVE)))}</div>"
             f'<div class="gb-emph" style="padding:.4rem 0 .2rem">'
-            f"{escape(pending_summary(entry))}</div>"
+            f"{escape(summary)}</div>"
         )
     st.markdown(
         region(
@@ -4036,7 +4145,14 @@ def _approval_controls(
     agreement with it. ``key_prefix`` namespaces the two widget keys so two surfaces can
     render the pair in one run; it is required rather than defaulted, because a surface
     that forgot it would collide with the panel's keys.
+
+    **Nothing is rendered for a record that is not an entry** - neither answer, on every
+    surface, because every surface comes through here. `executor._submit` only ever buys,
+    so an Approve on an exit record would add to the position it was meant to close.
     """
+    if not is_approvable_entry(entry):
+        return
+
     from glassbox.engine.executor import AlpacaBroker
     from glassbox.live_loop import answer_pending
 
@@ -4060,6 +4176,61 @@ def _approval_controls(
         st.rerun()
 
 
+#: Session-state key holding whether the approval dialog is open. Set from the queue on
+#: every full run; nothing else writes it.
+APPROVAL_OPEN = "gb-approval-open"
+APPROVAL_TITLE = "Awaiting approval — Co-Pilot"
+
+
+def approval_modal(
+    root: Path, cfg: Config, verdict: Liveness, st
+) -> None:  # pragma: no cover - widgets
+    """The dialog over the page while anything is pending. **GB-67.**
+
+    **Opened by state on every full run, never by a button.** `_refresh` sleeps and then
+    reruns the whole app, and a click made during the sleep reaches a run in which a
+    button-opened dialog is never called, so the click would be dropped with nothing on
+    screen to say so. Here the dialog is called whenever the queue is non-empty, so a
+    dropped click shows as the dialog reopening with the item still pending - the safe
+    direction.
+
+    **Dismissing it answers nothing.** ``on_dismiss="ignore"``: no rerun, no callback, and
+    the item stays queued, so the dialog is back at the next refresh.
+    """
+    queue = records.load_pending(root)
+    st.session_state[APPROVAL_OPEN] = bool(queue)
+    if st.session_state[APPROVAL_OPEN]:
+        st.dialog(APPROVAL_TITLE, width="large", dismissible=True, on_dismiss="ignore")(
+            _approval_dialog
+        )(root, cfg, verdict, queue, st)
+
+
+def _approval_dialog(
+    root: Path, cfg: Config, verdict: Liveness, queue: list[dict], st
+) -> None:  # pragma: no cover - widgets
+    """The dialog's body: one card per pending record, each entry with its two answers.
+
+    No bulk answer: every Approve and Reject belongs to one card and one decision id.
+    """
+    st.markdown(
+        region(
+            "Pending decisions",
+            verdict.pill(f"{len(queue)} pending · {records.PENDING_FILE}"),
+            '<div class="gb-meta">Dismissing this answers nothing: it returns at the next '
+            "refresh while anything is pending.</div>",
+            f"An answer is acted on at the page's next refresh, up to "
+            f"{cfg.live.poll_seconds}s after the click.",
+        ),
+        unsafe_allow_html=True,
+    )
+    for entry in queue:
+        st.markdown(
+            approval_record_html(entry, loop_present=verdict.loop_present),
+            unsafe_allow_html=True,
+        )
+        _approval_controls(root, cfg, entry, st, key_prefix="modal-")
+
+
 if __name__ == "__main__":  # pragma: no cover
     # Arguments, not environment variables: only the config layer may read the environment
     # (CLAUDE.md rule 5), and `tests/config/test_config.py` enforces it. Streamlit passes
@@ -4073,9 +4244,13 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 __all__ = [
+    "APPROVAL_OPEN",
     "ASIDE",
     "CLOSED",
+    "ENTRY_KEYS",
     "LIVE",
+    "LOOP_DOWN_WARNING",
+    "NOT_ANSWERABLE",
     "NOT_RESPONDING",
     "NOT_RUNNING",
     "ORANGE",
@@ -4087,6 +4262,8 @@ __all__ = [
     "PositionRow",
     "Reliability",
     "ago",
+    "approval_modal",
+    "approval_record_html",
     "band_context",
     "bar_note",
     "channel_colour",
@@ -4100,6 +4277,7 @@ __all__ = [
     "forecast_svg",
     "frequency_shares",
     "gain_phase_svg",
+    "is_approvable_entry",
     "is_fragile",
     "is_rtl",
     "live_stops",
