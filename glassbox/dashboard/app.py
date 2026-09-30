@@ -2583,6 +2583,27 @@ FILLS_AT_MARKET = (
 )
 
 
+#: What each answer does, stated in the dialog beside the controls so that neither is
+#: explained only in the panel behind its backdrop. **GB-67.** Both describe
+#: `answer_pending`: an approval reaches `executor.approve` and a market buy; a rejection
+#: reaches `executor.decline`, which sends nothing; both amend the decision record.
+APPROVE_DOES = "APPROVE sends a market buy order for this entry to the broker now."
+REJECT_DOES = (
+    "REJECT records the rejection in the decision log and sends nothing to the broker."
+)
+
+#: The action a record carries, as a first-time reader would say it. A fixed mapping
+#: over `engine.signal.ACTIONS`, never reworded per record; the stored token is shown
+#: beside it so the card stays traceable to what was recorded.
+ACTION_LABELS = {ENTER_LONG: "BUY", EXIT: "SELL", HOLD: "HOLD"}
+
+
+def action_label(action: str) -> str:
+    """The reader's word for ``action``, or ``action`` itself when it has none: a value
+    outside the mapping is shown as stored rather than guessed at."""
+    return ACTION_LABELS.get(action, action)
+
+
 def pending_summary(entry: dict) -> str:
     """The one line above a recommendation's Approve and Reject controls. **GB-37.**"""
     return (
@@ -2674,7 +2695,8 @@ def approval_record_html(entry: dict, *, loop_present: bool) -> str:
         f'<div class="gb-meta">{escape(str(entry["decision_id"]))} &nbsp;·&nbsp; '
         f'{escape(str(entry["as_of"]))}</div>'
         f'<div class="gb-emph" style="padding:.4rem 0 .2rem">'
-        f'<span style="color:{GAIN}">{escape(str(action))}</span> &nbsp; '
+        f'<span style="color:{GAIN}">{escape(action_label(str(action)))}</span> '
+        f'<span class="gb-meta">{escape(str(action))}</span> &nbsp; '
         f'{escape(str(entry["symbol"]))}</div>'
         f'<div class="gb-strip">{facts}</div>'
         + narrative_html(entry["narrative"])
@@ -4249,6 +4271,8 @@ def _approval_dialog(
         region(
             "Pending decisions",
             verdict.pill(f"{len(queue)} pending · {records.PENDING_FILE}"),
+            f'<div class="gb-meta">{escape(APPROVE_DOES)}</div>'
+            f'<div class="gb-meta">{escape(REJECT_DOES)}</div>'
             '<div class="gb-meta">Dismissing this answers nothing: it returns at the next '
             "refresh while anything is pending.</div>"
             f'<div class="gb-meta">{escape(FILLS_AT_MARKET)}</div>',
@@ -4278,7 +4302,9 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 __all__ = [
+    "ACTION_LABELS",
     "APPROVAL_OPEN",
+    "APPROVE_DOES",
     "ASIDE",
     "CLOSED",
     "ENTRY_KEYS",
@@ -4291,12 +4317,14 @@ __all__ = [
     "ORANGE",
     "PRICE_LABEL",
     "RAMP",
+    "REJECT_DOES",
     "SLOW",
     "BandContext",
     "Liveness",
     "OpenOrder",
     "PositionRow",
     "Reliability",
+    "action_label",
     "ago",
     "approval_modal",
     "approval_record_html",

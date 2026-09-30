@@ -414,3 +414,38 @@ def test_the_sizing_price_is_never_labelled_as_a_price_to_pay(tmp_path) -> None:
     assert app.FILLS_AT_MARKET in "".join(m.value for m in dialog.markdown)
     panel = _run(_panel_script, str(tmp_path))
     assert app.FILLS_AT_MARKET in "".join(m.value for m in panel.markdown)
+
+
+# ── step 4: what each answer does, and what the action is called ─────────────────
+
+
+def test_the_dialog_says_what_each_answer_does_with_equal_weight(tmp_path) -> None:
+    """**GB-67 step 4.** Both consequences are stated in the dialog itself, in the same
+    class: an explained Approve beside a silent Reject is not two equal answers, and the
+    panel's line about rejections sits behind the backdrop while the dialog is open."""
+    _queue(tmp_path, ENTRY)
+    (dialog,) = _dialogs(_run(_modal_script, str(tmp_path), True))
+    shown = "".join(m.value for m in dialog.markdown)
+
+    for line in (app.APPROVE_DOES, app.REJECT_DOES):
+        rendered = f'<div class="gb-meta">{app.escape(line)}</div>'
+        assert shown.count(rendered) == 1, f"the dialog does not say, once: {line}"
+
+
+def test_every_action_has_a_label_and_an_unknown_one_is_shown_as_stored() -> None:
+    """**GB-67 step 4.** The reader's word for an action comes from one fixed mapping,
+    total over the actions the engine can record, and a value outside it is printed as
+    stored rather than guessed. The card shows both, so the word stays traceable to the
+    record."""
+    from glassbox.engine.signal import ACTIONS
+
+    assert set(app.ACTION_LABELS) == set(ACTIONS), sorted(app.ACTION_LABELS)
+    assert all(label.strip() for label in app.ACTION_LABELS.values())
+    assert app.action_label("not-an-action") == "not-an-action"
+
+    card = app.approval_record_html(ENTRY, loop_present=True)
+    stored = ENTRY["record"]["signal"]["action"]
+    assert app.escape(app.action_label(stored)) in card, "the reader's word is missing"
+    assert (
+        f'<span class="gb-meta">{app.escape(stored)}</span>' in card
+    ), "the stored action is no longer visible on the card"
