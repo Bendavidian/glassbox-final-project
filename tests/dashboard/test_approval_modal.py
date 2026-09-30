@@ -377,3 +377,38 @@ def test_the_modal_is_opened_by_state_on_every_run_never_by_a_button(tmp_path) -
         assert len(_dialogs(at)) == 1, "a full run with something pending had no dialog"
         assert at.session_state[app.APPROVAL_OPEN] is True
         at = at.run()
+
+
+# ── step 2b: the sizing price says what it is ────────────────────────────────────
+
+
+def test_the_sizing_price_is_never_labelled_as_a_price_to_pay(tmp_path) -> None:
+    """**GB-67 step 2b.** The record's ``price`` is the last price the loop fetched when
+    it sized the order - in session, the in-progress bar's latest price. Labelled
+    ``PRICE`` on the card and written after an ``@`` in the panel, it read as the price
+    the order would fill at, and on 2026-09-30 it misled a reader who had the context.
+
+    Neither surface may call it the bare word PRICE, the card must still show the
+    record's value verbatim under its label, and both surfaces must say the order fills
+    at market.
+    """
+    assert app.PRICE_LABEL != "PRICE"
+    card = app.approval_record_html(ENTRY, loop_present=True)
+    shown = dict(
+        re.findall(
+            r'gb-stat-key">([^<]*)</span><span class="gb-stat-value"[^>]*>([^<]*)<',
+            card,
+        )
+    )
+    assert "PRICE" not in shown, f"the card labels a figure PRICE: {shown}"
+    assert shown.get(app.PRICE_LABEL) == app.escape(str(ENTRY["price"])), shown
+
+    summary = app.pending_summary(ENTRY)
+    assert "@" not in summary, f"the panel still prices with an @: {summary}"
+    assert f"{app.PRICE_LABEL} {ENTRY['price']:,.2f}" in summary, summary
+
+    _queue(tmp_path, ENTRY)
+    (dialog,) = _dialogs(_run(_modal_script, str(tmp_path), True))
+    assert app.FILLS_AT_MARKET in "".join(m.value for m in dialog.markdown)
+    panel = _run(_panel_script, str(tmp_path))
+    assert app.FILLS_AT_MARKET in "".join(m.value for m in panel.markdown)

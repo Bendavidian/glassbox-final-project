@@ -2567,11 +2567,28 @@ def narrative_html(text: str) -> str:
     return f'<p class="gb-narrative" dir="{direction}">{text}</p>'
 
 
+#: What a pending record's `price` is, said on its face. **GB-67.** It is the last price
+#: the loop fetched when it sized the order (`live_loop.py`, `prices` in `run_cycle`):
+#: in session that is the in-progress bar's latest price, not a close, and it is never a
+#: price anyone pays. Printed as "PRICE" or behind an "@" it read as the fill price, and
+#: on 2026-09-30 it misled a reader who had the full context. One constant, read by the
+#: dialog and the panel, so the two cannot label it differently.
+PRICE_LABEL = "SIZING PRICE"
+
+#: Beside every surface that shows the sizing price. It states a fact about the order
+#: type and computes nothing: no estimated fill, no gap, no live price.
+FILLS_AT_MARKET = (
+    "The order fills at market, not at the sizing price, which is the last price the "
+    "loop fetched when it sized the order."
+)
+
+
 def pending_summary(entry: dict) -> str:
     """The one line above a recommendation's Approve and Reject controls. **GB-37.**"""
     return (
-        f"{entry['symbol']}  {float(entry['shares']):.4f} @ "
-        f"{float(entry['price']):,.2f}  =  {float(entry['notional']):,.2f}  ·  "
+        f"{entry['symbol']}  {float(entry['shares']):.4f}  ·  "
+        f"{PRICE_LABEL} {float(entry['price']):,.2f}  ·  "
+        f"NOTIONAL {float(entry['notional']):,.2f}  ·  "
         f"STOP {float(entry['stop_loss']):,.2f}  ·  TARGET "
         f"{float(entry['take_profit']):,.2f}"
     )
@@ -2612,7 +2629,7 @@ LOOP_DOWN_WARNING = (
 #: The card's figures, each printed with `str()` exactly as the record holds it.
 CARD_FACTS = (
     ("SHARES", "shares"),
-    ("PRICE", "price"),
+    (PRICE_LABEL, "price"),
     ("NOTIONAL", "notional"),
     ("STOP", "stop_loss"),
     ("TARGET", "take_profit"),
@@ -4124,7 +4141,7 @@ def _copilot_panel(
         region(
             "Awaiting approval — Co-Pilot",
             verdict.pill(f"{len(queue)} pending"),
-            "".join(body),
+            "".join(body) + f'<div class="gb-meta">{escape(FILLS_AT_MARKET)}</div>',
             "A rejection is recorded too: the log is what happened, not what was wanted.",
         ),
         unsafe_allow_html=True,
@@ -4217,7 +4234,8 @@ def _approval_dialog(
             "Pending decisions",
             verdict.pill(f"{len(queue)} pending · {records.PENDING_FILE}"),
             '<div class="gb-meta">Dismissing this answers nothing: it returns at the next '
-            "refresh while anything is pending.</div>",
+            "refresh while anything is pending.</div>"
+            f'<div class="gb-meta">{escape(FILLS_AT_MARKET)}</div>',
             f"An answer is acted on at the page's next refresh, up to "
             f"{cfg.live.poll_seconds}s after the click.",
         ),
@@ -4248,12 +4266,14 @@ __all__ = [
     "ASIDE",
     "CLOSED",
     "ENTRY_KEYS",
+    "FILLS_AT_MARKET",
     "LIVE",
     "LOOP_DOWN_WARNING",
     "NOT_ANSWERABLE",
     "NOT_RESPONDING",
     "NOT_RUNNING",
     "ORANGE",
+    "PRICE_LABEL",
     "RAMP",
     "SLOW",
     "BandContext",
