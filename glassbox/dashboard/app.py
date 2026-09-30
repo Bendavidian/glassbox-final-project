@@ -3330,16 +3330,18 @@ def stylesheet() -> str:
   /* **The only two filled elements on the entire page.** Everything else sits on the
      ground with rules and space; these two are solid because this is the one place a
      click moves money, and the weight is the warning. Ground-coloured text on a gain or
-     loss field, so the fill is unmistakably the control rather than a status. */
-  .gb-approve button {{
+     loss field, so the fill is unmistakably the control rather than a status.
+     Selected through the `st-key-` class of the keyed container around each button;
+     `.gb-approve button` matched nothing on the page until 2026-09-29. */
+  [class*="gb-approve-"] button {{
       background: {GAIN} !important; color: {GROUND} !important;
       border-color: {GAIN} !important; font-weight: 500;
   }}
-  .gb-reject button {{
+  [class*="gb-reject-"] button {{
       background: {LOSS} !important; color: {GROUND} !important;
       border-color: {LOSS} !important; font-weight: 500;
   }}
-  .gb-approve button:hover, .gb-reject button:hover {{
+  [class*="gb-approve-"] button:hover, [class*="gb-reject-"] button:hover {{
       color: {GROUND} !important; filter: brightness(1.12);
   }}
 </style>
@@ -4038,15 +4040,18 @@ def _approval_controls(
     from glassbox.engine.executor import AlpacaBroker
     from glassbox.live_loop import answer_pending
 
+    # Each button sits in a keyed container because Streamlit gives a keyed container the
+    # class `st-key-<key>`, and that class is what the stylesheet fills. The markdown
+    # `<div class="gb-approve">` this replaced never wrapped anything: each st.markdown is
+    # its own element, so the div closed before the button existed (found 2026-09-29).
     approve_col, reject_col = st.columns(2)
-    with approve_col:
-        st.markdown('<div class="gb-approve">', unsafe_allow_html=True)
+    with (
+        approve_col,
+        st.container(key=f"{key_prefix}gb-approve-{entry['decision_id']}"),
+    ):
         approved = st.button("APPROVE", key=f"{key_prefix}a-{entry['decision_id']}")
-        st.markdown("</div>", unsafe_allow_html=True)
-    with reject_col:
-        st.markdown('<div class="gb-reject">', unsafe_allow_html=True)
+    with reject_col, st.container(key=f"{key_prefix}gb-reject-{entry['decision_id']}"):
         rejected = st.button("REJECT", key=f"{key_prefix}r-{entry['decision_id']}")
-        st.markdown("</div>", unsafe_allow_html=True)
     if approved:
         answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], True)
         st.rerun()

@@ -37,6 +37,11 @@ jobs:
           python -m pip install -r requirements.lock
           python -m pip install -e . --no-deps
 
+      # tests/dashboard/test_approval_fills_on_the_page.py drives a real Chromium and is
+      # not skipped without one: a test an environment can switch off never runs here.
+      - name: Install the browser the page-level test drives
+        run: python -m playwright install chromium
+
       # reference/ is excluded from both tools in pyproject.toml. It is read-only
       # material and is never part of the build.
       - name: Lint

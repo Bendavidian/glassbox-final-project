@@ -1316,6 +1316,9 @@ def test_nothing_is_filled_and_nothing_is_rounded() -> None:
     """**No cards.** Every fill must be the ground itself or a `transparent` that removes
     one of Streamlit's, and every radius must be an explicit 0 - except the star dots,
     which are 1px circles and the one place a radius means something."""
+    # This asserts the stylesheet's TEXT, not the page. On 2026-09-29 it passed while the
+    # Approve and Reject fills it names had never rendered. Page-level rendering of those
+    # two fills is asserted by tests/dashboard/test_approval_fills_on_the_page.py.
     css = app.stylesheet()
 
     # Approve and Reject are the two deliberate exceptions and the assertion names them,
@@ -2012,6 +2015,9 @@ def test_approve_and_reject_are_the_only_filled_elements() -> None:
     two is the warning, and ground-coloured text on a solid field is what makes them read
     as controls rather than as a status somebody is being shown.
     """
+    # This asserts the stylesheet's TEXT, not the page. On 2026-09-29 it passed while
+    # neither fill had ever rendered: the selector matched nothing. Page-level rendering is
+    # asserted by tests/dashboard/test_approval_fills_on_the_page.py.
     css = app.stylesheet()
 
     assert f"background: {app.GAIN} !important" in css
