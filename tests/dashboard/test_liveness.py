@@ -66,7 +66,9 @@ def a_page(cfg, verdict: app.Liveness) -> str:
     rows = _rows(verdict)
     return "".join(
         [
-            app.session_strip(cfg, verdict, "checkpoints/live", "live", len(rows)),
+            app.session_strip(
+                cfg, verdict, "checkpoints/live", "live", len(rows), pending=0
+            ),
             app.region(
                 "Session equity", verdict.pill("5 sessions, 0 trades"), "<svg></svg>"
             ),
@@ -346,7 +348,9 @@ def test_the_session_word_and_the_cycle_badge_can_never_disagree(
     pill said LIVE, because each computed its own answer from a different age."""
     verdict = a_verdict(loop_age=loop_age, heartbeat=HEARTBEAT)
 
-    strip = app.session_strip(cfg_stub, verdict, "checkpoints/live", "live", 1)
+    strip = app.session_strip(
+        cfg_stub, verdict, "checkpoints/live", "live", 1, pending=0
+    )
     badge = app.region("Cycle", verdict.pill("loop cadence"), "<svg></svg>")
 
     assert _session_word(strip) == expected
@@ -373,7 +377,9 @@ def test_moving_the_one_threshold_moves_every_consumer(cfg_stub) -> None:
 
     assert slow.state == app.SLOW and silent.state == app.NOT_RESPONDING
     for verdict in (slow, silent):
-        strip = app.session_strip(cfg_stub, verdict, "checkpoints/live", "live", 1)
+        strip = app.session_strip(
+            cfg_stub, verdict, "checkpoints/live", "live", 1, pending=0
+        )
         badge = app.region("Cycle", verdict.pill("loop cadence"), "<svg></svg>")
         assert _session_word(strip) == verdict.state
         assert _pill_kinds(badge) == [verdict.state]
@@ -448,11 +454,75 @@ def test_the_strip_states_the_book_count_without_calling_it_liveness(cfg_stub) -
     which is how a page whose loop was nineteen days dead came to read RUNNING."""
     verdict = a_verdict(lock=app.LOCK_NONE, loop_age=19 * 86400)
 
-    strip = app.session_strip(cfg_stub, verdict, "checkpoints/live", "live", 1)
+    strip = app.session_strip(
+        cfg_stub, verdict, "checkpoints/live", "live", 1, pending=0
+    )
 
     assert "BOOK" in strip and "1 HELD" in strip
     assert _session_word(strip) == app.NOT_RUNNING
     assert "18 days ago" not in strip and "19 days ago" in strip
+
+
+# ── GB-67 step 3: the pending count is a fact about pending.json ─────────────────
+
+
+def _pending_element(strip: str) -> str | None:
+    """The strip's PENDING stat, or ``None`` when it has none."""
+    found = re.findall(
+        r'<span><span class="gb-stat-key">PENDING</span>.*?</span></span>', strip
+    )
+    assert len(found) <= 1, f"more than one pending element: {found}"
+    return found[0] if found else None
+
+
+def test_an_empty_queue_puts_nothing_in_the_strip_not_a_zero(cfg_stub) -> None:
+    """**GB-67 step 3, guard 1.** The one stat that is not always on. With nothing
+    pending there is no pending element at all - an always-on ``0 AWAITING`` would be an
+    element that carries no information, the defect the indicator exists to avoid."""
+    strip = app.session_strip(
+        cfg_stub, a_verdict(), "checkpoints/live", "live", 1, pending=0
+    )
+
+    assert _pending_element(strip) is None
+    assert "PENDING" not in strip and "AWAITING" not in strip, strip
+
+
+def test_the_strip_shows_the_true_pending_count(cfg_stub) -> None:
+    """**Guard 2.** The count is the queue's length, not a flag dressed as one."""
+    for count in (1, 3, 12):
+        strip = app.session_strip(
+            cfg_stub, a_verdict(), "checkpoints/live", "live", 1, pending=count
+        )
+        element = _pending_element(strip)
+        assert element is not None, f"no pending element for {count}"
+        assert f">{count} AWAITING AN ANSWER<" in element, element
+
+
+def test_the_pending_count_is_not_a_liveness_claim(cfg_stub) -> None:
+    """**Guard 4**, modelled on the book count above: ``pending.json`` is a file, as
+    ``book.json`` is, and a queue count that turned red because the loop stopped
+    answering would be one object speaking for something it does not measure. Across
+    LIVE, NOT RESPONDING and STOOD ASIDE the element is identical, and it carries none of
+    the status or chrome colours."""
+    verdicts = {
+        app.LIVE: a_verdict(),
+        app.NOT_RESPONDING: a_verdict(loop_age=19 * 86400),
+        app.ASIDE: a_verdict(band_fires=False),
+    }
+    elements = {}
+    for state, verdict in verdicts.items():
+        assert verdict.state == state, f"the fixture built {verdict.state}, not {state}"
+        strip = app.session_strip(
+            cfg_stub, verdict, "checkpoints/live", "live", 1, pending=2
+        )
+        elements[state] = _pending_element(strip)
+
+    assert len(set(elements.values())) == 1, f"the element follows the loop: {elements}"
+    element = elements[app.LIVE]
+    coloured = [
+        c for c in (app.GAIN, app.LOSS, app.ACCENT) if c.lower() in element.lower()
+    ]
+    assert not coloured, f"the pending element wears {coloured}: {element}"
 
 
 # ── the wiring, not just the parts ───────────────────────────────────────────
@@ -505,7 +575,9 @@ def test_the_stylesheet_rule_for_a_dead_loop_is_actually_emitted(cfg_stub) -> No
     of the old `staleness_html` emitted `.gb-stale`. A rule no code path reaches is a
     stylesheet entry, not a mechanism."""
     silent = a_verdict(loop_age=19 * 86400, heartbeat=HEARTBEAT)
-    strip = app.session_strip(cfg_stub, silent, "checkpoints/live", "live", 1)
+    strip = app.session_strip(
+        cfg_stub, silent, "checkpoints/live", "live", 1, pending=0
+    )
 
     assert ".gb-not-responding" in app.stylesheet()
     assert 'class="gb-not-responding"' in strip
@@ -547,7 +619,9 @@ def test_one_formatter_writes_every_age_on_the_page(cfg_stub) -> None:
     places, neither of which said nineteen days."""
     verdict = a_verdict(loop_age=444.3 * 3600, broker_age=26660 * 60)
 
-    strip = app.session_strip(cfg_stub, verdict, "checkpoints/live", "live", 1)
+    strip = app.session_strip(
+        cfg_stub, verdict, "checkpoints/live", "live", 1, pending=0
+    )
 
     assert app.ago(444.3 * 3600) == "18 days ago"
     assert "18 days ago" in strip

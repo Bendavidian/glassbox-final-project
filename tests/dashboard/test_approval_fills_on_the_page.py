@@ -15,6 +15,7 @@ mechanism only where it runs, so CI installs the browser (`.github/workflows/ci.
 
 from __future__ import annotations
 
+import ast
 import socket
 import subprocess
 import sys
@@ -33,9 +34,9 @@ DECISION_ID = "20260929-PAGE"
 #: what it waits for appears.
 STARTUP_SECONDS = 90
 
-#: The dialog and the Co-Pilot panel under the real stylesheet, called as `main` calls
-#: them - `main` itself needs a broker and ends in a refresh loop, neither of which is
-#: what is measured here.
+#: The dialog, the status strip and the Co-Pilot panel under the real stylesheet, in the
+#: order `main` calls them - `main` itself needs a broker and ends in a refresh loop,
+#: neither of which is what is measured here.
 PAGE = """
 import sys
 from pathlib import Path
@@ -56,7 +57,9 @@ verdict = app.liveness(
     heartbeat=cfg.live.heartbeat_seconds,
 )
 st.markdown(app.stylesheet(), unsafe_allow_html=True)
-app.approval_modal(root, cfg, verdict, st)
+queue = app.approval_modal(root, cfg, verdict, st)
+st.markdown(app.session_strip(cfg, verdict, root, "live", 0, pending=len(queue)),
+            unsafe_allow_html=True)
 app._copilot_panel(root, cfg, verdict, st)
 """
 
@@ -222,3 +225,66 @@ def test_opening_the_modal_focuses_neither_answer(served) -> None:
     page.keyboard.press("Tab")
     label = page.evaluate("() => document.activeElement.getAttribute('aria-label')")
     assert label == "Close", f"the first Tab reaches {label!r}, not Close"
+
+
+def test_the_pending_count_is_above_the_fold_once_the_dialog_is_dismissed(
+    served,
+) -> None:
+    """**GB-67 step 3, guard 3: a dismissed dialog still leaves the page saying so.**
+
+    After Close, the strip's pending count is inside the viewport without scrolling, and
+    it is what the browser finds at its own centre - nothing covers it. The page here puts
+    the strip first, after the dialog, because `main` does; that premise is pinned too, so
+    this cannot pass on an order `main` no longer has.
+    """
+    page, url = served
+    _open(page, url)
+    page.locator('[data-testid="stDialog"] [aria-label="Close"]').click()
+    page.locator('[data-testid="stDialog"]').wait_for(
+        state="hidden", timeout=STARTUP_SECONDS * 1000
+    )
+    element = page.get_by_text("1 AWAITING AN ANSWER")
+    element.wait_for(timeout=STARTUP_SECONDS * 1000)
+    where = element.evaluate("""e => {
+            const r = e.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            return {top: r.top, bottom: r.bottom, left: r.left, right: r.right,
+                    width: innerWidth, height: innerHeight,
+                    hit: e === hit || e.contains(hit)};
+        }""")
+    inside = (
+        0 <= where["top"]
+        and where["bottom"] <= where["height"]
+        and 0 <= where["left"]
+        and where["right"] <= where["width"]
+    )
+    assert inside, f"the pending count is not above the fold: {where}"
+    assert where["hit"], f"something covers the pending count: {where}"
+
+    main = next(
+        node
+        for node in ast.walk(ast.parse(Path(app.__file__).read_text(encoding="utf-8")))
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    (modal,) = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "approval_modal"
+    ]
+    after = sorted(
+        (
+            node
+            for node in ast.walk(main)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "markdown"
+            and node.lineno > modal.lineno
+        ),
+        key=lambda node: node.lineno,
+    )
+    drawn = ast.unparse(after[0].args[0]) if after else None
+    assert drawn is not None and drawn.startswith(
+        "session_strip("
+    ), f"the first thing main draws after the dialog is {drawn}, not the strip"

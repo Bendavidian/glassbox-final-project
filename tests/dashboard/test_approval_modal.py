@@ -228,7 +228,9 @@ def _session_state_subscript(node: ast.AST) -> bool:
 def test_the_modal_opens_when_something_is_pending_and_not_otherwise(tmp_path) -> None:
     """**Guard 1.** A queued entry opens one dialog; an empty or absent queue opens none.
     And `main` calls it - a dialog nothing calls is a library, not a product - as a
-    plain statement of its body, before the first region draws."""
+    statement of its own body, never under a condition, before the first region draws.
+    Since step 3 that statement assigns the queue it returns to the status strip.
+    """
     empty = _run(_modal_script, str(tmp_path), True)
     assert not empty.exception, empty.exception
     assert not _dialogs(empty), "a dialog opened with nothing pending"
@@ -245,7 +247,7 @@ def test_the_modal_opens_when_something_is_pending_and_not_otherwise(tmp_path) -
     statements = [
         statement.value.func.id
         for statement in main.body
-        if isinstance(statement, ast.Expr)
+        if isinstance(statement, ast.Expr | ast.Assign)
         and isinstance(statement.value, ast.Call)
         and isinstance(statement.value.func, ast.Name)
     ]

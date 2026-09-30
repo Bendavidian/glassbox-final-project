@@ -3537,6 +3537,8 @@ def session_strip(
     state_dir: str | Path,
     source: str,
     held: int,
+    *,
+    pending: int,
 ) -> str:
     """Row 1: what is happening now, one line, 20px gaps.
 
@@ -3551,6 +3553,11 @@ def session_strip(
     ``status_of`` returned RUNNING when any position was open, so a count of positions was
     being read aloud as the state of a process that had not run since 3 Sep 2026. Counting
     from the book rather than from the broker read also keeps it true when that read fails.
+
+    ``pending`` is the length of the queue the approval dialog already read (GB-67), so a
+    dismissed dialog still leaves the page saying something is waiting, at the top and
+    without scrolling. **A fact about ``pending.json`` and not about the loop**, exactly as
+    BOOK is about ``book.json``: it wears no verdict colour and no status colour.
     """
     return (
         '<div class="gb-strip">' + f'<span><span class="gb-stat-key">SESSION</span>'
@@ -3558,6 +3565,9 @@ def session_strip(
         f"{escape(verdict.state)}</span></span>"
         + _stat("LAST CYCLE", escape(ago(verdict.loop_age)))
         + _stat("BOOK", f"{held} HELD")
+        # The declared exception: the other eight stats always render, and this one only
+        # when something is pending, because an always-on element carries no information.
+        + (_stat("PENDING", f"{pending} AWAITING AN ANSWER") if pending else "")
         + _stat("MODEL", escape(cfg.model.active.upper()), dim=True)
         + _stat("CHANNELS", escape(cfg.channels.active.upper()), dim=True)
         + _stat("UNIVERSE", f"{len(cfg.universe)}", dim=True)
@@ -3778,11 +3788,13 @@ def main(
 
     # Directly after the verdict and before anything else draws, so a failure further
     # down the page cannot keep a pending decision from being asked (GB-67).
-    approval_modal(root, cfg, verdict, st)
+    pending = approval_modal(root, cfg, verdict, st)
 
     # ── row 1: now ───────────────────────────────────────────────────────────
     st.markdown(
-        session_strip(cfg, verdict, root, source, len(book.symbols())),
+        session_strip(
+            cfg, verdict, root, source, len(book.symbols()), pending=len(pending)
+        ),
         unsafe_allow_html=True,
     )
 
@@ -4201,7 +4213,7 @@ APPROVAL_TITLE = "Awaiting approval — Co-Pilot"
 
 def approval_modal(
     root: Path, cfg: Config, verdict: Liveness, st
-) -> None:  # pragma: no cover - widgets
+) -> list[dict]:  # pragma: no cover - widgets
     """The dialog over the page while anything is pending. **GB-67.**
 
     **Opened by state on every full run, never by a button.** `_refresh` sleeps and then
@@ -4213,6 +4225,9 @@ def approval_modal(
 
     **Dismissing it answers nothing.** ``on_dismiss="ignore"``: no rerun, no callback, and
     the item stays queued, so the dialog is back at the next refresh.
+
+    Returns the queue it read, so the status strip counts the same read rather than a
+    second one that a loop write between the two could make disagree.
     """
     queue = records.load_pending(root)
     st.session_state[APPROVAL_OPEN] = bool(queue)
@@ -4220,6 +4235,7 @@ def approval_modal(
         st.dialog(APPROVAL_TITLE, width="large", dismissible=True, on_dismiss="ignore")(
             _approval_dialog
         )(root, cfg, verdict, queue, st)
+    return queue
 
 
 def _approval_dialog(

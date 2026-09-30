@@ -1191,6 +1191,7 @@ def test_the_session_strip_names_the_bound_directory(cfg_stub) -> None:
         "checkpoints/rehearsal",
         "rehearsal:gate2",
         1,
+        pending=0,
     )
 
     assert "checkpoints/rehearsal" in html
@@ -1427,6 +1428,7 @@ def test_the_status_strip_is_one_line_of_stated_facts(cfg_stub) -> None:
         "checkpoints/rehearsal",
         "rehearsal:gate2",
         1,
+        pending=0,
     )
 
     for key in (
