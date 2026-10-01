@@ -449,3 +449,42 @@ def test_every_action_has_a_label_and_an_unknown_one_is_shown_as_stored() -> Non
     assert (
         f'<span class="gb-meta">{app.escape(stored)}</span>' in card
     ), "the stored action is no longer visible on the card"
+
+
+# ── step 4: the dialog does not depend on the broker ─────────────────────────────
+
+
+def _main_without_broker(root: str) -> None:
+    from glassbox.dashboard import app
+
+    def refuse(cfg) -> None:
+        raise ConnectionError("the broker read is refused for this test")
+
+    original = app._broker_view
+    app._broker_view = refuse
+    try:
+        app.main(root)
+    finally:
+        app._broker_view = original
+
+
+def test_the_dialog_is_reached_when_the_broker_read_fails(tmp_path) -> None:
+    """**GB-67 step 4.** The real ``main``, with the broker read raising and no earlier
+    read to fall back on: the page stops at NO BROKER READ HAS SUCCEEDED YET, and the
+    pending decision is still asked and still counted. The dialog needs nothing the read
+    provides, so the guarantee holds whatever makes the read raise - not because
+    ``_broker_view`` happens to swallow its own failures today.
+
+    The NO BROKER READ line is asserted first, because without it this test could pass
+    on a run where the read never failed at all.
+    """
+    _queue(tmp_path, ENTRY)
+    at = _run(_main_without_broker, str(tmp_path))
+    assert not at.exception, at.exception
+    page = "".join(m.value for m in at.markdown)
+
+    assert "NO BROKER READ HAS SUCCEEDED YET" in page, "the broker read did not fail"
+    assert len(_dialogs(at)) == 1, "a decision was pending and no dialog was reached"
+    assert (
+        "1 AWAITING AN ANSWER" in page
+    ), "the strip does not count the pending decision"

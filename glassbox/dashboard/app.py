@@ -3778,6 +3778,7 @@ def main(
     book = Book.load(root / "book.json")
     hours = _in_market_hours(cfg)
 
+    never_read = False
     try:
         quantities, prices, account, stops = read_broker(cfg)
         st.session_state["last_broker"] = (quantities, prices, account, now)
@@ -3785,16 +3786,17 @@ def main(
     except Exception:  # noqa: BLE001 - a refused read dims the panel, never empties it
         cached = st.session_state.get("last_broker")
         if cached is None:
-            st.markdown(
-                '<div class="gb-empty">NO BROKER READ HAS SUCCEEDED YET</div>',
-                unsafe_allow_html=True,
-            )
-            return
-        quantities, prices, account, at = cached
-        # The stops are not cached: an older answer about protection, shown as current,
-        # is the claim this cell exists to stop making.
-        stops = None
-        broker_age = (now - at).total_seconds()
+            # No read has ever succeeded, so there is no age, only "never". The page
+            # below the strip needs the read and stops after it; the dialog and the strip
+            # need nothing it provides, so they draw first, whatever made it raise (GB-67).
+            never_read = True
+            broker_age = math.inf
+        else:
+            quantities, prices, account, at = cached
+            # The stops are not cached: an older answer about protection, shown as
+            # current, is the claim this cell exists to stop making.
+            stops = None
+            broker_age = (now - at).total_seconds()
 
     # One verdict, built once, read by the strip, the CYCLE panel, every live pill, the
     # positions table and every sparkline. Nothing below re-derives a threshold from the
@@ -3819,6 +3821,12 @@ def main(
         ),
         unsafe_allow_html=True,
     )
+    if never_read:
+        st.markdown(
+            '<div class="gb-empty">NO BROKER READ HAS SUCCEEDED YET</div>',
+            unsafe_allow_html=True,
+        )
+        return
 
     equity = float(account.get("equity", math.nan))
     append_equity(root, now, equity)
