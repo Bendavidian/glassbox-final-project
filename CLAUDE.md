@@ -81,6 +81,8 @@ A task is complete only when **all** of these hold:
 
 **A file path or a value cited from memory is not a fact.** On 2026-09-30 a sizing price was called a previous close from memory, twice - once in a session report and once in a reviewer's approval of it - and both passed unchecked until the line was read. Cite the file:line, or do not state it.
 
+**A test harness that calls the page's functions without the mechanism that drives the page is a more-forgiving double.** On 2026-10-01 every dashboard test ran pages whose runs finished, while `main`'s never did, and the defect that followed survived seven browser-level guards. A harness must end the way production ends.
+
 **Suspicious stability calls for a control, not a larger sweep.** On financial data, a coefficient of variation near **1%** across independently trained models is evidence the measurement is about the machine rather than about the market. The FITS phase advance came in at **+1.9582 days with sd 0.0203 — a CV of 1.04% — across 48 models at three fold-grid anchors**, and it survived being trained on white noise. Four years of equity returns do not produce agreement that tight; a deterministic operator does. **Two tests, and neither subsumes the other:** grid sensitivity asks *does it survive different fold boundaries* and killed `r = −0.47`; a null control asks *does it survive destroying the signal* and killed the phase advance, which had passed grid sensitivity at 48 of 48 cells.
 
 ## 4. Conventions
