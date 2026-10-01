@@ -488,3 +488,50 @@ def test_the_dialog_is_reached_when_the_broker_read_fails(tmp_path) -> None:
     assert (
         "1 AWAITING AN ANSWER" in page
     ), "the strip does not count the pending decision"
+
+
+# ── step 5a: every run of the page finishes ──────────────────────────────────────
+
+
+def test_nothing_in_the_dashboard_sleeps_inside_a_run() -> None:
+    """**GB-67 step 5a.** A sleep inside a run is a run that has not finished, and
+    Streamlit clears an element a newer run stopped sending only when a run finishes. On
+    2026-10-01 ``_refresh`` slept for a cycle and then reran, so no run of the page ever
+    finished and an answered approval dialog stayed on screen inviting a second answer.
+    The refresh is a fragment Streamlit re-executes; nothing in the module sleeps, by any
+    binding of ``sleep``."""
+    tree = _tree()
+    sleeps = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "time"
+        for alias in node.names
+        if alias.name == "sleep"
+    }
+    found = [
+        f"line {node.lineno}: {ast.unparse(node)}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Attribute) and node.func.attr == "sleep")
+            or (isinstance(node.func, ast.Name) and node.func.id in sleeps)
+        )
+    ]
+    assert not found, f"the dashboard sleeps inside a run: {found}"
+
+    # `_refresh` reads the run's start, and only `main` writes it: two places, pinned.
+    main = _function(tree, "main")
+    writes = [
+        node.lineno
+        for node in ast.walk(main)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Subscript)
+            and ast.unparse(target) == "st.session_state[RUN_STARTED]"
+            for target in node.targets
+        )
+    ]
+    refreshes = [call.lineno for call in _calls_by_name(main, "_refresh")]
+    assert (
+        writes and refreshes and min(writes) < min(refreshes)
+    ), f"main does not record when its run began before refreshing: {writes}, {refreshes}"

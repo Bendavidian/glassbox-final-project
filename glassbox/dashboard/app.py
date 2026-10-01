@@ -3755,6 +3755,7 @@ def main(
     cfg = load_config()
     now = pd.Timestamp.now(tz="UTC")
     st.set_page_config(page_title="GlassBox Trader", layout="wide")
+    st.session_state[RUN_STARTED] = time.monotonic()
     # One call, so the field and the rules it depends on arrive as a single node. Two
     # calls would let Streamlit insert a wrapper between them, and the field is
     # position:fixed behind everything - a wrapper with its own stacking context would
@@ -4043,19 +4044,38 @@ def _live_session_count(root: Path, source: str) -> int:  # pragma: no cover - I
     return len({record.as_of for record in records_seen})
 
 
-def _refresh(cfg: Config, st) -> None:  # pragma: no cover - a loop by design
-    """Re-run the page on the live loop's own cadence.
+#: Session-state key for when the current full run began. Written first thing in `main`
+#: and read by `_refresh`, whose heartbeat requests the next run once a cycle has passed.
+RUN_STARTED = "gb-run-started"
+
+
+def _refresh(cfg: Config, st) -> None:  # pragma: no cover - widgets
+    """Re-run the page on the live loop's own cadence, **from a run that has finished**.
 
     ``cfg.live.poll_seconds`` rather than a refresh constant of its own: a panel showing
     state that changes once a cycle should refresh once a cycle, and two numbers for one
     cadence is how the two end up disagreeing.
+
+    **The run ends here; it does not sleep.** Until 2026-10-01 this slept for a cycle and
+    then called ``st.rerun()``, so no run of the page ever finished - and Streamlit removes
+    an element a newer run stopped sending only when a run finishes. An approval dialog
+    answered on 2026-10-01 therefore stayed on screen, inviting a second answer, and a
+    click waited out the sleep before anything happened. Now a fragment that Streamlit
+    re-executes every cycle asks for the next full run once a cycle has passed since this
+    one began, and every run finishes in between.
     """
     st.markdown(
         f'<div class="gb-meta">AUTO-REFRESH EVERY {cfg.live.poll_seconds}S</div>',
         unsafe_allow_html=True,
     )
-    time.sleep(cfg.live.poll_seconds)
-    st.rerun()
+    started = st.session_state[RUN_STARTED]
+
+    @st.fragment(run_every=cfg.live.poll_seconds)
+    def heartbeat() -> None:
+        if time.monotonic() - started >= cfg.live.poll_seconds:
+            st.rerun()
+
+    heartbeat()
 
 
 #: Local files are cheap and change every cycle; the broker is rate-limited, shared with
@@ -4284,8 +4304,6 @@ def _approval_dialog(
             '<div class="gb-meta">Dismissing this answers nothing: it returns at the next '
             "refresh while anything is pending.</div>"
             f'<div class="gb-meta">{escape(FILLS_AT_MARKET)}</div>',
-            f"An answer is acted on at the page's next refresh, up to "
-            f"{cfg.live.poll_seconds}s after the click.",
         ),
         unsafe_allow_html=True,
     )
@@ -4326,6 +4344,7 @@ __all__ = [
     "PRICE_LABEL",
     "RAMP",
     "REJECT_DOES",
+    "RUN_STARTED",
     "SLOW",
     "BandContext",
     "Liveness",
