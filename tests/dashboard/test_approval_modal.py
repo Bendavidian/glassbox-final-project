@@ -535,3 +535,66 @@ def test_nothing_in_the_dashboard_sleeps_inside_a_run() -> None:
     assert (
         writes and refreshes and min(writes) < min(refreshes)
     ), f"main does not record when its run began before refreshing: {writes}, {refreshes}"
+
+
+# ── step 5c: an answer already given elsewhere is an outcome ─────────────────────
+
+
+def _modal_answered_meanwhile(root: str, decision_id: str) -> None:
+    from pathlib import Path
+
+    import streamlit as st
+
+    from glassbox import records
+    from glassbox.config.loader import load_config
+    from glassbox.dashboard import app
+    from glassbox.engine import executor
+    from tests.fake_broker import FakeBroker
+
+    class Recording(FakeBroker):
+        def submit_market_order(self, symbol, quantity, side, client_order_id):
+            with (Path(root) / "orders.jsonl").open("a", encoding="utf-8") as sink:
+                sink.write(client_order_id + "\n")
+            return super().submit_market_order(symbol, quantity, side, client_order_id)
+
+    def answered_elsewhere_first() -> FakeBroker:
+        # The broker is built as the answer's first argument, after this run read the
+        # queue: resolving here is another session answering inside that window.
+        records.resolve_pending(Path(root), decision_id)
+        return Recording(prices={"MODL": 987.654321})
+
+    original = executor.AlpacaBroker
+    executor.AlpacaBroker = answered_elsewhere_first
+    try:
+        cfg = load_config()
+        verdict = app.liveness(
+            lock=app.LOCK_ALIVE,
+            band_fires=True,
+            in_session=True,
+            loop_age=0.0,
+            broker_age=0.0,
+            heartbeat=cfg.live.heartbeat_seconds,
+        )
+        app.approval_modal(Path(root), cfg, verdict, st)
+    finally:
+        executor.AlpacaBroker = original
+
+
+def test_an_answer_given_meanwhile_is_an_outcome_not_a_crash(tmp_path) -> None:
+    """**GB-67 step 5c.** The decision leaves the queue between this run's read and the
+    answer - another session answered it - so the real ``answer_pending`` raises
+    ``LiveError``. That is raised before ``executor.approve``; the click must raise
+    nothing, send no order, and leave no dialog. The queue being empty afterwards is the
+    proof the answer path was reached: nothing else here resolves it."""
+    _queue(tmp_path, ENTRY)
+    at = _run(_modal_answered_meanwhile, str(tmp_path), ENTRY["decision_id"])
+    assert len(_dialogs(at)) == 1, "the dialog did not open"
+
+    at.button(key=f"modal-a-{ENTRY['decision_id']}").click().run()
+
+    assert not at.exception, at.exception
+    assert records.load_pending(tmp_path) == [], "the answer path was never reached"
+    assert not _dialogs(at), "the dialog stayed after the decision was answered"
+    assert not (tmp_path / "orders.jsonl").exists(), (
+        tmp_path / "orders.jsonl"
+    ).read_text(encoding="utf-8")

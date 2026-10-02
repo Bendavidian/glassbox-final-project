@@ -49,6 +49,7 @@ import random
 import sys
 import time
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -4233,7 +4234,7 @@ def _approval_controls(
         return
 
     from glassbox.engine.executor import AlpacaBroker
-    from glassbox.live_loop import answer_pending
+    from glassbox.live_loop import LiveError, answer_pending
 
     # Each button sits in a keyed container because Streamlit gives a keyed container the
     # class `st-key-<key>`, and that class is what the stylesheet fills. The markdown
@@ -4247,11 +4248,16 @@ def _approval_controls(
         approved = st.button("APPROVE", key=f"{key_prefix}a-{entry['decision_id']}")
     with reject_col, st.container(key=f"{key_prefix}gb-reject-{entry['decision_id']}"):
         rejected = st.button("REJECT", key=f"{key_prefix}r-{entry['decision_id']}")
+    # `LiveError` here means the decision left the queue between this run's read and
+    # the answer - another session answered it. That is an outcome, not a crash: it is
+    # raised before `executor.approve`, so nothing reached the broker (GB-67 step 5c).
     if approved:
-        answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], True)
+        with suppress(LiveError):
+            answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], True)
         st.rerun()
     if rejected:
-        answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], False)
+        with suppress(LiveError):
+            answer_pending(cfg, AlpacaBroker(), root, entry["decision_id"], False)
         st.rerun()
 
 
