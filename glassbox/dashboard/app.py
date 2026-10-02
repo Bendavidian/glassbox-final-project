@@ -4266,12 +4266,12 @@ def approval_modal(
 ) -> list[dict]:  # pragma: no cover - widgets
     """The dialog over the page while anything is pending. **GB-67.**
 
-    **Opened by state on every full run, never by a button.** `_refresh` sleeps and then
-    reruns the whole app, and a click made during the sleep reaches a run in which a
-    button-opened dialog is never called, so the click would be dropped with nothing on
-    screen to say so. Here the dialog is called whenever the queue is non-empty, so a
-    dropped click shows as the dialog reopening with the item still pending - the safe
-    direction.
+    **Opened by state on every full run, never by a button.** A button-opened dialog is
+    not called on a full run that did not press the button, so a click it was waiting
+    for would be dropped with nothing on screen to say so (until 2026-10-01 every click
+    reached such a run, because `_refresh` slept and reran). Here the dialog is called
+    whenever the queue is non-empty, so a lost click shows as the dialog reopening with
+    the item still pending - the safe direction.
 
     **Dismissing it answers nothing.** ``on_dismiss="ignore"``: no rerun, no callback, and
     the item stays queued, so the dialog is back at the next refresh.
@@ -4284,17 +4284,25 @@ def approval_modal(
     if st.session_state[APPROVAL_OPEN]:
         st.dialog(APPROVAL_TITLE, width="large", dismissible=True, on_dismiss="ignore")(
             _approval_dialog
-        )(root, cfg, verdict, queue, st)
+        )(root, cfg, verdict, st)
     return queue
 
 
 def _approval_dialog(
-    root: Path, cfg: Config, verdict: Liveness, queue: list[dict], st
+    root: Path, cfg: Config, verdict: Liveness, st
 ) -> None:  # pragma: no cover - widgets
     """The dialog's body: one card per pending record, each entry with its two answers.
 
     No bulk answer: every Approve and Reject belongs to one card and one decision id.
+
+    **It reads the queue itself, every time it runs.** A click inside the dialog reruns
+    only this body, with the arguments it was opened with, so a list passed in would
+    still offer a decision another session has answered since (GB-67 step 5b). With
+    nothing left to answer it asks for a full run, which no longer opens the dialog.
     """
+    queue = records.load_pending(root)
+    if not queue:
+        st.rerun()
     st.markdown(
         region(
             "Pending decisions",

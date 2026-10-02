@@ -415,3 +415,46 @@ def test_an_answered_decision_leaves_the_page_on_the_real_refresh(served) -> Non
     finally:
         for entry in shown:
             records.save_pending(root, entry)
+
+
+ANSWERED_ELSEWHERE = "20260930-ELSE"
+STILL_PENDING = "20260930-STAY"
+
+
+def test_a_decision_answered_elsewhere_is_not_offered_again(served) -> None:
+    """**GB-67 step 5b: the dialog reads the queue, not the list it was opened with.**
+
+    Two decisions are pending and the dialog is open. One is then answered elsewhere -
+    resolved on disk behind the page - and its APPROVE is clicked. A click inside the
+    dialog reruns only the dialog, so a body that kept the list it was opened with would
+    offer that decision again. It must vanish, the other must stay answerable, nothing
+    may raise, and no order may be asked for. The page ends with the real refresh,
+    because a page whose runs finish is not `main`.
+    """
+    page, url, root = served
+    shown = records.load_pending(root)
+    for entry in shown:
+        records.resolve_pending(root, entry["decision_id"])
+    for decision_id, symbol in ((ANSWERED_ELSEWHERE, "ELSE"), (STILL_PENDING, "STAY")):
+        records.save_pending(
+            root, {**SHOWN, "decision_id": decision_id, "symbol": symbol}
+        )
+    try:
+        _open(page, url)
+        answered = page.locator(f".st-key-modal-a-{ANSWERED_ELSEWHERE} button")
+        answered.wait_for(timeout=STARTUP_SECONDS * 1000)
+        records.resolve_pending(root, ANSWERED_ELSEWHERE)
+        answered.click()
+        answered.wait_for(state="detached", timeout=10_000)
+
+        assert page.locator(f".st-key-modal-a-{STILL_PENDING} button").count() == 1
+        errors = page.locator('[data-testid="stException"]')
+        assert not errors.count(), errors.first.inner_text()
+        sent = root / "orders.jsonl"
+        log = sent.read_text(encoding="utf-8") if sent.is_file() else ""
+        assert ANSWERED_ELSEWHERE not in log, f"an order was asked for: {log}"
+    finally:
+        for decision_id in (ANSWERED_ELSEWHERE, STILL_PENDING):
+            records.resolve_pending(root, decision_id)
+        for entry in shown:
+            records.save_pending(root, entry)
