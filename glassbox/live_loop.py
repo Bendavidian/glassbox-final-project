@@ -963,7 +963,7 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
         adopted = adopt_own_positions(state, orders, log)
 
         log(
-            "step 4/10 protection: verify both legs, re-arm, flatten on a second failure"
+            "step 4/10 protection: verify the stop, re-arm, flatten on a second failure"
         )
         rearmed, flattened = protect_book(state, orders, log)
         state.save()
@@ -1318,7 +1318,11 @@ def release_protective_legs(state: LiveState, symbol: str) -> tuple[str, ...]:
 
 
 def _flatten_for_close(state: LiveState, symbol: str, holding: Holding, log) -> bool:
-    """Cancel both legs and sell at market. Idempotent through the client_order_id.
+    """Cancel the stop and sell at market. Idempotent through the client_order_id.
+
+    "Both legs" until the ruling of 26 Aug 2026, which left the stop as the only
+    protective order at the broker; ``release_protective_legs`` still cancels a
+    pre-ruling limit leg if the account holds one.
 
     Returns whether the sell reached the broker. The caller needs to know: a close-out
     that failed leaves a real position behind, and treating it as done would put the
@@ -1784,10 +1788,15 @@ def answer_pending(
 def protect_book(
     state: LiveState, orders: Sequence[BrokerOrder], log
 ) -> tuple[list[str], list[str]]:
-    """Verify both legs of every managed position, arm what is missing, flatten on a
-    second consecutive failure, and cancel a sibling whose partner has filled.
+    """Verify the stop of every managed position, arm it if missing, flatten on a second
+    consecutive failure, and cancel any protective order left after a stop has filled.
 
-    Rules 2, 3 and 4 of the protection policy (DECISIONS, 2026-08-18). Reconciliation
+    Rules 2, 3 and 4 of the protection policy (DECISIONS, 2026-08-18), **as rewritten
+    on 26 Aug 2026**: until then this verified two legs, a stop and a limit, and that
+    policy was superseded because a working sell holds the whole position at Alpaca -
+    ``LEGS`` is ``(STOP_LEG,)``. The sibling cancellation survives only for a limit leg
+    armed before the ruling; under the current policy there is no sibling to cancel.
+    Reconciliation
     detects a missing leg and deliberately does not act on it; this is where acting lives,
     because ``reconcile`` may only ever read.
     """
@@ -1952,8 +1961,10 @@ def exit_position(
 
     Co-Pilot applies here exactly as it does to an entry: the mode means a human approves
     what the system does, and a system that asked permission to buy but not to sell would
-    be two policies wearing one name. The stop and the target stay live meanwhile, so a
-    recommended-but-unapproved exit is a position that is still protected.
+    be two policies wearing one name. The stop stays live meanwhile, so a
+    recommended-but-unapproved exit is a position that is still protected. (Until 26 Aug
+    2026 this read "the stop and the target"; since that ruling the target is not at the
+    broker but evaluated by the loop on completed bars.)
     """
     holding = state.book.managed[symbol]
     order = risk.Order(
@@ -2033,7 +2044,7 @@ def _absorb_entry(
         LOGGER.warning(
             "%s: entry %s is still working after %s polls. The position is not yet in the "
             "book; when it fills, reconciliation will quarantine it and adoption will "
-            "take it back on that cycle and arm both legs. No resubmission is possible - "
+            "take it back on that cycle and arm its stop. No resubmission is possible - "
             "the bar is decided and %s is already used at the broker",
             order.symbol,
             entry.id,

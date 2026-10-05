@@ -75,10 +75,12 @@ TARGET_CHANNEL = "close_logret"
 # truncated history produced. The original derivation bounded **the weight alone** below
 # 1e-7 — `(13/14)^218 < 1e-7`, giving 14 + 218 = 232 and a floor of 352 — which is only
 # correct if the seed difference is at most 1. It is not bounded by 1: it is a difference
-# of average gains, in price units. Near RSI 50 a float32 ulp is 5.95e-06 and GB-27
-# measured a residual of 3.815e-06, the same order of magnitude. **352 was marginal by
-# construction**, which is why the sweep found byte-identity in 32 of 125 symbol-timestamp
-# pairs rather than in none or in all.
+# of average gains, in price units. Near RSI 50 a float32 ulp is 3.8147e-06
+# (`np.spacing(np.float32(50))`, 2**-18), and the residual GB-27 measured was 3.815e-06:
+# **one ulp**, so the observed failure was a single-ulp rounding flip. (Until 5 Oct 2026
+# this comment gave the ulp as 5.95e-06, which is 100 x 2**-24, not the spacing at 50.)
+# **352 was marginal by construction**, which is why the sweep found byte-identity in 32
+# of 125 symbol-timestamp pairs rather than in none or in all.
 #
 # **The target is now 1e-10**, three orders of magnitude tighter than the original 1e-7,
 # which covers a seed difference of up to ~1000x the value's own ulp:

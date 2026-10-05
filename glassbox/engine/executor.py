@@ -16,12 +16,18 @@ memory, both of which shape this module.**
    ``{"code":42210000,"message":"fractional orders must be simple orders"}`` for BRACKET,
    OCO and OTO alike, while the same bracket on **one whole share** is accepted with its
    legs. So the backtester's "entry carries a stop and a target" cannot be expressed as one
-   order live, and this module attaches protection with **two standalone day orders**
-   instead - which the API does accept against a held fractional position (measured).
-   Three consequences follow, and they are limitations rather than details:
+   order live. GB-22 attached protection with two standalone day orders instead, a stop
+   and a limit, each of which the API accepts on its own against a held fractional
+   position (measured).
 
-   - **No OCO linkage.** If the stop fills, the target is still live; the caller must
-     cancel it. :func:`protect` returns both IDs so it can.
+   **Superseded 26 Aug 2026: protection is one standalone stop, and nothing else.** A
+   working sell order holds the whole position at Alpaca, so the second standalone order
+   is refused with ``insufficient qty available`` - measured against a 97.38-share
+   position, so not a fractional-only constraint. The take-profit is evaluated by the
+   live loop on completed bars and exits at market (see :func:`protect`). The "no OCO
+   linkage" limitation this paragraph used to list went with the second order. What
+   remains:
+
    - **Day only.** ``{"code":42210000,"message":"fractional orders must be DAY orders"}``,
      so protection **expires at every close and is re-established each session**.
    - **The residual divergence is smaller than "unprotected overnight", which is what an
@@ -136,7 +142,11 @@ class Broker(Protocol):
     def submit_limit_order(
         self, symbol: str, quantity: float, limit_price: float, client_order_id: str
     ) -> BrokerOrder:
-        """Submit a standalone limit **sell**. The take-profit half of the substitute."""
+        """Submit a standalone limit **sell**.
+
+        The take-profit half of the GB-22 substitute until 26 Aug 2026, when protection
+        became the stop alone; no protective path submits one now.
+        """
         ...
 
     def cancel_order(self, order_id: str) -> None: ...
@@ -157,8 +167,9 @@ class Submission:
     """The outcome of one execution attempt, tied to the decision that caused it.
 
     ``entry`` is ``None`` in Co-Pilot mode and when the order was refused before reaching
-    the broker; ``status`` says which. ``protection`` holds the stop and target orders that
-    stand in for a bracket - empty when the entry did not fill or the mode is Co-Pilot.
+    the broker; ``status`` says which. ``protection`` holds the one stop order that
+    stands in for a bracket - empty when the entry did not fill or the mode is Co-Pilot.
+    (It held a stop and a target until the ruling of 26 Aug 2026.)
     """
 
     decision_id: str
@@ -627,10 +638,10 @@ class AlpacaBroker:
         about orders that have **finished**. ``records.emit_trades`` builds the live trade
         log from filled sells, so with an open-only list the live trade log was
         structurally empty and GB-19 had nothing to measure; ``live_loop.protect_book``
-        detects a filled leg in order to cancel its sibling, so rule 4 of the protection
-        policy could never fire and a filled stop would have left its take-profit working
-        as a naked sell. Both failures are silent - an empty list is a valid answer to the
-        wrong question.
+        detected a filled leg in order to cancel its sibling, so under the two-leg
+        policy then in force (superseded 26 Aug 2026) rule 4 could never fire and a
+        filled stop would have left its take-profit working as a naked sell. Both
+        failures are silent - an empty list is a valid answer to the wrong question.
 
         Callers that want only working orders filter on status themselves, and did so
         already; nothing needed the broker to do the filtering.

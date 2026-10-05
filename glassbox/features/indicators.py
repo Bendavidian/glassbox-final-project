@@ -82,9 +82,11 @@ MA_DIST_WINDOW = 20
 #
 # 1e-10, not the 1e-2 this held until GB-27. The old target bounded the weight only, which
 # is sufficient only if the seed difference is at most 1; it is a difference of average
-# gains, in price units. Near RSI 50 a float32 ulp is 5.95e-06 and the residual GB-27
-# measured was 3.815e-06, the same order of magnitude. 1e-10 leaves three orders of
-# magnitude of margin over the value's own ulp.
+# gains, in price units. Near RSI 50 a float32 ulp is 3.8147e-06
+# (`np.spacing(np.float32(50))`, 2**-18), and the residual GB-27 measured was 3.815e-06:
+# **one ulp**, so the observed failure was a single-ulp rounding flip. (Until 5 Oct 2026
+# this comment gave the ulp as 5.95e-06, which is 100 x 2**-24, not the spacing at 50.)
+# 1e-10 leaves three orders of magnitude of margin over the value's own ulp.
 #
 # This is deliberately the SAME number as `builder.PARITY_WARMUP["rsi14"]`, which imports
 # it: "the value no longer remembers its seed" and "the value is byte-identical to what
