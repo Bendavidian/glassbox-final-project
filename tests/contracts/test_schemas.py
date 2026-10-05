@@ -17,6 +17,7 @@ from glassbox.contracts.schemas import (
     FitProvenance,
     Forecast,
     Signal,
+    Trade,
     WindowBatch,
 )
 
@@ -541,3 +542,37 @@ def test_a_forecaster_without_provenance_is_rejected() -> None:
 
 def test_incomplete_implementation_is_rejected() -> None:
     assert not isinstance(_IncompleteForecaster(), Forecaster)
+
+
+# ── Trade: the declared time type, enforced (5 Oct 2026) ─────────────────────
+
+
+def make_trade(**overrides: Any) -> Trade:
+    fields: dict[str, Any] = {
+        "symbol": "AAPL",
+        "entry_time": pd.Timestamp("2026-10-01 14:20", tz="UTC"),
+        "exit_time": pd.Timestamp("2026-10-02 15:00", tz="UTC"),
+        "size": 1.0,
+        "entry_price": 100.0,
+        "exit_price": 101.0,
+        "gross_pnl": 1.0,
+        "costs": 0.0,
+        "net_pnl": 1.0,
+        "exit_reason": "stop",
+        "strategy_exit": True,
+    }
+    fields.update(overrides)
+    return Trade(**fields)
+
+
+def test_a_trade_with_timestamp_times_is_valid() -> None:
+    assert make_trade().entry_time.year == 2026
+
+
+@pytest.mark.parametrize("name", ["entry_time", "exit_time"])
+def test_a_trade_time_that_is_not_a_timestamp_is_refused(name: str) -> None:
+    """The live path built a Trade with the stored ISO string as its entry time, and it
+    surfaced as an AttributeError in the trade log's writer at step 2 of a live cycle.
+    """
+    with pytest.raises(ValueError, match=rf"Trade\.{name} must be a pd\.Timestamp"):
+        make_trade(**{name: "2026-10-01T14:20:54.099261+00:00"})

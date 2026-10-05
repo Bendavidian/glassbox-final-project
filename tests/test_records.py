@@ -728,3 +728,19 @@ def test_a_torn_line_costs_one_trade_and_not_the_log(tmp_path: Path) -> None:
     kept = records.load_trades(tmp_path)
 
     assert [t.symbol for t in kept] == ["NVDA", "AAPL"]
+
+
+def test_a_sell_that_filled_before_the_entry_is_not_a_trade(caplog) -> None:
+    """The phantom of 2 and 5 Oct 2026: a closeout from an earlier round trip in the same
+    symbol, matched to the current entry on the symbol alone, five weeks apart."""
+    book = Book(managed={SYMBOL: a_holding()})
+    earlier = replace(
+        a_fill("-closeout", 101.0),
+        raw={
+            "client_order_id": "20260701-X-closeout",
+            "filled_at": ENTRY_TIME - pd.Timedelta(days=40),
+        },
+    )
+
+    assert records.emit_trades([earlier], book, ENTRY_FILLS) == []
+    assert any("closed an earlier position" in r.message for r in caplog.records)

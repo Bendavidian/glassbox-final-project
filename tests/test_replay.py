@@ -316,6 +316,24 @@ def test_a_stop_and_a_target_on_the_same_bar_resolve_stop_first() -> None:
     assert "stop filled" in resolved[0]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="ReplayBroker stamps no filled_at (found 5 Oct 2026, not closed then). A "
+    "replayed stop exit reads as filled at Timestamp.min, before any entry, so "
+    "records.emit_trades refuses it as a sell from an earlier round trip.",
+)
+def test_a_replayed_stop_fill_carries_its_fill_time() -> None:
+    broker = ReplayBroker()
+    broker.advance(bar(101.0, 99.0, 100.0))
+    broker.submit_market_order(SYMBOL, 2.0, "buy", "d1")
+    stop = broker.submit_stop_order(SYMBOL, 2.0, 97.0, "d1-stop")
+    broker.advance(bar(100.0, 96.0, 96.5))
+
+    [filled] = [order for order in broker.get_orders() if order.id == stop.id]
+    assert filled.status == "filled"
+    assert "filled_at" in filled.raw
+
+
 def test_an_untouched_level_does_not_fill() -> None:
     broker = ReplayBroker()
     broker.advance(bar(101.0, 99.0, 100.0))

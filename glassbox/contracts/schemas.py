@@ -391,6 +391,16 @@ class Trade:
     entry_order_id: str | None = None  # live only; a backtest fill has no broker order
     exit_order_id: str | None = None
 
+    def __post_init__(self) -> None:
+        # Enforcing the declaration, not changing it (ruled 5 Oct 2026). The annotation
+        # said `pd.Timestamp` from the day the type existed and nothing held it to that: the
+        # live path built a Trade with a string entry time, and it surfaced two calls later
+        # as an AttributeError inside the trade log's writer, at step 2 of a live cycle.
+        for name in ("entry_time", "exit_time"):
+            value = getattr(self, name)
+            if not isinstance(value, pd.Timestamp):
+                _fail(f"Trade.{name}", "a pd.Timestamp", value)
+
 
 @dataclass(frozen=True)
 class Forecast:

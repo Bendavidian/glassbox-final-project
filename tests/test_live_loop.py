@@ -2679,3 +2679,183 @@ def test_the_summary_reports_the_close_out_flatten_and_what_is_still_held() -> N
     assert "STILL HELD - NVDA" in stranded_summary
     assert "CLOSE-OUT FAILED" in stranded_summary
     assert "Close it by hand" in stranded_summary
+
+
+# ── GB-29 / 5 Oct 2026: trade emission, end to end ───────────────────────────
+#
+# On 2 and 5 Oct 2026 the deployed loop emitted its first trade and crashed step 2 on every
+# cycle of two sessions: the stored entry time is a string, and `Trade` received it as one.
+# The trade itself was a phantom - a 2026-08-28 closeout paired with a 2026-10-01 entry.
+# No test had reached either: the records tests hand `emit_trades` a `pd.Timestamp`, and the
+# one `run_cycle` test that seeded the stored string was a rehearsal, which empties the
+# tuple before the string is read. So these go through `run_cycle`, outside a rehearsal,
+# with the entry fill written by the loop and, after a restart, read back from disk.
+
+LATER = NOW + pd.Timedelta(hours=2)
+
+
+def opened_by_the_loop(
+    cfg: Config, broker: FakeBroker, tmp_path: Path
+) -> live_loop.LiveState:
+    """AAPL opened by `run_cycle` itself, so its entry fill is what `_absorb_entry` stores."""
+    broker.now = NOW
+    auto = replace(cfg, live=replace(cfg.live, mode="auto"))
+    state = a_state(auto, tmp_path, broker, total=0.05)
+    live_loop.run_cycle(state, NOW)
+    live_loop.run_cycle(state, NOW)
+    assert "AAPL" in state.book.managed, "nothing opened; harness problem"
+    return state
+
+
+def restarted(state: live_loop.LiveState) -> live_loop.LiveState:
+    """A new process on the same state directory, built from disk as `run_session` builds it.
+
+    Nothing carries over from memory - in particular not ``seen_orders``, so every order in
+    the broker's history is fresh to the first cycle, as it is in production.
+    """
+    root = state.state_dir
+    return live_loop.LiveState(
+        cfg=state.cfg,
+        broker=state.broker,
+        predictor=state.predictor,
+        thresholds=state.thresholds,
+        state_dir=root,
+        book=Book.load(root / live_loop.BOOK_FILE),
+        entry_fills=live_loop._load_entry_fills(root / live_loop.ENTRY_FILLS_FILE),
+    )
+
+
+def working_stop(broker: FakeBroker, symbol: str) -> BrokerOrder:
+    [stop] = [
+        order
+        for order in broker.orders
+        if order.symbol == symbol
+        and order.side == SELL
+        and order.status not in live_loop.FINISHED
+    ]
+    return stop
+
+
+def trade_log_lines(root: Path) -> list[str]:
+    path = root / records.TRADES_FILE
+    if not path.exists():
+        return []
+    return [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+@pytest.mark.parametrize("restart", [True, False], ids=["restart", "same-process"])
+def test_a_stop_exit_reaches_the_trade_log_with_a_typed_entry_time(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path, restart: bool
+) -> None:
+    """Guard A. The stored entry fill, string and all, becomes a typed `Trade` on disk.
+
+    Both variants, because the value is a string in memory as well as in the file: the
+    restart reads it from ``entry_fills.json``, the same process reads the list the writer
+    left. **The same-process variant fills the stop before any cycle has read it as
+    working**, which is the one in-session case T1 does not drop; a cycle in between is
+    T1, pinned by the strict xfail below.
+    """
+    state = opened_by_the_loop(cfg, broker, tmp_path)
+    stored = json.loads(
+        (tmp_path / live_loop.ENTRY_FILLS_FILE).read_text(encoding="utf-8")
+    )
+    # The premise: production's format, on disk and in memory, not a constructed Trade.
+    assert isinstance(stored["AAPL"][0], str)
+    assert isinstance(state.entry_fills["AAPL"][0], str)
+
+    stop = working_stop(broker, "AAPL")
+    level = state.book.managed["AAPL"].stop_loss
+    broker.now = LATER
+    broker.trigger(stop.id, level)
+    if restart:
+        state = restarted(state)
+
+    report = live_loop.run_cycle(state, LATER)
+
+    assert report.ok, report.error
+    [trade] = report.trades
+    assert records.load_trades(tmp_path) == [trade]
+    assert isinstance(trade.entry_time, pd.Timestamp)
+    assert trade.entry_time == pd.Timestamp(stored["AAPL"][0]) == NOW
+    assert trade.exit_time == LATER
+    assert trade.exit_reason == records.STOP
+    assert trade.exit_order_id == stop.id
+
+
+def test_a_sell_from_an_earlier_round_trip_is_not_a_trade_after_a_restart(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """Guard B, the phantom of 2 and 5 Oct 2026, reproduced in its production order.
+
+    An earlier round trip closed weeks ago; the loop opens the symbol again; the DAY stop
+    expires overnight; a new process starts. Its first cycle sees the old closeout as
+    fresh, and the symbol is managed with an entry fill - exactly the pairing that matched
+    on symbol alone. It must emit nothing, crash nothing, and reach step 4, which on 5 Oct
+    is the step that never ran.
+    """
+    broker.now = NOW - pd.Timedelta(days=40)
+    broker.submit_market_order("AAPL", 0.5, BUY, "20260701-AAPL")
+    closeout = broker.submit_market_order("AAPL", 0.5, SELL, "20260701-AAPL-closeout")
+    state = opened_by_the_loop(cfg, broker, tmp_path)
+    assert closeout.raw["filled_at"] < pd.Timestamp(state.entry_fills["AAPL"][0])
+    expired = working_stop(broker, "AAPL")
+    broker.orders = [
+        replace(order, status="expired") if order.status == "new" else order
+        for order in broker.orders
+    ]
+
+    report = live_loop.run_cycle(restarted(state), LATER)
+
+    assert report.ok, report.error
+    assert trade_log_lines(tmp_path) == []
+    assert report.trades == ()
+    # Step 4 ran: the stop that expired overnight was replaced by a new working one.
+    assert "AAPL" in report.rearmed
+    assert working_stop(broker, "AAPL").id != expired.id
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="T1 (PROGRESS, 30 Sep 2026): a stop read as working enters seen_orders, so "
+    "its later fill is never fresh and never becomes a Trade. Not fixed on 5 Oct.",
+)
+def test_a_stop_seen_working_and_then_filled_becomes_one_trade(
+    cfg: Config, broker: FakeBroker, stub_bars: dict, tmp_path: Path
+) -> None:
+    """T1's acceptance, as written in its row: one Trade on the fill cycle, none after."""
+    state = opened_by_the_loop(cfg, broker, tmp_path)
+    live_loop.run_cycle(state, NOW)  # the stop is read as working here
+    stop = working_stop(broker, "AAPL")
+    broker.now = LATER
+    broker.trigger(stop.id, state.book.managed["AAPL"].stop_loss)
+
+    on_the_fill = live_loop.run_cycle(state, LATER)
+    after = live_loop.run_cycle(state, LATER)
+
+    assert len(on_the_fill.trades) == 1
+    assert after.trades == ()
+
+
+def test_a_run_of_failures_makes_no_claim_about_the_stops(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """On 2 and 5 Oct 2026 this line said every protective leg was still live while the
+    broker held no working order. The function reads nothing from the broker and does not
+    know which step failed, so it may only say that protection is unconfirmed."""
+    failed = live_loop.CycleReport(
+        cycle_id="c",
+        at=NOW,
+        entries_allowed=True,
+        failed_step="AttributeError",
+        error="boom",
+    )
+    with caplog.at_level(logging.ERROR, logger="glassbox.live_loop"):
+        live_loop._log_run_of_failures([failed, failed])
+
+    [message] = [
+        record.getMessage()
+        for record in caplog.records
+        if "cycles in a row" in record.getMessage()
+    ]
+    assert "still live" not in message
+    assert "protection is NOT confirmed" in message

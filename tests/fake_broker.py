@@ -12,12 +12,19 @@ paper API, verbatim, because a fake that accepts everything proves only that the
 - a fractional quantity with anything but a simple order → ``fractional orders must be
   simple orders``
 - selling more than is held → ``fractional orders cannot be sold short``
+
+**It stamps every fill with ``filled_at``, as Alpaca does** (5 Oct 2026). It did not, so
+every fill it made read as ``Timestamp.min`` - and no test could ask *when* a sell filled
+relative to the entry it closes, which is the question the phantom trade of 2 and 5 Oct
+2026 turned on.
 """
 
 from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field, replace
+
+import pandas as pd
 
 from glassbox.engine.executor import BUY, SELL, BrokerOrder
 
@@ -54,12 +61,16 @@ class FakeBroker:
             accepted and left unfilled — the after-the-close case, where the fill happens
             at the next open and this cycle must not pretend otherwise.
         equity: Starting account value.
+        now: The broker's clock, stamped on every fill as ``filled_at``. ``None`` reads the
+            wall clock, which is what the venue stamps; a test that orders fills against a
+            cycle's ``when`` sets it.
     """
 
     prices: dict[str, float] = field(default_factory=dict)
     fill: bool = True
     equity: float = 100_000.0
     cash: float = 100_000.0
+    now: pd.Timestamp | None = None
 
     orders: list[BrokerOrder] = field(default_factory=list)
     positions: dict[str, float] = field(default_factory=dict)
@@ -134,6 +145,32 @@ class FakeBroker:
             for order in self.orders
         ]
 
+    def trigger(self, order_id: str, price: float) -> BrokerOrder:
+        """A working stop or limit sell reaches its level and fills in full at ``price``.
+
+        Not part of the protocol: the venue does this on its own, and a test stands in for
+        the market. The position and cash move as for a market sell, and the fill is
+        stamped like every other.
+        """
+        [order] = [order for order in self.orders if order.id == order_id]
+        if order.side != SELL or order.status in _FINISHED:
+            raise FakeBrokerError(f"order {order_id} is not a working sell")
+        self.positions[order.symbol] = self.positions.get(order.symbol, 0.0) - (
+            order.quantity
+        )
+        if abs(self.positions[order.symbol]) < 1e-12:
+            del self.positions[order.symbol]
+        self.cash += order.quantity * price
+        filled = replace(
+            order,
+            status="filled",
+            filled_quantity=order.quantity,
+            filled_price=price,
+            raw={**order.raw, "filled_at": self._clock()},
+        )
+        self.orders = [filled if o.id == order_id else o for o in self.orders]
+        return filled
+
     def get_orders(self) -> list[BrokerOrder]:
         return list(self.orders)
 
@@ -183,6 +220,9 @@ class FakeBroker:
                 f"{self.held_for_orders(symbol)}, symbol={symbol}"
             )
 
+    def _clock(self) -> pd.Timestamp:
+        return self.now if self.now is not None else pd.Timestamp.now(tz="UTC")
+
     def _price(self, symbol: str) -> float:
         if symbol not in self.prices:
             raise FakeBrokerError(f"no price for {symbol}")
@@ -206,7 +246,8 @@ class FakeBroker:
             status=status,
             filled_quantity=filled_quantity,
             filled_price=filled_price,
-            raw={"client_order_id": client_order_id},
+            raw={"client_order_id": client_order_id}
+            | ({"filled_at": self._clock()} if filled_quantity else {}),
         )
         self.orders.append(order)
         return order

@@ -934,7 +934,7 @@ def run_cycle(state: LiveState, when: pd.Timestamp) -> CycleReport:
                 records.emit_trades(
                     fresh,
                     state.book,
-                    {k: tuple(v) for k, v in state.entry_fills.items()},
+                    {k: _entry_fill(v) for k, v in state.entry_fills.items()},
                 )
             )
         )
@@ -2390,10 +2390,19 @@ def _log_run_of_failures(cycles: list[CycleReport]) -> None:
             break
         run += 1
     if run >= 2:
+        # **Says only what a failed cycle can know** (5 Oct 2026). This line used to
+        # promise that every protective leg at the broker was still live. It said so for
+        # two sessions while the broker held no working order at all: the stops are DAY
+        # orders, they had expired at the previous close, and step 4, which re-arms them,
+        # sits after the step that was failing. Nothing here reads the broker, and a
+        # cycle does not record which step failed, so this can say neither that the
+        # stops are live nor that step 4 was skipped - only that protection is unconfirmed.
         LOGGER.error(
-            "%d cycles in a row have failed (%s). The loop is still polling and every "
-            "protective leg already at the broker is still live, but nothing has been "
-            "decided across those cycles",
+            "%d cycles in a row have failed (%s). The loop is still polling, but nothing "
+            "has been decided across those cycles and protection is NOT confirmed: a "
+            "cycle that fails before step 4 verifies and re-arms no stop, and every stop "
+            "from a previous session expired at its close. Check the broker for working "
+            "stops",
             run,
             cycles[-1].error,
         )
@@ -2472,6 +2481,25 @@ def _load_entry_fills(path: Path) -> dict[str, list]:
     if not path.is_file():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _entry_fill(stored: Sequence) -> tuple[pd.Timestamp, float, float, str]:
+    """A stored entry fill, typed as ``records.emit_trades`` reads it.
+
+    **The one place the stored form becomes the typed one.** Both writers (`_absorb_entry`
+    and `adopt_own_positions`) keep the time as an ISO string, because `entry_fills` is
+    what `LiveState.save` serialises, so the value is a string in memory as well as on
+    disk. Until 5 Oct 2026 nothing turned it back: the string reached ``Trade.entry_time``
+    and the first trade the deployed loop ever emitted crashed step 2 in ``.isoformat()``,
+    on every cycle of two sessions, with protection never reached.
+    """
+    entry_time, price, cost, order_id = stored
+    return (
+        pd.Timestamp(entry_time).tz_convert("UTC"),
+        float(price),
+        float(cost),
+        order_id,
+    )
 
 
 def _install_sigint(handler):  # pragma: no cover - depends on the host

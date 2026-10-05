@@ -640,6 +640,10 @@ def emit_trades(
             rather than re-derived here: the broker's order history is paged, and an entry
             can age out of it while its position is still open.
 
+    A sell that filled **before** the position's entry fill is refused with a warning: it
+    closed an earlier round trip in the same symbol. A sell with no fill time reads as
+    filled at the earliest representable instant and is refused for the same reason.
+
     Returns:
         Trades in exit-time order. ``costs`` is what the broker actually charged, never the
         configured bps.
@@ -663,6 +667,22 @@ def emit_trades(
 
         holding = book.managed[order.symbol]
         entry_time, entry_price, entry_cost, entry_id = entry_fills[order.symbol]
+        exit_time = _filled_at(order)
+        if exit_time < entry_time:
+            # **A sell cannot close a position opened after it** (5 Oct 2026). Matching on
+            # the symbol alone paired a 2026-08-28 closeout with a 2026-10-01 entry: the
+            # order history reaches back across round trips, and after a restart every
+            # sell in it is fresh. Only the type error at `_encode_trade` kept that out of
+            # the trade log, as a signal exit, once per session.
+            LOGGER.warning(
+                "records: a sell for %s filled at %s, before this position's entry fill "
+                "at %s; it closed an earlier position, so no trade emitted (order %s)",
+                order.symbol,
+                exit_time,
+                entry_time,
+                order.id,
+            )
+            continue
         exit_price = float(order.filled_price or 0.0)
         size = float(order.filled_quantity)
         gross = (exit_price - entry_price) * size
@@ -672,7 +692,7 @@ def emit_trades(
             Trade(
                 symbol=order.symbol,
                 entry_time=entry_time,
-                exit_time=_filled_at(order),
+                exit_time=exit_time,
                 size=size,
                 entry_price=entry_price,
                 exit_price=exit_price,
