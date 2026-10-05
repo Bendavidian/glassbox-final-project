@@ -559,16 +559,31 @@ class PositionRow:
 
         1.0 at the entry price, 0.0 at the stop, negative below it. NaN when no protective
         order is working at the broker: there is then no stop to have room to, whatever the
-        book intended. Expressed against the entry-to-stop distance rather than as a
-        percentage of price, because that is the quantity a reader is actually asking
-        about: how much of the room this position was given has it used. A 2% move means
+        book intended. **It sets the bands and the stop note, and is never printed as a
+        percentage beside a price.** Against the entry-to-stop distance because the bands
+        ask how much of the room this position was given it has used: a 2% move means
         something different on a 3% stop than on a 10% one, and a percentage of price
-        cannot tell them apart.
+        cannot tell them apart. (Until 5 Oct 2026 this figure was also the `STOP ROOM`
+        cell, and AMZN read "214% TO 238.38" while 6.0% above its stop: beside a price
+        level, a reader takes the figure as the fall needed to reach it.
+        :attr:`fall_to_stop` is the cell's figure now.)
         """
         span = self.entry_price - self.live_stop
         if math.isnan(span) or span <= 0 or math.isnan(self.price):
             return math.nan
         return (self.price - self.live_stop) / span
+
+    @property
+    def fall_to_stop(self) -> float:
+        """The fall from the last price to the live stop, as a fraction of the last price.
+
+        The `STOP ROOM` figure: what the price has to lose for the stop to fill. Zero at
+        the stop and negative below it. It does not read the entry, so a stop raised above
+        the entry still has a distance. NaN without a live level or a usable price.
+        """
+        if math.isnan(self.live_stop) or math.isnan(self.price) or self.price <= 0:
+            return math.nan
+        return (self.price - self.live_stop) / self.price
 
     @property
     def stop_proximity(self) -> str:
@@ -2854,16 +2869,20 @@ STOP_UNKNOWN = "STOP UNKNOWN · BROKER READ FAILED"
 #: position is protected, and the only thing missing is a number.
 TRAILING_UNREPORTED = "LIVE TRAILING STOP · LEVEL NOT REPORTED"
 
+#: A last price at or through the live stop. Words rather than a zero or negative room.
+AT_OR_BELOW_STOP = "AT OR BELOW STOP"
+
 
 def stop_cell(row: PositionRow) -> str:
     """The `STOP ROOM` cell, as module-built HTML. A room figure needs a live stop.
 
-    With no stop working at the broker the cell says so, and shows the book's level in the
-    dim colour as intent, so the level is visible without reading as protection. When the
-    orders could not be read it says that instead and shows no level at all: falling back
-    to the book would turn "could not ask" into "protected". A working stop with no
-    reported level - only a trailing stop, :func:`live_stops` keeps no other kind without
-    one - is protection without a room figure.
+    The figure is :attr:`PositionRow.fall_to_stop`, "6.0% TO 238.38": the price is 6.0%
+    above the stop. With no stop working at the broker the cell says so, and shows the
+    book's level in the dim colour as intent, so the level is visible without reading as
+    protection. When the orders could not be read it says that instead and shows no level
+    at all: falling back to the book would turn "could not ask" into "protected". A working
+    stop with no reported level - only a trailing stop, :func:`live_stops` keeps no other
+    kind without one - is protection without a room figure.
     """
     if not row.managed:
         return EM_DASH
@@ -2878,8 +2897,12 @@ def stop_cell(row: PositionRow) -> str:
         )
     if math.isnan(row.live_stop):
         return TRAILING_UNREPORTED
-    room = row.stop_room
-    return EM_DASH if math.isnan(room) else f"{room * 100:.0f}% TO {row.live_stop:,.2f}"
+    room = row.fall_to_stop
+    if math.isnan(room):
+        return EM_DASH
+    if room <= 0:
+        return f"{AT_OR_BELOW_STOP} {row.live_stop:,.2f}"
+    return f"{room * 100:.1f}% TO {row.live_stop:,.2f}"
 
 
 def state_cell(row: PositionRow, verdict: Liveness) -> str:

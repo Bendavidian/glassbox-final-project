@@ -76,6 +76,10 @@ def _cell(html: str, header: str) -> tuple[str, str]:
 def test_the_book_stop_would_have_reproduced_the_panel() -> None:
     """The fixture's premise, asserted: without it the absence checks below could pass
     because the fixture never produced the defect's string in the first place."""
+    # The panel's formula on 22 Sep 2026, kept as history: the share of the entry-to-stop
+    # distance. Since 5 Oct 2026 the cell prints the fall to the stop instead, which would
+    # read "2.3% TO 105.39" here; the absence checks look for "105.39" and "% TO", which
+    # neither formula can produce without the book's level reaching the cell.
     room = (PRICE - WMT.stop_loss) / (WMT.entry_price - WMT.stop_loss)
 
     assert f"{room * 100:.0f}% TO {WMT.stop_loss:,.2f}" == "76% TO 105.39"
@@ -89,12 +93,14 @@ def test_the_stop_room_is_measured_to_the_order_working_at_the_broker(
     order_type: str,
 ) -> None:
     """(i) A live stop at a level **different** from the book's, so the source is visible
-    in the output: (107.91 - 104.00) / (108.70 - 104.00) is 83%, and the book's 105.39
-    would have read 76%. A trailing stop that reports its level is measured the same way.
+    in the output: (107.91 - 104.00) / 107.91 is 3.6%, and the book's 105.39 would have
+    read 2.3%. A trailing stop that reports its level is measured the same way. (Until
+    5 Oct 2026 the figure was the share of the entry-to-stop distance, and this test
+    pinned 83% against the book's 76%.)
     """
     html = _rendered(app.live_stops([a_stop(order_type, 104.00)]))
 
-    assert _cell(html, "STOP ROOM") == ("", "83% TO 104.00")
+    assert _cell(html, "STOP ROOM") == ("", "3.6% TO 104.00")
     assert "105.39" not in html
     assert _cell(html, "STATE")[1] == "MANAGED"
 
@@ -144,6 +150,56 @@ def test_the_stop_note_promises_no_order_the_broker_does_not_hold() -> None:
     assert app.stop_note(_row({}, price=104.00)) == ""
 
 
+# ── the room figure ──────────────────────────────────────────────────────────
+
+#: AMZN as the book held it on 5 Oct 2026. The broker's stop is the book's 238.3775 at a
+#: cent's precision, and the panel read "214% TO 238.38" with the last price at 253.70.
+AMZN = Holding(
+    symbol="AMZN",
+    quantity=0.888706071,
+    decision_id="20260925-AMZN",
+    entry_price=245.54,
+    stop_loss=238.3775,
+    take_profit=260.495,
+)
+
+
+def _amzn(price: float) -> str:
+    stops = app.live_stops([app.OpenOrder("AMZN", "sell", "stop", 238.38)])
+    return app.position_table([_row(stops, price, AMZN)], a_verdict())
+
+
+def test_the_stop_room_is_the_fall_to_the_stop_as_a_share_of_the_last_price() -> None:
+    """AMZN on 5 Oct 2026: (253.70 - 238.38) / 253.70 is 6.0%, the fall that fills the
+    stop. Beside a price level that is the only reading a figure invites, and the share
+    of the entry-to-stop distance it replaced, 214%, invited it falsely."""
+    assert _cell(_amzn(253.70), "STOP ROOM") == ("", "6.0% TO 238.38")
+
+
+@pytest.mark.parametrize("price", [238.38, 237.00], ids=["at the stop", "through it"])
+def test_a_price_at_or_below_its_stop_says_so_in_words(price: float) -> None:
+    """No zero and no negative room: "0.0% TO" reads as a figure, and "-0.6% TO" as a
+    room the reader has to decode. The mark is the band's, and does not change."""
+    klass, cell = _cell(_amzn(price), "STOP ROOM")
+
+    assert cell == "AT OR BELOW STOP 238.38"
+    assert klass == "gb-flag"
+
+
+def test_a_room_the_old_figure_put_above_100_percent_reads_below_it() -> None:
+    """WMT at 115.00 against a live 104.00: 234% of its entry-to-stop distance, because a
+    price above its entry has more than all the room it was given. As a fall to the stop
+    it is 9.6%, and no long above a positive stop can need 100%."""
+    row = _row(app.live_stops([a_stop("stop", 104.00)]), price=115.00)
+    # The premise, or the test could pass on a row that never exceeded 100%.
+    assert f"{row.stop_room * 100:.0f}%" == "234%"
+
+    cell = _cell(app.position_table([row], a_verdict()), "STOP ROOM")[1]
+
+    assert cell == "9.6% TO 104.00"
+    assert float(cell.split("%")[0]) < 100
+
+
 # ── which orders are protection ──────────────────────────────────────────────
 
 
@@ -178,7 +234,8 @@ def test_the_highest_reported_level_is_the_one_measured() -> None:
     trailing stop that reports none."""
     orders = [a_stop("trailing_stop", None), a_stop("stop", 103.00), a_stop("stop")]
 
-    assert _cell(_rendered(app.live_stops(orders)), "STOP ROOM")[1] == "83% TO 104.00"
+    # 103.00 would read 4.6%. Until 5 Oct 2026 this pinned "83% TO 104.00".
+    assert _cell(_rendered(app.live_stops(orders)), "STOP ROOM")[1] == "3.6% TO 104.00"
 
 
 def test_the_order_read_asks_for_open_orders_and_keeps_the_stop_price() -> None:
@@ -325,13 +382,15 @@ FIXED = (
     "NO LIVE STOP · UNPROTECTED",
     "NOT AT BROKER",
     "INTENDED",
+    "AT OR BELOW STOP",
     "% TO",
     "—",
 )
 
 #: What the numbers and separators are made of. ``,`` is the thousands separator of
-#: ``:,.2f`` and ``-`` the sign of a room below its stop; neither opens a tag or an entity.
-NUMERIC = set("0123456789.%· ,-")
+#: ``:,.2f``, and it opens neither a tag nor an entity. (Until 5 Oct 2026 this also allowed
+#: ``-``, the sign of a room below its stop; that room is words now, so a minus is refused.)
+NUMERIC = set("0123456789.%· ,")
 
 #: A symbol that would render as markup if the cell ever carried it unescaped.
 HOSTILE = "<b>WMT</b>"
@@ -349,7 +408,8 @@ def _every_stop_cell() -> list[str]:
         _row(stop("stop", 104.00), holding=wmt),  # room
         _row(stop("stop", 104.00), price=103.00, holding=wmt),  # through the stop
         _row(stop("stop", 1187.50), price=1230.00, holding=dear),  # thousands
-        _row(stop("stop", 109.00), holding=wmt),  # above the entry: no room
+        _row(stop("stop", 109.00), holding=wmt),  # above the entry and the price
+        _row(stop("stop", 109.00), price=110.00, holding=wmt),  # above the entry only
         _row(stop("trailing_stop", 104.50), holding=wmt),
         _row(stop("trailing_stop", None), holding=wmt),
         _row({}, holding=wmt),
