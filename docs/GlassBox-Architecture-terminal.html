@@ -169,7 +169,7 @@ body.present .stage.on{display:block;width:min(100vw,177.78vh);margin:0 auto}
   <dl class="kv">
     <dt>Stack</dt><dd>Python 3.12 · NumPy · PyTorch · pandas · PyWavelets · SciPy · Streamlit · Alpaca</dd>
     <dt>Package code</dt><dd>51 modules · 22,450 lines</dd>
-    <dt>Tests</dt><dd>1,565 collected · 60 files · 1.17 : 1</dd>
+    <dt>Tests</dt><dd>1,598 collected · 60 files · 1.17 : 1</dd>
     <dt>Dependencies</dt><dd>13 runtime declared · 99 pinned · 6 development</dd>
   </dl>
   <div class="authors">
@@ -412,7 +412,7 @@ save(path) / load(path)</pre>
   <h2>AI-assisted development<span class="sub">This project was built with Claude Code. It is disclosed here in full, and recorded in four independent places in the repository.</span></h2>
   <table style="margin-bottom:2.2cqh">
     <tr><th>record</th><th>what it holds</th></tr>
-    <tr><td class="k">commit trailers</td><td><b>130 of 132 commits</b> carry Co-Authored-By: Claude. The two without are the document-only commits that bootstrap the project</td></tr>
+    <tr><td class="k">commit trailers</td><td><b>161 of 163 commits</b> carry Co-Authored-By: Claude. The two without are the document-only commits that bootstrap the project</td></tr>
     <tr><td class="k">CLAUDE.md</td><td>~250 lines, checked in. The operating contract: six rules, a definition of done, and <b>nine numbered instances of one failure class, each dated with what it cost</b></td></tr>
     <tr><td class="k">prompts/</td><td>four sprint files, 1,572 lines. The actual session prompts, one task per session</td></tr>
     <tr><td class="k">START_HERE.md</td><td>states the division: what is submitted, and what the assistant reads on every session</td></tr>
@@ -481,7 +481,7 @@ experiments/study ──► results.csv ──► report · statistics · exposu
   <div class="note"><strong>Several of these test the guard rather than the code.</strong> A
     causality harness that cannot detect a leak is worse than none, so four tests deliberately
     introduce leaks and assert the harness fails.
-    <span class="num">1,565</span> tests collected across 60 files.</div>
+    <span class="num">1,598</span> tests collected across 60 files.</div>
 </div><div class="pg">13 / 14</div></div>
 
 <!-- 14 -->
@@ -498,7 +498,7 @@ experiments/study ──► results.csv ──► report · statistics · exposu
       description with no source implementation available. <b>WITS is original.</b></li>
     <li><b>Four external services.</b> Alpaca paper only, enforced before any call. No service is
       called from inside the package without its constraint encoded beside it.</li>
-    <li><b>Built with Claude Code</b>, recorded in 130 of 132 commit trailers, an operating
+    <li><b>Built with Claude Code</b>, recorded in 161 of 163 commit trailers, an operating
       contract in the repository root, and 1,572 lines of session prompts.</li>
   </ul>
   <div class="panel" style="margin-top:2.4cqh"><strong>Nothing else external is used.</strong> No

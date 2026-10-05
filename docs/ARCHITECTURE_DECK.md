@@ -37,8 +37,8 @@ line in the repository.
 |---|---|
 | Language | Python 3.12 |
 | Runtime dependencies | 13 declared, 99 pinned in the lock |
-| Dev and test dependencies | 5 |
-| Tests | 1,565 collected across 60 files |
+| Dev and test dependencies | 6 |
+| Tests | 1,598 collected across 60 files |
 | Test to code ratio | 1.16 : 1 |
 
 **Notes.** Open with scale so the rest is read as a system rather than a script. The
@@ -379,7 +379,7 @@ incident is dated.
 
 | record | what it holds |
 |---|---|
-| **Commit trailers** | **130 of 132 commits** carry `Co-Authored-By: Claude`. The two without are the document-only commits that bootstrap the project |
+| **Commit trailers** | **161 of 163 commits** carry `Co-Authored-By: Claude`. The two without are the document-only commits that bootstrap the project |
 | **`CLAUDE.md`** | ~250 lines, checked in. The operating contract: six rules, a definition of done, and **nine numbered instances of one failure class, each dated with what it cost** |
 | **`prompts/`** | four sprint files, 1,572 lines. The actual session prompts, one task per session |
 | **`START_HERE.md`** | states the division: *"For the university — you submit these, Claude Code never reads them"* against *"For the repository — Claude Code reads these on every session"* |
@@ -463,7 +463,7 @@ shows.
 | no secret in any tracked file | plus three tests that the scanner detects real keys and does not cry wolf |
 | the grid is deterministic | `test_the_same_grid_twice_gives_the_same_numbers` |
 
-> **1,565 tests collected. 60 files. 26,281 lines of test against 22,450 of package.**
+> **1,598 tests collected. 60 files. 26,281 lines of test against 22,450 of package.**
 
 **Notes.** The pattern worth naming: several of these test the guard rather than the code. A
 causality harness that cannot detect a leak is worse than none, so four tests deliberately
@@ -496,7 +496,7 @@ than discouraged.
 > unauthenticated. No service is called from inside the package without its constraint
 > encoded beside it.
 >
-> **Built with Claude Code**, recorded in 130 of 132 commit trailers, an operating contract
+> **Built with Claude Code**, recorded in 161 of 163 commit trailers, an operating contract
 > in the repository root, and 1,572 lines of session prompts. `DECISIONS.md` records where
 > the assistant was wrong and was corrected.
 >

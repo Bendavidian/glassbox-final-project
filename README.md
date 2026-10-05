@@ -5,7 +5,7 @@ account, and every decision it makes decomposes exactly into the inputs that pro
 
 [![CI](https://github.com/Bendavidian/glassbox-final-project/actions/workflows/ci.yml/badge.svg)](https://github.com/Bendavidian/glassbox-final-project/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12%2B-2F5D8A)
-![Tests](https://img.shields.io/badge/tests-1%2C565%20collected-2F5D8A)
+![Tests](https://img.shields.io/badge/tests-1%2C598%20collected-2F5D8A)
 
 Final-year B.Sc. project in Computer Science, Bar-Ilan University, 2026.
 
@@ -239,6 +239,78 @@ of 2026-08-13 and appear to contain no severe market dislocation (§57.9).
 
 ---
 
+## Known limitations at submission
+
+Defects in the live system as submitted. Each was checked against the submitted code before
+it was written here, and each was left unfixed under the submission code freeze. Line
+numbers refer to the submitted code.
+
+1. **The model's exit recommendations never reach the approval queue, so its exit rule does
+   not execute.** In Co-Pilot mode, the configured mode (`glassbox/config/settings.yaml:81`),
+   `exit_position` returns a `pending_approval` submission and writes nothing
+   (`glassbox/live_loop.py:1978-1987`). The only `records.save_pending` call is on the entry
+   path (`live_loop.py:1185`), so the console has nothing to approve, and the exit is
+   recommended again on every cycle and never sent: on 5 October 2026, the model's exit for
+   V on every completed cycle. The loop-side take-profit goes
+   through the same function (`live_loop.py:1699`) and would be stranded the same way.
+   *Consequence:* in Co-Pilot mode a position leaves only by its broker-side stop, by rule
+   3's flatten after repeated arming failures, or by hand. Found in GB-67. Unfixed under the
+   code freeze.
+2. **A stop exit never becomes a trade record (T1).** Step 2 builds trades only from filled
+   sells not yet in `state.seen_orders` (`live_loop.py:918-924`), and every order the cycle
+   reads is added to that set whatever its status (`live_loop.py:953`). A stop is read as
+   working on the cycle after it is armed, so when it later fills it is no longer fresh and
+   `records.emit_trades` never sees it. It is recorded only if it fills before any cycle of
+   the same process has read it as working, or across a restart, because `seen_orders` lives
+   in memory (`live_loop.py:433`). *Consequence:* `trades.jsonl` and the live metrics that
+   read it describe a subset of realised P&L, and the subset leaves out the exit that bounds
+   losses, so the record errs in the flattering direction. Pinned by the strict xfail
+   `test_a_stop_seen_working_and_then_filled_becomes_one_trade`
+   (`tests/test_live_loop.py:2822`). Unfixed under the code freeze.
+3. **Reconciliation still expects two protective orders per position (T2).** `reconcile`
+   counts every live sell and reports `missing_protection` below two
+   (`glassbox/engine/reconcile.py:271-274`, `:288`; the message at `:283` and the module
+   docstring at `:31-35` say the same), but since 26 August 2026 the policy is one stop.
+   Every correctly protected position is therefore reported. On 5 October 2026 step 3
+   logged five `missing_protection` warnings per cycle, one per held position, each with
+   `broker=1`: one correct stop per position. Step 4 rightly ignores them: `protect_book`
+   works out what is missing from `LEGS` against the live orders (`live_loop.py:1850`) and
+   never reads reconcile's output. The tests that pin the two-order premise, a state Alpaca
+   refuses, belong to the same fix (`tests/engine/test_reconcile.py:38-39`, `:249`, `:273`).
+   *Consequence:* the warning fires on every cycle for every held position, so a genuinely
+   missing stop cannot be told apart in the log; on 30 September 2026, 6 of 1,639 were
+   genuine. Unfixed under the code freeze.
+4. **The session summary's exit lines say less than they appear to (T3).** `broker=` is an
+   order count on `missing_protection` (`reconcile.py:281`) and a share quantity on every
+   other kind (`:207`, `:226`, `:242`). `open orders at exit` (`live_loop.py:338`) lists DAY
+   stops read after the close, while the broker is expiring them, so they protect nothing
+   overnight. `positions at exit` is `sorted(state.book.managed)` (`live_loop.py:2242`), the
+   book as of the last reconcile rather than a broker read at exit. *Consequence:* the
+   summary can read as protection that is about to lapse, and it can list as held a position
+   that a fill closed after the last cycle. Unfixed under the code freeze.
+5. **An entry that has not filled when protection is attached gets no stop from that call.**
+   `executor.protect` returns without arming when the filled quantity is zero
+   (`glassbox/engine/executor.py:525-530`), and leaves the stop to the cycle that sees the
+   fill. The loop's own entry path polls briefly for the fill first
+   (`live_loop.py:2024-2031`); an approval from the console, through `executor.approve`
+   (`live_loop.py:1758`), does not. *Consequence:* a filled position can be without a stop
+   until the loop's next cycle adopts it and arms one: up to one `live.poll_seconds` (60 s)
+   while the loop is running, and, for an order approved after the close, from the fill at
+   the next open until the loop's first cycle of that session. Unfixed under the code freeze.
+6. **Stops are DAY orders, so protection lapses at every close.** Alpaca accepts only DAY
+   orders on a fractional quantity (`executor.py:31`), so the stop is submitted with
+   `TimeInForce.DAY` (`executor.py:604`) and expires at the close. A position held overnight
+   has no stop from the close until the first cycle of the next session re-arms it
+   (`live_loop.py:1861-1864`); the session banner says so (`live_loop.py:705-706`).
+   *Consequence:* narrower than "no stop overnight". The stop is a fixed price, so a gap
+   through it overnight leaves the re-armed stop marketable at the open, which is what the
+   backtest's `stop_gap` rule models (`executor.py:33-41`). What diverges is the time
+   between the open and the first arming, and any session in which the arming does not
+   happen: on 2 October 2026 a crash in step 2 kept step 4 from running all session, and
+   five positions went unprotected (fixed in GB-29). Unfixed under the code freeze.
+
+---
+
 ## Quickstart
 
 Python **3.12 or newer**. No GPU is needed. Credentials are needed only for the live loop.
@@ -372,9 +444,8 @@ black --check .
 lint-imports            # the two layer contracts
 ```
 
-**1,565 tests collected**: 1,548 at the last full run (commit `b866cc4`, 23 September 2026),
-plus GB-67's guard 7 in `tests/dashboard/test_app.py`, plus the 16 cases in
-`tests/test_capture_screenshots.py`, which guard the screenshot capture script. That is 60
+**1,598 tests collected**: 1,593 passed and 5 xfailed at the last full run (commit `677e4a9`,
+5 October 2026). That is 60
 files, with 26,281 lines of test against 22,450 lines of package. These
 are collected tests, not a pass count. The authority on whether they pass is the CI badge
 above. The suite needs no credentials and no network. CI runs bare `pytest` on
@@ -444,7 +515,7 @@ The GitHub REST API from a development script only.
 **AI-assisted development.** This project was built with Claude Code, and that is recorded
 in the repository rather than stated here:
 
-- 135 of 137 commits (as of `f3f79aa`) carry a `Co-Authored-By: Claude` trailer. The two
+- 161 of 163 commits (as of `f4ace6e`) carry a `Co-Authored-By: Claude` trailer. The two
   without are the documents that bootstrapped the project.
 - [`CLAUDE.md`](CLAUDE.md) is the operating contract every session read.
 - `prompts/` holds the actual session prompts, 1,572 lines across four sprint files.

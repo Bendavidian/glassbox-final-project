@@ -53,7 +53,7 @@ L7 Console → reads files, computes nothing
 
 
 **Speaker notes.** Thirty seconds. The point is scale and completeness, not detail: this is a
-working system that trades a real broker, not a notebook. If asked for numbers: 1,565 tests
+working system that trades a real broker, not a notebook. If asked for numbers: 1,598 tests
 collected, twenty symbols, sixteen walk-forward folds, 322 cycles in a single live session with
 zero failed steps. **Say "collected", not "passing"** — the last recorded full run predates the
 guards added since, so a pass count is not established.
