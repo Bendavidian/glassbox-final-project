@@ -526,30 +526,6 @@ The explanation layer uses no perturbation-attribution library, and a test asser
 
 ---
 
-## Documentation
-
-| document | what it holds |
-|---|---|
-| [`docs/GLASSBOX_PROJECT_SPEC.md`](docs/GLASSBOX_PROJECT_SPEC.md) | The specification: architecture, frozen contracts, methodology, gate criteria |
-| [`GLASSBOX_PHASE2_EXPANSION.md`](GLASSBOX_PHASE2_EXPANSION.md) | Scope after GATE 2: the twenty-symbol universe, WITS, the schedule |
-| [`docs/GB55_ARCHITECTURE.md`](docs/GB55_ARCHITECTURE.md) | Report chapter: architecture and system design |
-| [`docs/GB56_METHODOLOGY.md`](docs/GB56_METHODOLOGY.md) | Report chapter: leak freedom, the robustness checks, statistics |
-| [`docs/GB57_RESULTS.md`](docs/GB57_RESULTS.md) | Report chapter: results, discussion, future work (the submitted version) |
-| [`docs/GB57_OUTLINE.md`](docs/GB57_OUTLINE.md) | The outline GB57 was written against |
-| [`docs/GB57_RESULTS_AND_DISCUSSION.md`](docs/GB57_RESULTS_AND_DISCUSSION.md) | Superseded five-symbol draft, kept for its argument, not its numbers |
-| [`docs/SUBMISSION_DOC_CORRECTIONS.md`](docs/SUBMISSION_DOC_CORRECTIONS.md) | Claims later measurement contradicted, with the corrected figures |
-| [`docs/ARCHITECTURE_INVENTORY.md`](docs/ARCHITECTURE_INVENTORY.md) | Every external component and every module, cited to file and line |
-| [`docs/ARCHITECTURE_DECK.md`](docs/ARCHITECTURE_DECK.md) | The architecture and disclosure deck |
-| [`docs/GB58_DECK.md`](docs/GB58_DECK.md) | The presentation deck and speaker notes |
-| [`docs/GB54_VIDEO_SCRIPT.md`](docs/GB54_VIDEO_SCRIPT.md) | The three-minute video script |
-| [`docs/he/`](docs/he/) | Hebrew study guides for the chapters and decks |
-| [`report/report.md`](report/report.md) | The generated study report, regenerated from `results.csv` |
-| [`report/screenshots/CAPTIONS.md`](report/screenshots/CAPTIONS.md) | What each console capture shows and the conditions it was taken under |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | How the package is put together, for a developer |
-| [`PROGRESS.md`](PROGRESS.md) · [`DECISIONS.md`](DECISIONS.md) | What was built, task by task, and why each decision was taken |
-
----
-
 ## Authors
 
 Ben Davidian · Noy Shani
